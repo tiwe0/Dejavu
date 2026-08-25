@@ -1,0 +1,26 @@
+DEJAVU_0.1 {
+    global:
+        dejavu_version;
+        dejavu_lua_version;
+        dejavu_tcc_version;
+        dejavu_engine_create;
+        dejavu_engine_destroy;
+        dejavu_engine_add_symbol;
+        dejavu_engine_compile;
+        dejavu_module_symbol;
+        dejavu_module_call;
+        dejavu_module_destroy;
+        dejavu_control_session_create;
+        dejavu_control_session_destroy;
+        dejavu_control_session_register;
+        dejavu_control_session_eval;
+        dejavu_control_session_invoke;
+        dejavu_control_session_release_function;
+        dejavu_value_release;
+        dejavu_control_run;
+        dejavu_smoke_lua;
+        dejavu_smoke_tcc;
+        dejavu_smoke;
+    local:
+        *;
+};

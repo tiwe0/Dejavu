@@ -1,0 +1,6 @@
+{
+    global:
+        dejavu_agent_get_api;
+    local:
+        *;
+};

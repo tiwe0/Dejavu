@@ -1,0 +1,1 @@
+hook.log("LIVE_CONTROL_SMOKE")

@@ -1,0 +1,6 @@
+[submodule "extern/lua"]
+	path = extern/lua
+	url = https://github.com/lua/lua.git
+[submodule "extern/tinycc"]
+	path = extern/tinycc
+	url = https://github.com/frida/tinycc.git

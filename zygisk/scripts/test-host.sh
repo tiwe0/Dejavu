@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+CXX=${CXX:-c++}
+OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/host-tests"}
+
+mkdir -p "${OUT_DIR}"
+"${CXX}" \
+    -std=c++17 \
+    -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/target_config.cpp" \
+    "${ROOT_DIR}/tests/target_config_test.cpp" \
+    -o "${OUT_DIR}/target_config_test"
+
+"${OUT_DIR}/target_config_test"
+
+"${CXX}" \
+    -std=c++17 \
+    -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/aarch64_adrp_add.cpp" \
+    "${ROOT_DIR}/tests/aarch64_adrp_add_test.cpp" \
+    -o "${OUT_DIR}/aarch64_adrp_add_test"
+
+"${OUT_DIR}/aarch64_adrp_add_test"
+
+"${CXX}" \
+    -std=c++17 \
+    -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/control_channel.cpp" \
+    "${ROOT_DIR}/tests/control_channel_test.cpp" \
+    -o "${OUT_DIR}/control_channel_test"
+
+"${OUT_DIR}/control_channel_test"

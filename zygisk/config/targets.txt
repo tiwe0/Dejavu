@@ -1,0 +1,2 @@
+# One exact Android process name per line.
+# Keep this file empty until a target has been selected.

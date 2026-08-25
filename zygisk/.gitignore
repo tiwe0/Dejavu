@@ -1,0 +1,4 @@
+/dist/
+/out/
+/third_party/*
+!/third_party/README.md

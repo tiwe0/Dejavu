@@ -1,0 +1,302 @@
+--- a/lsplant/src/main/jni/art/runtime/art_method.hpp
++++ b/lsplant/src/main/jni/art/runtime/art_method.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+
++#include <memory>
++
+ #include "art/mirror/class.hpp"
+ #include "common.hpp"
+
+@@ -75,6 +77,12 @@
+     void SetNonFinal() {
+         auto access_flags = GetAccessFlags();
+         access_flags &= ~kAccFinal;
++        SetAccessFlags(access_flags);
++    }
++
++    void SetNonNative() {
++        auto access_flags = GetAccessFlags();
++        access_flags &= ~kAccNative;
+         SetAccessFlags(access_flags);
+     }
+
+@@ -87,6 +95,12 @@
+     bool IsConstructor() { return GetAccessFlags() & kAccConstructor; }
+
+     void CopyFrom(const ArtMethod *other) { memcpy(this, other, art_method_size); }
++
++    std::unique_ptr<ArtMethod> Clone() {
++        auto *method = reinterpret_cast<ArtMethod *>(::operator new(art_method_size));
++        method->CopyFrom(this);
++        return std::unique_ptr<ArtMethod>(method);
++    }
+
+     void SetEntryPoint(void *entry_point) {
+         *reinterpret_cast<void **>(reinterpret_cast<uintptr_t>(this) + entry_point_offset) =
+--- a/lsplant/src/main/jni/art/runtime/runtime.hpp
++++ b/lsplant/src/main/jni/art/runtime/runtime.hpp
+@@ -19,6 +19,8 @@
+
+ #pragma once
+
++#include <atomic>
++
+ #include "utils/hook_helper.hpp"
+
+ namespace lsplant::art {
+@@ -107,4 +109,55 @@
+         return true;
+     }
+ };
++
++class JavaDebuggableGuard {
++public:
++    JavaDebuggableGuard() {
++        while (true) {
++            size_t expected = 0;
++            if (count.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
++                                              std::memory_order_acquire)) {
++                Runtime::Current()->SetJavaDebuggable(
++                    Runtime::RuntimeDebugState::kJavaDebuggableAtInit);
++                count.fetch_add(1, std::memory_order_release);
++                count.notify_all();
++                break;
++            }
++            if (expected == 1) {
++                count.wait(expected, std::memory_order_acquire);
++                continue;
++            }
++            if (count.compare_exchange_strong(expected, expected + 1, std::memory_order_acq_rel,
++                                              std::memory_order_relaxed)) {
++                break;
++            }
++        }
++    }
++
++    ~JavaDebuggableGuard() {
++        while (true) {
++            size_t expected = 2;
++            if (count.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
++                                              std::memory_order_acquire)) {
++                Runtime::Current()->SetJavaDebuggable(
++                    Runtime::RuntimeDebugState::kNonJavaDebuggable);
++                count.fetch_sub(1, std::memory_order_release);
++                count.notify_all();
++                break;
++            }
++            if (expected == 1) {
++                count.wait(expected, std::memory_order_acquire);
++                continue;
++            }
++            if (count.compare_exchange_strong(expected, expected - 1, std::memory_order_acq_rel,
++                                              std::memory_order_relaxed)) {
++                break;
++            }
++        }
++    }
++
++private:
++    inline static std::atomic_size_t count{0};
++    static_assert(std::atomic_size_t::is_always_lock_free, "Unsupported architecture");
++};
+ }  // namespace lsplant::art
+--- a/lsplant/src/main/jni/art/runtime/class_linker.hpp
++++ b/lsplant/src/main/jni/art/runtime/class_linker.hpp
+@@ -2,6 +2,7 @@
+
+ #include "art/runtime/art_method.hpp"
+ #include "art/runtime/obj_ptr.hpp"
++#include "art/runtime/runtime.hpp"
+ #include "art/runtime/thread.hpp"
+ #include "common.hpp"
+
+@@ -29,6 +30,10 @@
+
+     CREATE_FUNC_SYMBOL_ENTRY(void, art_quick_generic_jni_trampoline, void *) {}
+
++    CREATE_FUNC_SYMBOL_ENTRY(void *, GetOptimizedCodeFor, ArtMethod *method) {
++        return GetOptimizedCodeForSym(method);
++    }
++
+     inline static art::ArtMethod *MayGetBackup(art::ArtMethod *method) {
+         if (auto backup = IsHooked(method); backup) [[unlikely]] {
+             method = backup;
+@@ -135,7 +140,7 @@
+             RestoreBackup(nullptr, self);
+         });
+ public:
+-    static bool Init(const HookHandler &handler) {
++    static bool Init(JNIEnv *env, const HookHandler &handler) {
+         int sdk_int = GetAndroidApiLevel();
+
+         if (sdk_int >= __ANDROID_API_N__ && sdk_int < __ANDROID_API_T__) {
+@@ -165,39 +170,51 @@
+                 SetEntryPointsToInterpreter,
+                 "_ZNK3art11ClassLinker27SetEntryPointsToInterpreterEPNS_9ArtMethodE"))
+             [[unlikely]] {
+-            if (!RETRIEVE_FUNC_SYMBOL(art_quick_to_interpreter_bridge,
+-                                      "art_quick_to_interpreter_bridge")) [[unlikely]] {
++            if (RETRIEVE_FUNC_SYMBOL(
++                    GetOptimizedCodeFor,
++                    "_ZN3art15instrumentation15Instrumentation19GetOptimizedCodeForEPNS_9ArtMethodE") ||
++                RETRIEVE_FUNC_SYMBOL(
++                    GetOptimizedCodeFor,
++                    "_ZN3art15instrumentationL19GetOptimizedCodeForEPNS_9ArtMethodE",
++                    true)) {
++                auto object_class = JNI_FindClass(env, "java/lang/Object");
++                if (!object_class) {
++                    return false;
++                }
++                auto equals = JNI_GetMethodID(env, object_class, "equals", "(Ljava/lang/Object;)Z");
++                if (!equals) {
++                    return false;
++                }
++                auto reflected = JNI_ToReflectedMethod(env, object_class, equals, false);
++                auto dummy = ArtMethod::FromReflectedMethod(env, reflected.get())->Clone();
++                JavaDebuggableGuard guard;
++                dummy->SetNonNative();
++                art_quick_to_interpreter_bridgeSym =
++                    reinterpret_cast<art_quick_to_interpreter_bridgeType>(
++                        GetOptimizedCodeFor(dummy.get()));
++            } else if (!RETRIEVE_FUNC_SYMBOL(art_quick_to_interpreter_bridge,
++                                             "art_quick_to_interpreter_bridge")) {
+                 return false;
+             }
+-            if (!RETRIEVE_FUNC_SYMBOL(art_quick_generic_jni_trampoline,
+-                                      "art_quick_generic_jni_trampoline")) [[unlikely]] {
+-                return false;
+-            }
+             LOGD("art_quick_to_interpreter_bridge = %p", art_quick_to_interpreter_bridgeSym);
+-            LOGD("art_quick_generic_jni_trampoline = %p", art_quick_generic_jni_trampolineSym);
+         }
+         return true;
+     }
+
+     [[gnu::always_inline]] static bool SetEntryPointsToInterpreter(ArtMethod *art_method) {
++        if (art_method->IsNative()) {
++            return false;
++        }
+         if (SetEntryPointsToInterpreterSym) [[likely]] {
+             SetEntryPointsToInterpreter(nullptr, art_method);
+             return true;
+         }
+         // Android 13
+-        if (art_quick_to_interpreter_bridgeSym && art_quick_generic_jni_trampolineSym) [[likely]] {
+-            if (art_method->GetAccessFlags() & ArtMethod::kAccNative) [[unlikely]] {
+-                LOGV("deoptimize native method %s from %p to %p",
+-                     art_method->PrettyMethod(true).data(), art_method->GetEntryPoint(),
+-                     art_quick_generic_jni_trampolineSym);
+-                art_method->SetEntryPoint(
+-                    reinterpret_cast<void *>(art_quick_generic_jni_trampolineSym));
+-            } else {
+-                LOGV("deoptimize method %s from %p to %p", art_method->PrettyMethod(true).data(),
+-                     art_method->GetEntryPoint(), art_quick_to_interpreter_bridgeSym);
+-                art_method->SetEntryPoint(
+-                    reinterpret_cast<void *>(art_quick_to_interpreter_bridgeSym));
+-            }
++        if (art_quick_to_interpreter_bridgeSym) [[likely]] {
++            LOGV("deoptimize method %s from %p to %p", art_method->PrettyMethod(true).data(),
++                 art_method->GetEntryPoint(), art_quick_to_interpreter_bridgeSym);
++            art_method->SetEntryPoint(
++                reinterpret_cast<void *>(art_quick_to_interpreter_bridgeSym));
+             return true;
+         }
+         return false;
+--- a/lsplant/src/main/jni/lsplant.cc
++++ b/lsplant/src/main/jni/lsplant.cc
+@@ -34,6 +34,7 @@
+ using art::ClassLinker;
+ using art::DexFile;
+ using art::Instrumentation;
++using art::JavaDebuggableGuard;
+ using art::Runtime;
+ using art::Thread;
+ using art::gc::ScopedGCCriticalSection;
+@@ -260,7 +261,11 @@
+         LOGE("Failed to init thread");
+         return false;
+     }
+-    if (!ClassLinker::Init(handler)) {
++    if (!Runtime::Init(handler)) {
++        LOGE("Failed to init runtime");
++        return false;
++    }
++    if (!ClassLinker::Init(env, handler)) {
+         LOGE("Failed to init class linker");
+         return false;
+     }
+@@ -290,13 +295,8 @@
+     }
+     if (!JniIdManager::Init(env, handler)) {
+         LOGE("Failed to init jni id manager");
+-        return false;
+-    }
+-    if (!Runtime::Init(handler)) {
+-        LOGE("Failed to init runtime");
+         return false;
+     }
+-
+     // This should always be the last one
+     if (IsJavaDebuggable(env)) {
+         // Make the runtime non-debuggable as a workaround
+@@ -305,59 +305,7 @@
+     }
+     return true;
+ }
+-
+-struct JavaDebuggableGuard {
+-    JavaDebuggableGuard() {
+-        while (true) {
+-            size_t expected = 0;
+-            if (count.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
+-                                              std::memory_order_acquire)) {
+-                Runtime::Current()->SetJavaDebuggable(
+-                    Runtime::RuntimeDebugState::kJavaDebuggableAtInit);
+-                count.fetch_add(1, std::memory_order_release);
+-                count.notify_all();
+-                break;
+-            }
+-            if (expected == 1) {
+-                count.wait(expected, std::memory_order_acquire);
+-                continue;
+-            }
+-            if (count.compare_exchange_strong(expected, expected + 1, std::memory_order_acq_rel,
+-                                              std::memory_order_relaxed)) {
+-                break;
+-            }
+-        }
+-    }
+
+-    ~JavaDebuggableGuard() {
+-        while (true) {
+-            size_t expected = 2;
+-            if (count.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
+-                                              std::memory_order_acquire)) {
+-                Runtime::Current()->SetJavaDebuggable(
+-                    Runtime::RuntimeDebugState::kNonJavaDebuggable);
+-                count.fetch_sub(1, std::memory_order_release);
+-                count.notify_all();
+-                break;
+-            }
+-            if (expected == 1) {
+-                count.wait(expected, std::memory_order_acquire);
+-                continue;
+-            }
+-            if (count.compare_exchange_strong(expected, expected - 1, std::memory_order_acq_rel,
+-                                              std::memory_order_relaxed)) {
+-                break;
+-            }
+-        }
+-    }
+-
+-private:
+-    inline static std::atomic_size_t count{0};
+-    static_assert(std::atomic_size_t::is_always_lock_free, "Unsupported architecture");
+-    static_assert(std::is_same_v<std::atomic_size_t::value_type, size_t>,
+-                  "Unsupported architecture");
+-};
+-
+ std::tuple<jclass, jfieldID, jmethodID, jmethodID> BuildDex(JNIEnv *env, jobject class_loader,
+                                                             std::string_view shorty, bool is_static,
+                                                             std::string_view method_name,
