@@ -3,9 +3,9 @@
 #include <android/log.h>
 
 #include <atomic>
-#include <iomanip>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "hook_bridge_dex.h"
+#include "hook_api_runtime.h"
 
 namespace {
 
@@ -71,11 +72,14 @@ struct HookManager::Impl {
         std::string class_name;
         std::string method_name;
         std::string signature;
+        DejavuHookSignature parsed_signature;
         jobject target = nullptr;
         jobject backup = nullptr;
         jobject bridge = nullptr;
+        jobject class_loader = nullptr;
         dejavu_module *module = nullptr;
-        DejavuNativeHookCallback callback = nullptr;
+        DejavuNativeHookCallback before = nullptr;
+        DejavuNativeHookCallback after = nullptr;
         bool is_static = false;
         std::atomic<bool> active{true};
         std::atomic<bool> ready{false};
@@ -101,6 +105,7 @@ struct HookManager::Impl {
 #endif
     jclass method_class = nullptr;
     jmethodID method_invoke = nullptr;
+    DejavuHookJniApi hook_jni_api;
     using HookTable = std::vector<Record *>;
     std::mutex writer_mutex;
     std::vector<std::unique_ptr<Record>> owned_records;
@@ -243,7 +248,8 @@ struct HookManager::Impl {
         const std::string &method_name,
         const std::string &signature,
         dejavu_module *module,
-        DejavuNativeHookCallback callback,
+        DejavuNativeHookCallback before,
+        DejavuNativeHookCallback after,
         jobject loader,
         BootstrapCallback bootstrap_callback,
         void *bootstrap_context,
@@ -252,6 +258,10 @@ struct HookManager::Impl {
         *hook_attempted = false;
         if (env == nullptr) {
             set_error(error, "hook thread is not attached to ART");
+            return nullptr;
+        }
+        DejavuHookSignature parsed_signature;
+        if (!dejavu_parse_hook_signature(signature, &parsed_signature, error)) {
             return nullptr;
         }
         jobject loaded_class = nullptr;
@@ -290,8 +300,19 @@ struct HookManager::Impl {
         record->class_name = class_name;
         record->method_name = method_name;
         record->signature = signature;
+        record->parsed_signature = std::move(parsed_signature);
         record->module = module;
-        record->callback = callback;
+        record->before = before;
+        record->after = after;
+        jobject context_loader = loader;
+#if DEJAVU_RUN_DEVICE_STRESS
+        if (class_name == kStressClassName) {
+            context_loader = bridge_class_loader;
+        }
+#endif
+        record->class_loader = context_loader == nullptr
+            ? nullptr
+            : env->NewGlobalRef(context_loader);
         record->is_static = is_static;
         record->bootstrap = bootstrap_callback != nullptr;
         record->bootstrap_callback = bootstrap_callback;
@@ -304,7 +325,8 @@ struct HookManager::Impl {
             static_cast<jlong>(reinterpret_cast<uintptr_t>(record.get())));
         record->target = env->NewGlobalRef(target);
         record->bridge = env->NewGlobalRef(bridge);
-        if (record->target == nullptr || record->bridge == nullptr) {
+        if (record->target == nullptr || record->bridge == nullptr ||
+            (context_loader != nullptr && record->class_loader == nullptr)) {
             set_error(error, "unable to retain target hook references");
             return nullptr;
         }
@@ -364,9 +386,11 @@ struct HookManager::Impl {
 
         dejavu_module *module = nullptr;
         char compile_error[1024];
+        std::string source(dejavu_hook_api_preamble());
+        source.append(value_string(arguments[3]));
         const int status = manager->runtime->engine_compile(
             manager->engine,
-            value_string(arguments[3]).c_str(),
+            source.c_str(),
             &module,
             compile_error,
             sizeof(compile_error));
@@ -374,15 +398,20 @@ struct HookManager::Impl {
             copy_error(error, error_size, compile_error);
             return status;
         }
-        void *symbol = manager->runtime->module_symbol(module, DEJAVU_HOOK_ENTRY_SYMBOL);
-        if (symbol == nullptr) {
+        void *before_symbol =
+            manager->runtime->module_symbol(module, DEJAVU_HOOK_BEFORE_SYMBOL);
+        void *after_symbol =
+            manager->runtime->module_symbol(module, DEJAVU_HOOK_AFTER_SYMBOL);
+        if (before_symbol == nullptr && after_symbol == nullptr) {
             manager->runtime->module_destroy(module);
-            copy_error(error, error_size, "C source must define dejavu_hook_callback");
+            copy_error(error, error_size, "C source must define before_hook or after_hook");
             return DEJAVU_ERROR_TCC_SYMBOL;
         }
-        DejavuNativeHookCallback callback = nullptr;
-        static_assert(sizeof(callback) == sizeof(symbol));
-        memcpy(&callback, &symbol, sizeof(callback));
+        DejavuNativeHookCallback before = nullptr;
+        DejavuNativeHookCallback after = nullptr;
+        static_assert(sizeof(before) == sizeof(before_symbol));
+        memcpy(&before, &before_symbol, sizeof(before));
+        memcpy(&after, &after_symbol, sizeof(after));
 
         std::string install_error;
         bool hook_attempted = false;
@@ -392,7 +421,8 @@ struct HookManager::Impl {
             value_string(arguments[1]),
             value_string(arguments[2]),
             module,
-            callback,
+            before,
+            after,
             manager->app_class_loader,
             nullptr,
             nullptr,
@@ -493,6 +523,125 @@ struct HookManager::Impl {
     }
 
 #if DEJAVU_RUN_DEVICE_STRESS
+    static int lua_protocol_test(
+        dejavu_control_session *,
+        void *context,
+        const dejavu_value *arguments,
+        size_t argument_count,
+        dejavu_value *result,
+        char *error,
+        size_t error_size) {
+        auto *manager = static_cast<Impl *>(context);
+        if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.protocol_test expects a hook id");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        Record *record = manager->find(
+            static_cast<unsigned long long>(arguments[0].integer_value));
+        if (record == nullptr || record->class_name != kStressClassName ||
+            record->method_name != "protocolTarget") {
+            copy_error(error, error_size, "invalid hook.protocol_test target");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        JNIEnv *env = manager->current_env();
+        jmethodID run_test = manager->stress_class == nullptr
+            ? nullptr
+            : env->GetStaticMethodID(manager->stress_class, "runProtocolTest", "()I");
+        if (env->ExceptionCheck() || run_test == nullptr) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "unable to resolve HookStress.runProtocolTest");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        const jint failures = env->CallStaticIntMethod(manager->stress_class, run_test);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "HookStress.runProtocolTest raised an exception");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        result->type = DEJAVU_VALUE_BOOLEAN;
+        result->boolean_value = failures == 0;
+        return DEJAVU_OK;
+    }
+
+    static int lua_helper_test(
+        dejavu_control_session *,
+        void *context,
+        const dejavu_value *arguments,
+        size_t argument_count,
+        dejavu_value *result,
+        char *error,
+        size_t error_size) {
+        auto *manager = static_cast<Impl *>(context);
+        if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.helper_test expects a hook id");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        Record *record = manager->find(
+            static_cast<unsigned long long>(arguments[0].integer_value));
+        if (record == nullptr || record->class_name != kStressClassName) {
+            copy_error(error, error_size, "invalid hook.helper_test target");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        JNIEnv *env = manager->current_env();
+        jmethodID run_test = manager->stress_class == nullptr
+            ? nullptr
+            : env->GetStaticMethodID(manager->stress_class, "runHelperTest", "()I");
+        if (env->ExceptionCheck() || run_test == nullptr) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "unable to resolve HookStress.runHelperTest");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        const jint failures = env->CallStaticIntMethod(manager->stress_class, run_test);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "HookStress.runHelperTest raised an exception");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        result->type = DEJAVU_VALUE_INTEGER;
+        result->integer_value = failures;
+        return DEJAVU_OK;
+    }
+
+    static int lua_exception_test(
+        dejavu_control_session *,
+        void *context,
+        const dejavu_value *arguments,
+        size_t argument_count,
+        dejavu_value *result,
+        char *error,
+        size_t error_size) {
+        auto *manager = static_cast<Impl *>(context);
+        if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.exception_test expects a hook id");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        Record *record = manager->find(
+            static_cast<unsigned long long>(arguments[0].integer_value));
+        if (record == nullptr || record->class_name != kStressClassName ||
+            record->method_name != "exceptionTarget") {
+            copy_error(error, error_size, "invalid hook.exception_test target");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        JNIEnv *env = manager->current_env();
+        jmethodID run_test = manager->stress_class == nullptr
+            ? nullptr
+            : env->GetStaticMethodID(manager->stress_class, "runExceptionTest", "()I");
+        if (env->ExceptionCheck() || run_test == nullptr) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "unable to resolve HookStress.runExceptionTest");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        const jint failures = env->CallStaticIntMethod(manager->stress_class, run_test);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            copy_error(error, error_size, "HookStress.runExceptionTest raised an exception");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        result->type = DEJAVU_VALUE_BOOLEAN;
+        result->boolean_value = failures == 0;
+        return DEJAVU_OK;
+    }
+
     static int lua_stress(
         dejavu_control_session *,
         void *context,
@@ -599,24 +748,6 @@ jobject native_dispatch(JNIEnv *env, jobject bridge, jobjectArray arguments) {
 
 }  // namespace
 
-extern "C" void *dejavu_hook_call_original(
-    void *jni_env,
-    void *backup_method,
-    void *arguments,
-    int is_static) {
-    if (g_manager == nullptr || jni_env == nullptr || backup_method == nullptr) {
-        return nullptr;
-    }
-    return g_manager->call_original(
-        static_cast<JNIEnv *>(jni_env),
-        static_cast<jobject>(backup_method),
-        static_cast<jobjectArray>(arguments),
-        is_static != 0);
-}
-
-extern "C" void dejavu_hook_log(const char *message) {
-    LOGD("%s", message != nullptr ? message : "");
-}
 
 HookManager::HookManager() : impl_(new (std::nothrow) Impl()) {
     if (impl_ != nullptr) {
@@ -665,6 +796,9 @@ bool HookManager::initialize(
         set_error(error, "unable to resolve java.lang.reflect.Method.invoke");
         return false;
     }
+    if (!dejavu_hook_api_initialize(env, &impl_->hook_jni_api, error)) {
+        return false;
+    }
     g_manager = this;
     return true;
 }
@@ -684,6 +818,7 @@ bool HookManager::install_app_bootstrap(
         "android.app.ActivityThread",
         "handleBindApplication",
         "(Landroid/app/ActivityThread$AppBindData;)V",
+        nullptr,
         nullptr,
         nullptr,
         nullptr,
@@ -713,20 +848,11 @@ bool HookManager::start_control(
         set_error(error, "unable to create Dejavu engine");
         return false;
     }
-    int status = impl_->runtime->engine_add_symbol(
-        impl_->engine,
-        "dejavu_hook_call_original",
-        reinterpret_cast<const void *>(dejavu_hook_call_original));
-    if (status == DEJAVU_OK) {
-        status = impl_->runtime->engine_add_symbol(
-            impl_->engine,
-            "dejavu_hook_log",
-            reinterpret_cast<const void *>(dejavu_hook_log));
-    }
-    if (status != DEJAVU_OK) {
-        set_error(error, "unable to register native hook helper symbols");
+    if (!dejavu_hook_api_register_symbols(
+            impl_->runtime, impl_->engine, error)) {
         return false;
     }
+    int status = DEJAVU_OK;
 
     char runtime_error[512];
     status = impl_->runtime->control_session_create(
@@ -746,6 +872,9 @@ bool HookManager::start_control(
         {"clear", Impl::lua_clear},
         {"log", Impl::lua_log},
 #if DEJAVU_RUN_DEVICE_STRESS
+        {"protocol_test", Impl::lua_protocol_test},
+        {"helper_test", Impl::lua_helper_test},
+        {"exception_test", Impl::lua_exception_test},
         {"stress", Impl::lua_stress},
 #endif
     };
@@ -881,9 +1010,37 @@ jobject HookManager::dispatch(
         return result;
     }
     if (!record->active.load(std::memory_order_acquire) ||
-        record->callback == nullptr || g_inside_native_hook) {
+        (record->before == nullptr && record->after == nullptr) || g_inside_native_hook) {
         return call_original(env, record->backup, arguments, record->is_static);
     }
+
+    const jsize argument_count = arguments == nullptr ? 0 : env->GetArrayLength(arguments);
+    const unsigned int argument_offset = record->is_static ? 0U : 1U;
+    const size_t expected_count = record->parsed_signature.parameters.size() + argument_offset;
+    if (argument_count < 0 || static_cast<size_t>(argument_count) != expected_count) {
+        LOGE(
+            "hook %llu received %d bridge arguments, expected %zu",
+            record->id,
+            argument_count,
+            expected_count);
+        return call_original(env, record->backup, arguments, record->is_static);
+    }
+    jobjectArray working_arguments = dejavu_hook_copy_arguments(env, arguments);
+    if (working_arguments == nullptr || env->ExceptionCheck()) {
+        return nullptr;
+    }
+
+    dejavu_hook_context context;
+    context.env = env;
+    context.id = record->id;
+    context.arguments = working_arguments;
+    context.argument_offset = argument_offset;
+    context.this_object = record->is_static
+        ? nullptr
+        : env->GetObjectArrayElement(working_arguments, 0);
+    context.class_loader = record->class_loader;
+    context.signature = &record->parsed_signature;
+    context.jni = &impl_->hook_jni_api;
 
     g_inside_native_hook = true;
 #if DEJAVU_RUN_DEVICE_STRESS
@@ -900,19 +1057,65 @@ jobject HookManager::dispatch(
         }
     }
 #endif
-    void *result = record->callback(
-        env,
-        record->id,
-        record->backup,
-        arguments,
-        record->is_static ? 1 : 0);
+    jobject result = nullptr;
+    int callback_status = DEJAVU_HOOK_OK;
+    if (record->before != nullptr) {
+        callback_status = record->before(&context);
+        if (callback_status == DEJAVU_HOOK_OK) {
+            callback_status = context.helper_status;
+        }
+    }
+    if (callback_status != DEJAVU_HOOK_OK) {
+        LOGE("hook %llu before_hook failed: %d; calling original", record->id, callback_status);
+        if (context.result_owned && context.result != nullptr) {
+            env->DeleteLocalRef(context.result);
+        }
+        context.result = nullptr;
+        context.result_owned = false;
+        context.result_set = false;
+        result = call_original(env, record->backup, arguments, record->is_static);
+    } else {
+        if (!context.result_set) {
+            context.result = call_original(
+                env, record->backup, working_arguments, record->is_static);
+            context.result_owned = context.result != nullptr;
+        }
+        if (!env->ExceptionCheck() && record->after != nullptr) {
+            jobject fallback = context.result == nullptr
+                ? nullptr
+                : env->NewLocalRef(context.result);
+            if (!env->ExceptionCheck()) {
+                context.phase = DEJAVU_HOOK_PHASE_AFTER;
+                context.helper_status = DEJAVU_HOOK_OK;
+                callback_status = record->after(&context);
+                if (callback_status == DEJAVU_HOOK_OK) {
+                    callback_status = context.helper_status;
+                }
+                if (callback_status != DEJAVU_HOOK_OK) {
+                    LOGE(
+                        "hook %llu after_hook failed: %d; preserving previous result",
+                        record->id,
+                        callback_status);
+                    if (context.result_owned && context.result != nullptr) {
+                        env->DeleteLocalRef(context.result);
+                    }
+                    context.result = fallback;
+                    context.result_owned = fallback != nullptr;
+                } else if (fallback != nullptr) {
+                    env->DeleteLocalRef(fallback);
+                }
+            }
+        }
+        result = context.result;
+        context.result_owned = false;
+    }
 #if DEJAVU_RUN_DEVICE_STRESS
     if (track_stress) {
         impl_->stress_in_flight.fetch_sub(1, std::memory_order_acq_rel);
     }
 #endif
     g_inside_native_hook = false;
-    return static_cast<jobject>(result);
+    return result;
 }
 
 jobject HookManager::call_original(

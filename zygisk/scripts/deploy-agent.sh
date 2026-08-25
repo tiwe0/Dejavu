@@ -7,6 +7,7 @@ ADB_SERIAL=${ADB_SERIAL:-}
 PROCESS=${PROCESS:-bin.mt.plus}
 ACTIVITY=${ACTIVITY:-bin.mt.plus/.MainLightIcon}
 AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_agent.so"}
+INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 
 adb_command=(adb)
 if [[ -n "${ADB_SERIAL}" ]]; then
@@ -17,8 +18,14 @@ if [[ ! -f "${AGENT_LIB}" ]]; then
     echo "error: Agent library not found: ${AGENT_LIB}" >&2
     exit 1
 fi
+if [[ ! -f "${INIT_LUA}" ]]; then
+    echo "error: init script not found: ${INIT_LUA}" >&2
+    exit 1
+fi
 
 remote_tmp="/data/local/tmp/libdejavu_agent.so.$$"
+remote_init_tmp="/data/local/tmp/dejavu-init.lua.$$"
 "${adb_command[@]}" push "${AGENT_LIB}" "${remote_tmp}"
-"${adb_command[@]}" shell "su -c 'cp ${remote_tmp} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so && rm -f ${remote_tmp}'"
+"${adb_command[@]}" push "${INIT_LUA}" "${remote_init_tmp}"
+"${adb_command[@]}" shell "su -c 'cp ${remote_tmp} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so && cp ${remote_init_tmp} /data/adb/modules/dejavu_zygisk/config/init.lua.new && mv -f /data/adb/modules/dejavu_zygisk/config/init.lua.new /data/adb/modules/dejavu_zygisk/config/init.lua && rm -f ${remote_tmp} ${remote_init_tmp}'"
 "${adb_command[@]}" shell "am force-stop '${PROCESS}'; sleep 1; am start -W -n '${ACTIVITY}'"

@@ -4,24 +4,14 @@
 
 #include <string>
 
+#include "dejavu_hook_api.h"
 #include "dejavu_runtime.h"
 #include "lsplant_backend.h"
 
-#define DEJAVU_HOOK_ENTRY_SYMBOL "dejavu_hook_callback"
+#define DEJAVU_HOOK_BEFORE_SYMBOL "before_hook"
+#define DEJAVU_HOOK_AFTER_SYMBOL "after_hook"
 
-using DejavuNativeHookCallback = void *(*)(
-    void *jni_env,
-    unsigned long long hook_id,
-    void *backup_method,
-    void *arguments,
-    int is_static);
-
-extern "C" void *dejavu_hook_call_original(
-    void *jni_env,
-    void *backup_method,
-    void *arguments,
-    int is_static);
-extern "C" void dejavu_hook_log(const char *message);
+using DejavuNativeHookCallback = int (*)(dejavu_hook_context *context);
 
 class HookManager {
 public:

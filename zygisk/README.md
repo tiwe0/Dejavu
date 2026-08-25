@@ -128,23 +128,15 @@ DejavuZygisk: file control applied: request=1
 
 `config/init.lua` runs once after `Application.attach(Context)`, when the app
 class loader is available. Lua only installs, lists, disables and clears hooks.
-Hook implementations are TinyCC-compiled native callbacks.
+Hook implementations are TinyCC-compiled native callbacks. The complete ABI v1
+contract is documented in [docs/hook-c-api.md](docs/hook-c-api.md).
 
 ```lua
 local source = [[
-extern void *dejavu_hook_call_original(
-    void *env, void *backup, void *args, int is_static);
-extern void dejavu_hook_log(const char *message);
-
-void *dejavu_hook_callback(
-    void *env,
-    unsigned long long hook_id,
-    void *backup,
-    void *args,
-    int is_static) {
-    (void)hook_id;
+int before_hook(dejavu_hook_context *context) {
+    (void)context;
     dejavu_hook_log("Activity.onResume");
-    return dejavu_hook_call_original(env, backup, args, is_static);
+    return DEJAVU_HOOK_OK;
 }
 ]]
 
