@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+
+import argparse
+from contextlib import contextmanager
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shlex
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+
+MAX_PAYLOAD_SIZE = 1024 * 1024
+RPC_MAGIC = 0x444A5250
+RPC_VERSION = 1
+RPC_EXECUTE_REQUEST = 1
+RPC_EXECUTE_RESPONSE = 2
+RPC_RECONNECT_REQUEST = 3
+RPC_RECONNECT_RESPONSE = 4
+RPC_OK = 0
+RPC_EXECUTION_ERROR = 1
+RPC_UNAVAILABLE = 2
+RPC_PROTOCOL_ERROR = 3
+RPC_HEADER = struct.Struct("<IIIiQI")
+FRAME_HEADER = struct.Struct("<I")
+PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+SOCKET_PATTERN = re.compile(r"dejavu-[A-Za-z0-9_.-]+\Z")
+DEFAULT_PROCESS = "bin.mt.plus"
+
+
+class ControlError(RuntimeError):
+    pass
+
+
+@contextmanager
+def exclusive_cli_session():
+    lock_path = Path(tempfile.gettempdir()) / f"dejavuctl-{os.getuid()}.lock"
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def adb_command(serial, *arguments, check=True):
+    command = ["adb"]
+    if serial:
+        command.extend(["-s", serial])
+    command.extend(arguments)
+    try:
+        return subprocess.run(
+            command,
+            check=check,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise ControlError("adb was not found in PATH") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout).strip()
+        raise ControlError(detail or f"adb exited with status {error.returncode}") from error
+
+
+def root_shell(serial, command, check=True):
+    remote_command = f"su -c {shlex.quote(command)}"
+    return adb_command(serial, "shell", remote_command, check=check)
+
+
+def read_metadata(serial, process_name):
+    pid_output = root_shell(serial, f"pidof {process_name}").stdout.strip()
+    pids = [value for value in pid_output.split() if value.isdigit() and int(value) > 0]
+    if not pids:
+        raise ControlError(f"target process is not running: {process_name}")
+
+    for pid_text in pids:
+        path = (
+            "/data/adb/modules/dejavu_zygisk/run/"
+            f"{process_name}.{pid_text}.rpc"
+        )
+        result = root_shell(serial, f"cat {path}", check=False)
+        if result.returncode != 0:
+            continue
+        try:
+            metadata = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        if metadata.get("version") != RPC_VERSION or metadata.get("pid") != int(pid_text):
+            continue
+        socket_name = metadata.get("socket")
+        token_hex = metadata.get("token")
+        if (
+            not isinstance(socket_name, str)
+            or len(socket_name) >= 64
+            or SOCKET_PATTERN.fullmatch(socket_name) is None
+            or not isinstance(token_hex, str)
+            or len(token_hex) != 64
+        ):
+            continue
+        try:
+            token = bytes.fromhex(token_hex)
+        except ValueError:
+            continue
+        if len(token) == 32 and any(token):
+            return int(pid_text), socket_name, token
+    raise ControlError(f"RPC endpoint is not ready for {process_name}")
+
+
+def wait_for_metadata(serial, process_name, wait_seconds):
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            return read_metadata(serial, process_name)
+        except ControlError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def read_exact(connection, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            raise ControlError("RPC connection closed unexpectedly")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def write_frame(connection, payload):
+    if len(payload) > MAX_PAYLOAD_SIZE + RPC_HEADER.size:
+        raise ControlError("RPC frame is too large")
+    connection.sendall(FRAME_HEADER.pack(len(payload)) + payload)
+
+
+def read_frame(connection, maximum_size):
+    (size,) = FRAME_HEADER.unpack(read_exact(connection, FRAME_HEADER.size))
+    if size > maximum_size:
+        raise ControlError(f"RPC frame exceeds {maximum_size} bytes")
+    return read_exact(connection, size)
+
+
+def execute_once(port, token, request_type, expected_response_type, script, timeout):
+    request_id = secrets.randbits(64) or 1
+    request = RPC_HEADER.pack(
+        RPC_MAGIC,
+        RPC_VERSION,
+        request_type,
+        RPC_OK,
+        request_id,
+        len(script),
+    ) + script
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as connection:
+        connection.settimeout(timeout)
+        write_frame(connection, token)
+        if read_frame(connection, 0):
+            raise ControlError("invalid authentication acknowledgement")
+        write_frame(connection, request)
+        response = read_frame(connection, RPC_HEADER.size + MAX_PAYLOAD_SIZE)
+
+    if len(response) < RPC_HEADER.size:
+        raise ControlError("truncated RPC response")
+    magic, version, response_type, status, response_id, payload_size = RPC_HEADER.unpack(
+        response[: RPC_HEADER.size]
+    )
+    payload = response[RPC_HEADER.size :]
+    if (
+        magic != RPC_MAGIC
+        or version != RPC_VERSION
+        or response_type != expected_response_type
+        or status not in (RPC_OK, RPC_EXECUTION_ERROR, RPC_UNAVAILABLE, RPC_PROTOCOL_ERROR)
+        or response_id != request_id
+        or payload_size != len(payload)
+        or payload_size > MAX_PAYLOAD_SIZE
+    ):
+        raise ControlError("invalid RPC response")
+    return status, payload
+
+
+def execute(
+    serial,
+    socket_name,
+    token,
+    request_type,
+    expected_response_type,
+    script,
+    timeout,
+    wait_seconds,
+):
+    forward = adb_command(serial, "forward", "tcp:0", f"localabstract:{socket_name}")
+    port_text = forward.stdout.strip()
+    if not port_text.isdigit():
+        raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
+    port = int(port_text)
+    deadline = time.monotonic() + wait_seconds
+    try:
+        while True:
+            status, payload = execute_once(
+                port,
+                token,
+                request_type,
+                expected_response_type,
+                script,
+                timeout,
+            )
+            if (
+                status == RPC_UNAVAILABLE
+                and payload == b"target Agent is not connected"
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.1)
+                continue
+            return status, payload
+    finally:
+        adb_command(serial, "forward", "--remove", f"tcp:{port}", check=False)
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Execute Lua management code in a running Dejavu Agent."
+    )
+    parser.add_argument("script", nargs="?", help="Lua script file")
+    parser.add_argument("process_arg", nargs="?", help="target process name")
+    parser.add_argument("-e", "--execute", metavar="CODE", help="inline Lua code")
+    parser.add_argument(
+        "--reconnect",
+        action="store_true",
+        help="reset and verify the Agent RPC connection",
+    )
+    parser.add_argument(
+        "-p", "--process", dest="process_option", metavar="PROCESS", help="target process name"
+    )
+    parser.add_argument("-s", "--serial", default=os.environ.get("ADB_SERIAL"))
+    parser.add_argument("--wait", type=float, default=5.0, metavar="SECONDS")
+    parser.add_argument("--timeout", type=float, default=10.0, metavar="SECONDS")
+    arguments = parser.parse_args()
+    source_count = sum(
+        (arguments.execute is not None, arguments.script is not None, arguments.reconnect)
+    )
+    if source_count != 1:
+        parser.error("use exactly one of a script file, --execute or --reconnect")
+    if arguments.process_option and arguments.process_arg:
+        parser.error("process name was specified twice")
+    if arguments.wait < 0 or arguments.timeout <= 0:
+        parser.error("--wait must be non-negative and --timeout must be positive")
+    return arguments
+
+
+def load_script(arguments):
+    if arguments.execute is not None:
+        script = arguments.execute.encode("utf-8")
+    else:
+        try:
+            script = Path(arguments.script).read_bytes()
+        except OSError as error:
+            raise ControlError(f"cannot read {arguments.script}: {error}") from error
+    if not script:
+        raise ControlError("Lua script is empty")
+    if len(script) > MAX_PAYLOAD_SIZE:
+        raise ControlError(f"Lua script exceeds {MAX_PAYLOAD_SIZE} bytes")
+    if b"\0" in script:
+        raise ControlError("Lua script contains a NUL byte")
+    return script
+
+
+def main():
+    arguments = parse_arguments()
+    process_name = arguments.process_option or arguments.process_arg or DEFAULT_PROCESS
+    if PROCESS_PATTERN.fullmatch(process_name) is None:
+        raise ControlError(f"invalid process name: {process_name}")
+    script = b"" if arguments.reconnect else load_script(arguments)
+    with exclusive_cli_session():
+        pid, socket_name, token = wait_for_metadata(
+            arguments.serial, process_name, arguments.wait
+        )
+        request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
+        response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
+        status, payload = execute(
+            arguments.serial,
+            socket_name,
+            token,
+            request_type,
+            response_type,
+            script,
+            arguments.timeout,
+            arguments.wait,
+        )
+        if arguments.reconnect and status == RPC_OK:
+            status, probe = execute(
+                arguments.serial,
+                socket_name,
+                token,
+                RPC_EXECUTE_REQUEST,
+                RPC_EXECUTE_RESPONSE,
+                b"return true",
+                arguments.timeout,
+                arguments.wait,
+            )
+            if status != RPC_OK or probe != b"true":
+                raise ControlError("Agent reconnect probe failed")
+            payload = b"Agent reconnected"
+    if status == RPC_OK:
+        sys.stdout.buffer.write(payload)
+        if not payload.endswith(b"\n"):
+            sys.stdout.buffer.write(b"\n")
+        return 0
+
+    labels = {
+        RPC_EXECUTION_ERROR: "execution error",
+        RPC_UNAVAILABLE: "unavailable",
+        RPC_PROTOCOL_ERROR: "protocol error",
+    }
+    detail = payload.decode("utf-8", errors="replace")
+    raise ControlError(f"{labels.get(status, f'RPC status {status}')} for pid {pid}: {detail}")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ControlError, OSError, socket.error) as error:
+        print(f"dejavuctl: {error}", file=sys.stderr)
+        sys.exit(1)

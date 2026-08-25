@@ -85,6 +85,92 @@ int main() {
     close(sockets[0]);
     close(sockets[1]);
 
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        fail("rpc socketpair");
+    }
+    const DejavuControlRpcMessage request = {
+        DejavuControlRpcType::kExecuteRequest,
+        0x1020304050607080ULL,
+        DEJAVU_CONTROL_RPC_OK,
+        "return hook.list()",
+    };
+    if (!dejavu_control_write_rpc(sockets[0], request)) {
+        fail("write rpc request");
+    }
+    DejavuControlRpcMessage decoded_request;
+    if (!dejavu_control_read_rpc(sockets[1], &decoded_request) ||
+        decoded_request.type != request.type ||
+        decoded_request.request_id != request.request_id ||
+        decoded_request.status != DEJAVU_CONTROL_RPC_OK ||
+        decoded_request.payload != request.payload) {
+        fail("read rpc request");
+    }
+    const DejavuControlRpcMessage response = {
+        DejavuControlRpcType::kExecuteResponse,
+        request.request_id,
+        DEJAVU_CONTROL_RPC_EXECUTION_ERROR,
+        "hook not found",
+    };
+    if (!dejavu_control_write_rpc(sockets[1], response)) {
+        fail("write rpc response");
+    }
+    DejavuControlRpcMessage decoded_response;
+    if (!dejavu_control_read_rpc(sockets[0], &decoded_response) ||
+        decoded_response.type != response.type ||
+        decoded_response.request_id != request.request_id ||
+        decoded_response.status != DEJAVU_CONTROL_RPC_EXECUTION_ERROR ||
+        decoded_response.payload != response.payload) {
+        fail("read rpc response");
+    }
+    close(sockets[0]);
+    close(sockets[1]);
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        fail("reconnect rpc socketpair");
+    }
+    const DejavuControlRpcMessage reconnect = {
+        DejavuControlRpcType::kReconnectRequest,
+        7,
+        DEJAVU_CONTROL_RPC_OK,
+        "",
+    };
+    if (!dejavu_control_write_rpc(sockets[0], reconnect)) {
+        fail("write reconnect rpc");
+    }
+    DejavuControlRpcMessage decoded_reconnect;
+    if (!dejavu_control_read_rpc(sockets[1], &decoded_reconnect) ||
+        decoded_reconnect.type != DejavuControlRpcType::kReconnectRequest ||
+        decoded_reconnect.request_id != reconnect.request_id ||
+        !decoded_reconnect.payload.empty()) {
+        fail("read reconnect rpc");
+    }
+    close(sockets[0]);
+    close(sockets[1]);
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0 ||
+        !dejavu_control_write_frame(sockets[0], "bad", 3)) {
+        fail("malformed rpc setup");
+    }
+    DejavuControlRpcMessage malformed;
+    if (dejavu_control_read_rpc(sockets[1], &malformed)) {
+        fail("malformed rpc accepted");
+    }
+    close(sockets[0]);
+    close(sockets[1]);
+
+    const DejavuControlRpcMessage invalid_status = {
+        DejavuControlRpcType::kExecuteResponse,
+        1,
+        99,
+        "unknown status",
+    };
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0 ||
+        dejavu_control_write_rpc(sockets[0], invalid_status)) {
+        fail("invalid rpc status accepted");
+    }
+    close(sockets[0]);
+    close(sockets[1]);
+
     std::string path;
     if (!dejavu_control_file_path("bin.mt.plus:worker", &path) ||
         path != "/data/adb/modules/dejavu_zygisk/run/bin.mt.plus:worker.lua") {

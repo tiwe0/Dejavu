@@ -35,3 +35,8 @@ mkdir -p "${OUT_DIR}"
     -o "${OUT_DIR}/control_channel_test"
 
 "${OUT_DIR}/control_channel_test"
+
+PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
+    python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
+"${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
+echo "OK: dejavuctl syntax and argument parser"

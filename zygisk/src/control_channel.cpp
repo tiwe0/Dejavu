@@ -17,8 +17,10 @@ namespace {
 constexpr char kControlDirectory[] = "/data/adb/modules/dejavu_zygisk/run/";
 constexpr uint32_t kClientInfoMagic = 0x444A4349;
 constexpr uint32_t kEndpointMagic = 0x444A4550;
+constexpr uint32_t kRpcMagic = 0x444A5250;
 constexpr uint32_t kControlProtocolVersion = 1;
 constexpr char kSocketNamePrefix[] = "dejavu-";
+constexpr size_t kRpcHeaderSize = 28;
 
 struct ClientInfoHeader {
     uint32_t magic;
@@ -176,6 +178,53 @@ bool constant_time_equal(const uint8_t *left, const uint8_t *right, size_t size)
     return difference == 0;
 }
 
+void write_u32_le(char *output, uint32_t value) {
+    for (size_t index = 0; index < sizeof(value); ++index) {
+        output[index] = static_cast<char>((value >> (index * 8)) & 0xff);
+    }
+}
+
+void write_u64_le(char *output, uint64_t value) {
+    for (size_t index = 0; index < sizeof(value); ++index) {
+        output[index] = static_cast<char>((value >> (index * 8)) & 0xff);
+    }
+}
+
+uint32_t read_u32_le(const char *input) {
+    uint32_t value = 0;
+    for (size_t index = 0; index < sizeof(value); ++index) {
+        value |= static_cast<uint32_t>(static_cast<uint8_t>(input[index])) << (index * 8);
+    }
+    return value;
+}
+
+uint64_t read_u64_le(const char *input) {
+    uint64_t value = 0;
+    for (size_t index = 0; index < sizeof(value); ++index) {
+        value |= static_cast<uint64_t>(static_cast<uint8_t>(input[index])) << (index * 8);
+    }
+    return value;
+}
+
+bool rpc_type_is_valid(DejavuControlRpcType type) {
+    return type == DejavuControlRpcType::kExecuteRequest ||
+        type == DejavuControlRpcType::kExecuteResponse ||
+        type == DejavuControlRpcType::kReconnectRequest ||
+        type == DejavuControlRpcType::kReconnectResponse;
+}
+
+bool rpc_type_is_request(DejavuControlRpcType type) {
+    return type == DejavuControlRpcType::kExecuteRequest ||
+        type == DejavuControlRpcType::kReconnectRequest;
+}
+
+bool rpc_status_is_valid(int32_t status) {
+    return status == DEJAVU_CONTROL_RPC_OK ||
+        status == DEJAVU_CONTROL_RPC_EXECUTION_ERROR ||
+        status == DEJAVU_CONTROL_RPC_UNAVAILABLE ||
+        status == DEJAVU_CONTROL_RPC_PROTOCOL_ERROR;
+}
+
 }  // namespace
 
 bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size) {
@@ -328,6 +377,55 @@ bool dejavu_control_read_authentication(
             kDejavuControlTokenSize);
 }
 
+bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message) {
+    if (!rpc_type_is_valid(message.type) || message.request_id == 0 ||
+        !rpc_status_is_valid(message.status) ||
+        message.payload.size() > kDejavuMaximumControlScriptSize ||
+        (rpc_type_is_request(message.type) && message.status != DEJAVU_CONTROL_RPC_OK)) {
+        return false;
+    }
+    std::string payload(kRpcHeaderSize + message.payload.size(), '\0');
+    write_u32_le(payload.data(), kRpcMagic);
+    write_u32_le(payload.data() + 4, kControlProtocolVersion);
+    write_u32_le(payload.data() + 8, static_cast<uint32_t>(message.type));
+    write_u32_le(payload.data() + 12, static_cast<uint32_t>(message.status));
+    write_u64_le(payload.data() + 16, message.request_id);
+    write_u32_le(payload.data() + 24, static_cast<uint32_t>(message.payload.size()));
+    if (!message.payload.empty()) {
+        memcpy(payload.data() + kRpcHeaderSize, message.payload.data(), message.payload.size());
+    }
+    return dejavu_control_write_frame(fd, payload.data(), payload.size());
+}
+
+bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message) {
+    std::string payload;
+    if (message == nullptr ||
+        !dejavu_control_read_frame(
+            fd, &payload, kRpcHeaderSize + kDejavuMaximumControlScriptSize) ||
+        payload.size() < kRpcHeaderSize || read_u32_le(payload.data()) != kRpcMagic ||
+        read_u32_le(payload.data() + 4) != kControlProtocolVersion) {
+        return false;
+    }
+    const auto type = static_cast<DejavuControlRpcType>(read_u32_le(payload.data() + 8));
+    const int32_t status = static_cast<int32_t>(read_u32_le(payload.data() + 12));
+    const uint64_t request_id = read_u64_le(payload.data() + 16);
+    const uint32_t payload_size = read_u32_le(payload.data() + 24);
+    if (!rpc_type_is_valid(type) || request_id == 0 ||
+        !rpc_status_is_valid(status) ||
+        payload_size > kDejavuMaximumControlScriptSize ||
+        payload.size() != kRpcHeaderSize + payload_size ||
+        (rpc_type_is_request(type) && status != DEJAVU_CONTROL_RPC_OK)) {
+        return false;
+    }
+    *message = {
+        type,
+        request_id,
+        status,
+        payload.substr(kRpcHeaderSize, payload_size),
+    };
+    return true;
+}
+
 int dejavu_control_open_listener(DejavuControlEndpoint *endpoint) {
     if (endpoint == nullptr) {
         return -1;
@@ -365,7 +463,9 @@ int dejavu_control_connect(const DejavuControlEndpoint &endpoint) {
         return -1;
     }
     if (connect(fd, reinterpret_cast<const sockaddr *>(&address), address_size) != 0) {
+        const int connect_error = errno;
         close(fd);
+        errno = connect_error;
         return -1;
     }
     return fd;

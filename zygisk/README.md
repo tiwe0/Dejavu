@@ -14,17 +14,18 @@ normal development does not require restarting Zygote.
   processes.
 - `lib/arm64-v8a/libdejavu.so` is the locally built Dejavu runtime loaded by the
   Agent.
-- The root companion monitors `run/<process>.lua` and opens a random abstract
-  Unix domain socket. The Loader receives its name and a 256-bit token through
-  the short-lived Zygisk companion connection. After app specialization, the
-  Agent creates a new connection to that endpoint, so no inherited or exempted
-  file descriptor is required.
+- The root companion monitors `run/<process>.lua` and opens two random abstract
+  Unix domain sockets: one persistent Agent channel and one CLI listener. The
+  Loader receives the private Agent endpoint through the short-lived Zygisk
+  companion connection. Root-only CLI metadata is written to
+  `run/<process>.<pid>.rpc`.
 
-The companion verifies both the kernel-reported peer PID and the random token
-before sending framed Lua commands. The socket is local, does not create a file
-and does not require the target app to hold `android.permission.INTERNET`. Lua
-evaluation is serialized by HookManager. Installed TinyCC native callbacks do
-not enter Lua and can execute concurrently on different Java threads.
+The companion verifies the Agent's kernel-reported PID and random 256-bit token.
+CLI access also requires its separate token and root access to the metadata.
+The sockets are local, do not create filesystem socket nodes and do not require
+the target app to hold `android.permission.INTERNET`. Lua evaluation is
+serialized by HookManager. Installed TinyCC native callbacks do not enter Lua
+and can execute concurrently on different Java threads.
 
 ## Target selection
 
@@ -71,7 +72,42 @@ ADB_SERIAL=c44d68aa make -C zygisk deploy-agent
 Zygote. Existing target processes continue using their already mapped Agent;
 new target processes load the replacement.
 
-Push a Lua management command into a running target without restarting it:
+Execute Lua management code through the request/response RPC channel:
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl -e 'return 6 * 7' -p bin.mt.plus
+
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl \
+  zygisk/tests/device/live-control-smoke.lua \
+  bin.mt.plus
+```
+
+`dejavuctl` discovers the running PID, reads its root-only endpoint metadata,
+creates a temporary `adb forward` to the abstract socket, authenticates, sends
+one RPC request and removes the forward. A successful Lua scalar return value
+is printed to stdout. Lua errors, unavailable Agents and protocol failures are
+printed to stderr with a non-zero exit status. Supported return values are nil,
+boolean, integer, number and string. Concurrent local CLI invocations queue on
+a host-side advisory lock because the Lua management session is intentionally
+serial; TinyCC native callbacks remain unaffected and concurrent.
+
+The Agent reconnects with exponential backoff from 100 ms to 5 seconds if its
+channel is dropped while the same companion handler and abstract listener are
+still alive. Lua state and installed hooks are retained. A full companion or
+Zygisk restart creates a new endpoint and therefore still requires restarting
+the target process.
+
+Exercise and verify the same-PID reconnect path without changing Lua or hook
+state:
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl --reconnect -p bin.mt.plus
+```
+
+The original file push remains available as a compatibility path:
 
 ```sh
 ADB_SERIAL=c44d68aa \
@@ -80,12 +116,12 @@ ADB_SERIAL=c44d68aa \
   bin.mt.plus
 ```
 
-Successful delivery produces both the script output and an Agent acknowledgement
-in logcat:
+Successful file delivery produces both the script output and a companion
+acknowledgement in logcat:
 
 ```text
 DejavuHook: LIVE_CONTROL_SMOKE
-DejavuAgent: live control applied: 31 bytes
+DejavuZygisk: file control applied: request=1
 ```
 
 ## Lua management and native hooks

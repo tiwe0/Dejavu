@@ -3,6 +3,7 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <iomanip>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -773,19 +774,55 @@ bool HookManager::start_control(
     return true;
 }
 
-bool HookManager::eval_control(const std::string &script, std::string *error) {
+bool HookManager::eval_control(
+    const std::string &script,
+    std::string *result,
+    std::string *error) {
     if (impl_ == nullptr || impl_->session == nullptr) {
         set_error(error, "Lua control is not initialized");
         return false;
     }
     char runtime_error[512];
-    dejavu_value result = {};
+    dejavu_value value = {};
     const int status = impl_->runtime->control_session_eval(
-        impl_->session, script.c_str(), &result, runtime_error, sizeof(runtime_error));
-    impl_->runtime->value_release(&result);
+        impl_->session, script.c_str(), &value, runtime_error, sizeof(runtime_error));
     if (status != DEJAVU_OK) {
+        impl_->runtime->value_release(&value);
         set_error(error, runtime_error);
         return false;
+    }
+    std::ostringstream output;
+    switch (value.type) {
+        case DEJAVU_VALUE_NIL:
+            output << "nil";
+            break;
+        case DEJAVU_VALUE_BOOLEAN:
+            output << (value.boolean_value ? "true" : "false");
+            break;
+        case DEJAVU_VALUE_INTEGER:
+            output << value.integer_value;
+            break;
+        case DEJAVU_VALUE_NUMBER:
+            output << std::setprecision(17) << value.number_value;
+            break;
+        case DEJAVU_VALUE_STRING:
+            if (value.string_size != 0 && value.string_value == nullptr) {
+                impl_->runtime->value_release(&value);
+                set_error(error, "invalid Lua string result");
+                return false;
+            }
+            if (value.string_size != 0) {
+                output.write(value.string_value, static_cast<std::streamsize>(value.string_size));
+            }
+            break;
+        default:
+            impl_->runtime->value_release(&value);
+            set_error(error, "unsupported Lua RPC result type");
+            return false;
+    }
+    impl_->runtime->value_release(&value);
+    if (result != nullptr) {
+        *result = output.str();
     }
     return true;
 }

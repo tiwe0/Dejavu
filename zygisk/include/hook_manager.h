@@ -49,7 +49,10 @@ public:
         jobject app_class_loader,
         const std::string &script,
         std::string *error);
-    bool eval_control(const std::string &script, std::string *error);
+    bool eval_control(
+        const std::string &script,
+        std::string *result,
+        std::string *error);
 
     jobject dispatch(JNIEnv *env, unsigned long long hook_id, jobjectArray arguments);
     jobject call_original(

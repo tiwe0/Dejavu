@@ -3,13 +3,16 @@
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <new>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "control_channel.h"
 #include "dejavu_runtime.h"
@@ -145,34 +148,82 @@ private:
             LOGD("live control unavailable: socket endpoint not established");
             return;
         }
-        std::thread([this]() {
+        std::thread([this]() { run_live_control(); }).detach();
+        LOGD("abstract-socket RPC control starting");
+    }
+
+    bool serve_rpc(int control) {
+        DejavuControlRpcMessage request;
+        if (!dejavu_control_read_rpc(control, &request)) {
+            return false;
+        }
+        DejavuControlRpcMessage response = {
+            DejavuControlRpcType::kExecuteResponse,
+            request.request_id,
+            DEJAVU_CONTROL_RPC_PROTOCOL_ERROR,
+            "invalid RPC request",
+        };
+        if (request.type == DejavuControlRpcType::kExecuteRequest &&
+            request.payload.find('\0') == std::string::npos) {
+            std::string result;
+            std::string error;
+            if (hook_manager_.eval_control(request.payload, &result, &error)) {
+                response.status = DEJAVU_CONTROL_RPC_OK;
+                response.payload = std::move(result);
+                LOGD(
+                    "RPC control applied: request=%llu bytes=%zu",
+                    static_cast<unsigned long long>(request.request_id),
+                    request.payload.size());
+            } else {
+                response.status = DEJAVU_CONTROL_RPC_EXECUTION_ERROR;
+                response.payload = std::move(error);
+                LOGE(
+                    "RPC control failed: request=%llu error=%s",
+                    static_cast<unsigned long long>(request.request_id),
+                    response.payload.c_str());
+            }
+        }
+        return dejavu_control_write_rpc(control, response);
+    }
+
+    void run_live_control() {
+        unsigned int retry_delay_ms = 100;
+        bool unavailable_logged = false;
+        while (true) {
             const int control = dejavu_control_connect(control_endpoint_);
             if (control < 0) {
-                LOGE("live control connect failed: %s", strerror(errno));
-                return;
+                if (!unavailable_logged) {
+                    LOGE("RPC control unavailable, retrying: %s", strerror(errno));
+                    unavailable_logged = true;
+                }
+                poll(nullptr, 0, static_cast<int>(retry_delay_ms));
+                retry_delay_ms = retry_delay_ms < 5000
+                    ? std::min(retry_delay_ms * 2, 5000u)
+                    : 5000u;
+                continue;
             }
             std::string acknowledgement;
             if (!dejavu_control_write_authentication(control, control_endpoint_) ||
                 !dejavu_control_read_frame(control, &acknowledgement, 0)) {
-                LOGE("live control authentication failed");
-                close(control);
-                return;
-            }
-            LOGD("abstract-socket live control connected");
-            std::string script;
-            while (dejavu_control_read_frame(
-                control, &script, kDejavuMaximumControlScriptSize)) {
-                std::string error;
-                if (hook_manager_.eval_control(script, &error)) {
-                    LOGD("live control applied: %zu bytes", script.size());
-                } else {
-                    LOGE("live control failed: %s", error.c_str());
+                if (!unavailable_logged) {
+                    LOGE("RPC control authentication failed, retrying");
+                    unavailable_logged = true;
                 }
+                close(control);
+                poll(nullptr, 0, static_cast<int>(retry_delay_ms));
+                retry_delay_ms = retry_delay_ms < 5000
+                    ? std::min(retry_delay_ms * 2, 5000u)
+                    : 5000u;
+                continue;
+            }
+            retry_delay_ms = 100;
+            unavailable_logged = false;
+            LOGD("abstract-socket RPC control connected");
+            while (serve_rpc(control)) {
             }
             close(control);
-            LOGD("abstract-socket live control stopped");
-        }).detach();
-        LOGD("abstract-socket live control starting");
+            LOGD("abstract-socket RPC control disconnected; reconnecting");
+        }
     }
 };
 
