@@ -1,0 +1,172 @@
+name: Build Dejavu
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-host:
+    name: Build and Test (Host)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            python3
+      
+      - name: Run host smoke tests
+        run: |
+          make host-smoke
+      
+      - name: Upload smoke test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-smoke-logs
+          path: out/host-smoke/
+
+  build-android:
+    name: Build Android arm64
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: true
+      
+      - name: Set ANDROID_NDK_HOME
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            python3
+      
+      - name: Build Android arm64 binary
+        run: |
+          make android-arm64
+      
+      - name: Verify build output
+        run: |
+          ls -lh out/android-arm64-v8a-api35/
+          file out/android-arm64-v8a-api35/libdejavu.so
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64-build
+          path: out/android-arm64-v8a-api35/
+
+  build-zygisk-module:
+    name: Build Zygisk Module
+    runs-on: ubuntu-latest
+    needs: build-android
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: true
+      
+      - name: Set ANDROID_NDK_HOME
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            python3
+      
+      - name: Build core first
+        run: make android-arm64
+      
+      - name: Run Zygisk host tests
+        run: make -C zygisk test
+      
+      - name: Package Zygisk module
+        run: make -C zygisk package
+      
+      - name: Verify module package
+        run: |
+          ls -lh zygisk/dist/
+          unzip -l zygisk/dist/dejavu-zygisk-*.zip
+      
+      - name: Upload Zygisk module
+        uses: actions/upload-artifact@v4
+        with:
+          name: zygisk-module
+          path: zygisk/dist/
+
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+      
+      - name: Check C code formatting
+        run: |
+          find src zygisk/src zygisk/include -type f \( -name "*.c" -o -name "*.cpp" -o -name "*.h" \) | while read file; do
+            echo "Checking $file..."
+            clang-format --dry-run "$file"
+          done
+      
+      - name: Check for issues
+        run: |
+          echo "=== Checking for TODO/FIXME comments ==="
+          grep -r "TODO\|FIXME" src/ zygisk/src/ || echo "None found"
+
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [build-host, build-android, build-zygisk-module, code-quality]
+    if: always()
+    
+    steps:
+      - name: Check build status
+        run: |
+          echo "=== Build Summary ==="
+          echo "Host tests: ${{ needs.build-host.result }}"
+          echo "Android build: ${{ needs.build-android.result }}"
+          echo "Zygisk module: ${{ needs.build-zygisk-module.result }}"
+          echo "Code quality: ${{ needs.code-quality.result }}"
+          
+          if [ "${{ needs.build-host.result }}" != "success" ] || \
+             [ "${{ needs.build-android.result }}" != "success" ] || \
+             [ "${{ needs.build-zygisk-module.result }}" != "success" ]; then
+            echo "❌ Build failed!"
+            exit 1
+          fi
+          echo "✅ All builds passed!"
