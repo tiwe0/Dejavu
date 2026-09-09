@@ -30,6 +30,24 @@ fails, Dejavu returns the result that existed before after began.
 These rollbacks cover argument slots and the result reference. They cannot
 undo mutations that Hook C performs through an object reference.
 
+## Hook lifetime
+
+`hook.remove(id)` is a fast logical disable. It makes the hook call the
+original method without entering `before_hook` or `after_hook`, but leaves the
+ART hook and compiled module installed.
+
+`hook.uninstall(id)` is the explicit physical cleanup operation. It disables
+the hook, asks LSPlant to restore the target method, waits for callbacks
+already in flight to finish, releases the TinyCC module and temporary JNI
+global references, and removes the hook from `hook.list()`. The small internal
+Record remains as a tombstone because the bridge token is a native pointer;
+the backup method reference is retained so an extremely late bridge call can
+still reach the original method. Uninstall is not available for the internal
+bootstrap hook and fails if LSPlant cannot restore the target.
+
+`hook.clear()` performs logical disable for every user hook. It does not
+physically uninstall hooks.
+
 ## Arguments and receiver
 
 `dejavu_hook_arg_count(context)` is the number of parameters declared by the

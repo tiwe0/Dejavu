@@ -140,7 +140,8 @@ local exception_id = hook.install(
     exception_source)
 assert(hook.exception_test(exception_id))
 hook.log("exception handling test passed")
-assert(hook.remove(exception_id))
+assert(hook.uninstall(exception_id))
+assert(not hook.uninstall(exception_id))
 
 local stress_id = hook.install(
     "io.dejavu.bridge.HookStress",

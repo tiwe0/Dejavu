@@ -51,7 +51,12 @@ add_library(dejavu_agent SHARED
     src/agent.cpp
     src/control_channel.cpp
     src/dejavu_runtime.cpp
+    src/hook_api_java_call.cpp
+    src/hook_api_primitives.cpp
     src/hook_api_runtime.cpp
+    src/hook_api_strings.cpp
+    src/hook_control.cpp
+    src/hook_dispatch.cpp
     src/hook_manager.cpp
     src/hook_signature.cpp
     src/lsplant_backend.cpp

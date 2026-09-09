@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Dejavu Scope</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #191c20;
+      --panel-strong: #20242a;
+      --line: #30353c;
+      --text: #f2f4f5;
+      --muted: #9ba3ad;
+      --accent: #8bd5ca;
+      --accent-ink: #082522;
+      --danger: #ff9b8f;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 760px; margin: 0 auto; padding: 28px 18px 40px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    h1 { margin: 0; font-size: 25px; letter-spacing: 0; }
+    .subtitle { margin: 5px 0 0; color: var(--muted); }
+    .summary { color: var(--accent); font-weight: 650; white-space: nowrap; }
+    .toolbar { display: flex; gap: 10px; margin: 24px 0 14px; }
+    input[type="search"] {
+      flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 7px;
+      background: var(--panel); color: var(--text); padding: 11px 13px; outline: none;
+    }
+    input[type="search"]:focus { border-color: var(--accent); }
+    button {
+      border: 0; border-radius: 7px; padding: 0 14px; min-height: 42px;
+      background: var(--accent); color: var(--accent-ink); font-weight: 700; cursor: pointer;
+    }
+    button.secondary { background: var(--panel-strong); color: var(--text); border: 1px solid var(--line); }
+    button:disabled { cursor: default; opacity: .5; }
+    .notice { min-height: 22px; margin: 8px 0 12px; color: var(--muted); }
+    .notice.error { color: var(--danger); }
+    .list { border-top: 1px solid var(--line); }
+    .app {
+      display: flex; align-items: center; gap: 12px; min-height: 70px;
+      border-bottom: 1px solid var(--line); cursor: pointer;
+    }
+    .app:hover { background: rgba(255,255,255,.03); }
+    .app img { width: 40px; height: 40px; border-radius: 9px; background: var(--panel-strong); flex: 0 0 auto; }
+    .app-info { min-width: 0; flex: 1; }
+    .app-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+    .package { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+    input[type="checkbox"] { width: 19px; height: 19px; accent-color: var(--accent); flex: 0 0 auto; }
+    .actions { display: flex; gap: 10px; margin-top: 18px; }
+    .actions button { flex: 1; }
+    .empty { padding: 44px 0; text-align: center; color: var(--muted); }
+    .footnote { margin-top: 18px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 480px) {
+      main { padding: 22px 14px 30px; }
+      header { display: block; }
+      .summary { display: block; margin-top: 12px; }
+      .toolbar { flex-wrap: wrap; }
+      .toolbar button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Dejavu scope</h1>
+        <p class="subtitle">Choose the apps that load the Zygisk Agent.</p>
+      </div>
+      <div id="summary" class="summary">Loading...</div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search apps or package names" autocomplete="off">
+      <button id="refresh" class="secondary" type="button">Refresh</button>
+    </div>
+    <div id="notice" class="notice" role="status"></div>
+    <section id="list" class="list" aria-live="polite"></section>
+    <div class="actions">
+      <button id="apply" type="button">Save scope</button>
+      <button id="restart" class="secondary" type="button">Restart selected</button>
+    </div>
+    <p class="footnote">Changes are read when a process starts. Save first, then restart selected apps if they are already running.</p>
+  </main>
+
+  <script>
+    /* APatch exposes this bridge for module WebUI pages. */
+    const MODULE_PATH = "/data/adb/modules/dejavu_zygisk";
+    const TARGETS_PATH = MODULE_PATH + "/config/targets.txt";
+    const state = { apps: [], selected: new Set(), loading: false };
+    const $ = (id) => document.getElementById(id);
+
+    function bridge() {
+      if (!window.ksu || typeof window.ksu.exec !== "function") {
+        throw new Error("APatch/KernelSU WebUI bridge is unavailable");
+      }
+      return window.ksu;
+    }
+
+    function setNotice(message, error) {
+      $("notice").textContent = message || "";
+      $("notice").className = error ? "notice error" : "notice";
+    }
+
+    function shellQuote(value) {
+      return "'" + String(value).replace(/'/g, "'\\''") + "'";
+    }
+
+    function encodeBase64(text) {
+      return btoa(unescape(encodeURIComponent(text)));
+    }
+
+    function readTargets() {
+      const output = bridge().exec("cat " + shellQuote(TARGETS_PATH) + " 2>/dev/null || true");
+      return new Set(output.split(/\r?\n/).map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#")));
+    }
+
+    function loadApps() {
+      const names = JSON.parse(bridge().listPackages("all"));
+      if (!Array.isArray(names)) throw new Error("invalid package list from manager");
+      const info = JSON.parse(bridge().getPackagesInfo(JSON.stringify(names)));
+      return info.filter((item) => item && item.packageName && !item.error)
+        .map((item) => ({
+          packageName: item.packageName,
+          label: item.appLabel || item.packageName,
+          system: item.isSystem === true
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label) || a.packageName.localeCompare(b.packageName));
+    }
+
+    function render() {
+      const query = $("search").value.trim().toLowerCase();
+      const visible = state.apps.filter((app) =>
+        !query || app.label.toLowerCase().includes(query) || app.packageName.toLowerCase().includes(query));
+      $("summary").textContent = state.selected.size + " selected";
+      $("list").replaceChildren();
+      if (!visible.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = state.apps.length ? "No matching apps" : "No apps found";
+        $("list").append(empty);
+        return;
+      }
+      for (const app of visible) {
+        const row = document.createElement("label");
+        row.className = "app";
+        const icon = document.createElement("img");
+        icon.alt = "";
+        icon.loading = "lazy";
+        icon.src = "ksu://icon/" + encodeURIComponent(app.packageName);
+        const info = document.createElement("span");
+        info.className = "app-info";
+        const name = document.createElement("span");
+        name.className = "app-name";
+        name.textContent = app.label + (app.system ? " (system)" : "");
+        const pkg = document.createElement("span");
+        pkg.className = "package";
+        pkg.textContent = app.packageName;
+        info.append(name, pkg);
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.selected.has(app.packageName);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.selected.add(app.packageName);
+          else state.selected.delete(app.packageName);
+          render();
+        });
+        row.append(icon, info, checkbox);
+        $("list").append(row);
+      }
+    }
+
+    function reload() {
+      if (state.loading) return;
+      state.loading = true;
+      setNotice("Loading installed apps...");
+      try {
+        state.selected = readTargets();
+        state.apps = loadApps();
+        render();
+        setNotice("Scope loaded");
+      } catch (error) {
+        state.apps = [];
+        render();
+        setNotice(error.message || String(error), true);
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function saveScope() {
+      try {
+        const content = Array.from(state.selected).sort().join("\n") + (state.selected.size ? "\n" : "");
+        const encoded = encodeBase64(content);
+        const temporary = TARGETS_PATH + ".new";
+        const command = "mkdir -p " + shellQuote(MODULE_PATH + "/config") +
+          " && printf '%s' " + shellQuote(encoded) + " | base64 -d > " + shellQuote(temporary) +
+          " && chmod 0644 " + shellQuote(temporary) + " && mv -f " + shellQuote(temporary) + " " + shellQuote(TARGETS_PATH) +
+          " && echo OK";
+        const output = bridge().exec(command).trim();
+        if (output !== "OK") throw new Error("unable to write targets.txt");
+        setNotice("Scope saved. Restart selected apps to apply it.");
+      } catch (error) {
+        setNotice(error.message || String(error), true);
+      }
+    }
+
+    function restartSelected() {
+      if (!state.selected.size) {
+        setNotice("No apps selected", true);
+        return;
+      }
+      try {
+        for (const packageName of state.selected) {
+          const output = bridge().exec("am force-stop " + shellQuote(packageName) + " 2>&1");
+          if (output && /permission denied|not found|error/i.test(output)) {
+            throw new Error(output.trim());
+          }
+        }
+        setNotice("Selected app processes stopped");
+      } catch (error) {
+        setNotice(error.message || String(error), true);
+      }
+    }
+
+    $("search").addEventListener("input", render);
+    $("refresh").addEventListener("click", reload);
+    $("apply").addEventListener("click", saveScope);
+    $("restart").addEventListener("click", restartSelected);
+    reload();
+  </script>
+</body>
+</html>
