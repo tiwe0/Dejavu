@@ -12,7 +12,7 @@
  * 设计原则：
  * 1. 小写函数式名称：dj_hook_log(), dj_get_arg_int() 等
  * 2. dj_ 前缀清晰表明这是宏，而非真实函数
- * 3. 所有宏都经过 TinyCC 测试，确保兼容性
+ * 3. 依赖 TinyCC/GCC 的 GNU C 扩展（statement expression 和可变参数逗号吞并）
  * 4. 参数验证和错误处理内置于宏中
  * ============================================================================
  */
@@ -28,9 +28,9 @@
  */
 #define dj_hook_log(fmt, ...) \
     do { \
-        char __dj_buf[256]; \
-        snprintf(__dj_buf, sizeof(__dj_buf), fmt, ##__VA_ARGS__); \
-        dejavu_hook_log(__dj_buf); \
+        char dj_util_buf[256]; \
+        snprintf(dj_util_buf, sizeof(dj_util_buf), fmt, ##__VA_ARGS__); \
+        dejavu_hook_log(dj_util_buf); \
     } while (0)
 
 /**
@@ -93,13 +93,13 @@
  */
 #define dj_get_arg_string(ctx, idx, buf, cap) \
     ({ \
-        size_t __dj_size = 0; \
-        int __dj_status = dejavu_hook_get_arg_string_mutf8((ctx), (idx), (buf), (cap), &__dj_size); \
-        if (__dj_status != DEJAVU_HOOK_OK) { \
+        size_t dj_util_size = 0; \
+        int dj_util_status = dejavu_hook_get_arg_string_mutf8((ctx), (idx), (buf), (cap), &dj_util_size); \
+        if (dj_util_status != DEJAVU_HOOK_OK) { \
             dj_hook_log("Failed to read string arg %u", (idx)); \
-            __dj_size = 0; \
+            dj_util_size = 0; \
         } \
-        __dj_size; \
+        dj_util_size; \
     })
 
 /* ========================================================================== */
@@ -167,13 +167,13 @@
  */
 #define dj_get_result_string(ctx, buf, cap) \
     ({ \
-        size_t __dj_size = 0; \
-        int __dj_status = dejavu_hook_get_result_string_mutf8((ctx), (buf), (cap), &__dj_size); \
-        if (__dj_status != DEJAVU_HOOK_OK) { \
+        size_t dj_util_size = 0; \
+        int dj_util_status = dejavu_hook_get_result_string_mutf8((ctx), (buf), (cap), &dj_util_size); \
+        if (dj_util_status != DEJAVU_HOOK_OK) { \
             dj_hook_log("Failed to read result string"); \
-            __dj_size = 0; \
+            dj_util_size = 0; \
         } \
-        __dj_size; \
+        dj_util_size; \
     })
 
 /* ========================================================================== */
@@ -225,20 +225,23 @@
  */
 #define dj_return_int(ctx, val) \
     do { \
-        dj_hook_log("Early return: %d", (int)(val)); \
-        return dejavu_hook_return_int((ctx), (val)); \
+        int dj_util_return_value = (int)(val); \
+        dj_hook_log("Early return: %d", dj_util_return_value); \
+        return dejavu_hook_return_int((ctx), dj_util_return_value); \
     } while (0)
 
 #define dj_return_long(ctx, val) \
     do { \
-        dj_hook_log("Early return: %lld", (long long)(val)); \
-        return dejavu_hook_return_long((ctx), (val)); \
+        long long dj_util_return_value = (long long)(val); \
+        dj_hook_log("Early return: %lld", dj_util_return_value); \
+        return dejavu_hook_return_long((ctx), dj_util_return_value); \
     } while (0)
 
 #define dj_return_bool(ctx, val) \
     do { \
-        dj_hook_log("Early return: %s", (val) ? "true" : "false"); \
-        return dejavu_hook_return_boolean((ctx), (val)); \
+        int dj_util_return_value = !!(val); \
+        dj_hook_log("Early return: %s", dj_util_return_value ? "true" : "false"); \
+        return dejavu_hook_return_boolean((ctx), dj_util_return_value); \
     } while (0)
 
 #define dj_return_null(ctx) \
@@ -263,28 +266,28 @@
  *   dj_if_eq(context, status, 0, -1);  // 如果 status == 0，返回 -1
  */
 #define dj_if_eq(ctx, value, expected, return_val) \
-    if ((value) == (expected)) dj_return_int((ctx), (return_val))
+    do { if ((value) == (expected)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_ne(ctx, value, expected, return_val) \
-    if ((value) != (expected)) dj_return_int((ctx), (return_val))
+    do { if ((value) != (expected)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_lt(ctx, value, threshold, return_val) \
-    if ((value) < (threshold)) dj_return_int((ctx), (return_val))
+    do { if ((value) < (threshold)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_le(ctx, value, threshold, return_val) \
-    if ((value) <= (threshold)) dj_return_int((ctx), (return_val))
+    do { if ((value) <= (threshold)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_gt(ctx, value, threshold, return_val) \
-    if ((value) > (threshold)) dj_return_int((ctx), (return_val))
+    do { if ((value) > (threshold)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_ge(ctx, value, threshold, return_val) \
-    if ((value) >= (threshold)) dj_return_int((ctx), (return_val))
+    do { if ((value) >= (threshold)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_null(ctx, obj, return_val) \
-    if ((obj) == NULL) dj_return_int((ctx), (return_val))
+    do { if ((obj) == NULL) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_not_null(ctx, obj, return_val) \
-    if ((obj) != NULL) dj_return_int((ctx), (return_val))
+    do { if ((obj) != NULL) { dj_return_int((ctx), (return_val)); } } while (0)
 
 /**
  * dj_if_in_range - 值在范围内时返回
@@ -292,10 +295,10 @@
  *   dj_if_in_range(context, age, 0, 120, -1);
  */
 #define dj_if_in_range(ctx, value, min, max, return_val) \
-    if ((value) >= (min) && (value) <= (max)) dj_return_int((ctx), (return_val))
+    do { if ((value) >= (min) && (value) <= (max)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_out_of_range(ctx, value, min, max, return_val) \
-    if ((value) < (min) || (value) > (max)) dj_return_int((ctx), (return_val))
+    do { if ((value) < (min) || (value) > (max)) { dj_return_int((ctx), (return_val)); } } while (0)
 
 /* ========================================================================== */
 /* 字符串条件宏 */
@@ -307,10 +310,10 @@
  *   dj_if_streq(context, str, "admin", -1);
  */
 #define dj_if_streq(ctx, str, expected, return_val) \
-    if (strcmp((str), (expected)) == 0) dj_return_int((ctx), (return_val))
+    do { if (strcmp((str), (expected)) == 0) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_strne(ctx, str, expected, return_val) \
-    if (strcmp((str), (expected)) != 0) dj_return_int((ctx), (return_val))
+    do { if (strcmp((str), (expected)) != 0) { dj_return_int((ctx), (return_val)); } } while (0)
 
 /**
  * dj_if_contains - 字符串包含子串时返回
@@ -318,10 +321,10 @@
  *   dj_if_contains(context, url, "blocked.com", -1);
  */
 #define dj_if_contains(ctx, str, substr, return_val) \
-    if (strstr((str), (substr)) != NULL) dj_return_int((ctx), (return_val))
+    do { if (strstr((str), (substr)) != NULL) { dj_return_int((ctx), (return_val)); } } while (0)
 
 #define dj_if_not_contains(ctx, str, substr, return_val) \
-    if (strstr((str), (substr)) == NULL) dj_return_int((ctx), (return_val))
+    do { if (strstr((str), (substr)) == NULL) { dj_return_int((ctx), (return_val)); } } while (0)
 
 /* ========================================================================== */
 /* 上下文信息宏 */
@@ -379,16 +382,16 @@
  */
 #define dj_check_type(ctx, obj, class_name) \
     ({ \
-        int __dj_result = 0; \
-        dejavu_hook_is_instance_of((ctx), (obj), (class_name), &__dj_result); \
-        __dj_result; \
+        int dj_util_result = 0; \
+        dejavu_hook_is_instance_of((ctx), (obj), (class_name), &dj_util_result); \
+        dj_util_result; \
     })
 
 /**
  * dj_if_instanceof - 是指定类型时返回
  */
 #define dj_if_instanceof(ctx, obj, class_name, return_val) \
-    if (dj_check_type((ctx), (obj), (class_name))) dj_return_int((ctx), (return_val))
+    do { if (dj_check_type((ctx), (obj), (class_name))) { dj_return_int((ctx), (return_val)); } } while (0)
 
 /* ========================================================================== */
 /* 统计和计数宏 */
@@ -401,19 +404,19 @@
  *   dj_inc(call_count);
  */
 #define dj_counter(name) \
-    static _Atomic(long long) __dj_counter_##name = 0
+    static _Atomic(long long) dj_util_counter_##name = 0
 
 #define dj_inc(name) \
-    atomic_fetch_add(&__dj_counter_##name, 1)
+    atomic_fetch_add(&dj_util_counter_##name, 1)
 
 #define dj_add(name, delta) \
-    atomic_fetch_add(&__dj_counter_##name, (delta))
+    atomic_fetch_add(&dj_util_counter_##name, (delta))
 
 #define dj_get_count(name) \
-    atomic_load(&__dj_counter_##name)
+    atomic_load(&dj_util_counter_##name)
 
 #define dj_reset_count(name) \
-    atomic_store(&__dj_counter_##name, 0)
+    atomic_store(&dj_util_counter_##name, 0)
 
 /**
  * dj_log_count - 记录计数值
@@ -434,8 +437,13 @@
  */
 #define dj_sample(n) \
     ({ \
-        static _Atomic(int) __dj_sample_counter = 0; \
-        (atomic_fetch_add(&__dj_sample_counter, 1) % (n)) == 0; \
+        static _Atomic(int) dj_util_sample_counter = 0; \
+        int dj_util_period = (n); \
+        int dj_util_sample = 0; \
+        if (dj_util_period > 0) { \
+            dj_util_sample = (atomic_fetch_add(&dj_util_sample_counter, 1) % dj_util_period) == 0; \
+        } \
+        dj_util_sample; \
     })
 
 /**
@@ -455,10 +463,10 @@
  */
 #define dj_try(expression, msg) \
     do { \
-        int __dj_status = (expression); \
-        if (__dj_status != DEJAVU_HOOK_OK) { \
-            dj_hook_log("[ERROR] %s (status=%d)", (msg), __dj_status); \
-            return __dj_status; \
+        int dj_util_status = (expression); \
+        if (dj_util_status != DEJAVU_HOOK_OK) { \
+            dj_hook_log("[ERROR] %s (status=%d)", (msg), dj_util_status); \
+            return dj_util_status; \
         } \
     } while (0)
 
@@ -467,9 +475,9 @@
  */
 #define dj_try_safe(expression, msg) \
     do { \
-        int __dj_status = (expression); \
-        if (__dj_status != DEJAVU_HOOK_OK) { \
-            dj_hook_log("[WARNING] %s (status=%d)", (msg), __dj_status); \
+        int dj_util_status = (expression); \
+        if (dj_util_status != DEJAVU_HOOK_OK) { \
+            dj_hook_log("[WARNING] %s (status=%d)", (msg), dj_util_status); \
         } \
     } while (0)
 
@@ -484,11 +492,11 @@
  */
 #define dj_validate_range(ctx, arg_idx, min, max, return_val) \
     do { \
-        int __dj_arg = 0; \
-        dj_get_arg_int((ctx), (arg_idx), &__dj_arg); \
-        if (__dj_arg < (min) || __dj_arg > (max)) { \
+        int dj_util_arg = 0; \
+        dj_get_arg_int((ctx), (arg_idx), &dj_util_arg); \
+        if (dj_util_arg < (min) || dj_util_arg > (max)) { \
             dj_hook_log("Arg %u out of range: %d [%d, %d]", \
-                       (arg_idx), __dj_arg, (min), (max)); \
+                       (arg_idx), dj_util_arg, (min), (max)); \
             dj_return_int((ctx), (return_val)); \
         } \
     } while (0)
@@ -498,9 +506,9 @@
  */
 #define dj_validate_string(ctx, arg_idx, return_val) \
     do { \
-        char __dj_str[256] = {0}; \
-        size_t __dj_len = dj_get_arg_string((ctx), (arg_idx), __dj_str, sizeof(__dj_str)); \
-        if (__dj_len == 0) { \
+        char dj_util_str[256] = {0}; \
+        size_t dj_util_len = dj_get_arg_string((ctx), (arg_idx), dj_util_str, sizeof(dj_util_str)); \
+        if (dj_util_len == 0) { \
             dj_hook_log("Arg %u is empty string", (arg_idx)); \
             dj_return_int((ctx), (return_val)); \
         } \
@@ -512,14 +520,13 @@
  */
 #define dj_log_all_args(ctx) \
     do { \
-        unsigned int __dj_count = dj_get_arg_count((ctx)); \
-        dj_hook_log("Total args: %u", __dj_count); \
-        int __dj_i, __dj_arg; \
-        for (__dj_i = 0; __dj_i < __dj_count && __dj_i < 10; ++__dj_i) { \
-            if (dejavu_hook_get_arg_int((ctx), __dj_i, &__dj_arg) == DEJAVU_HOOK_OK) { \
-                dj_hook_log("  arg[%d] = %d", __dj_i, __dj_arg); \
+        unsigned int dj_util_count = dj_get_arg_count((ctx)); \
+        dj_hook_log("Total args: %u", dj_util_count); \
+        unsigned int dj_util_i; \
+        int dj_util_arg; \
+        for (dj_util_i = 0; dj_util_i < dj_util_count && dj_util_i < 10; ++dj_util_i) { \
+            if (dejavu_hook_get_arg_int((ctx), dj_util_i, &dj_util_arg) == DEJAVU_HOOK_OK) { \
+                dj_hook_log("  arg[%u] = %d", dj_util_i, dj_util_arg); \
             } \
         } \
     } while (0)
-
-#endif  /* DEJAVU_HOOK_UTILS_H */

@@ -92,6 +92,38 @@ For example, an `int` parameter uses `dejavu_hook_get_arg_int` and
 `dejavu_hook_set_arg_int`. The low-level `i64` and `f64` functions remain part
 of ABI v1 for generic code.
 
+### `dj_` convenience macros
+
+Generated sources may include `dejavu_hook_utils.h` for the shorter `dj_`
+forms (`dj_get_arg_int`, `dj_set_result_int`, `dj_if_eq`, `dj_instanceof`,
+`dj_counter`, `dj_sample`, and related helpers):
+
+```c
+#include "dejavu_hook_utils.h"
+
+int before_hook(dejavu_hook_context *context) {
+    int value = 0;
+    dj_get_arg_int(context, 0, &value);
+    dj_if_lt(context, value, 0, -1);
+    return dj_set_arg_int(context, 0, value + 1);
+}
+```
+
+The header intentionally targets the GNU C dialect accepted by TinyCC. It
+uses statement expressions and variadic comma elision, so strict ISO C mode
+(`-pedantic-errors`) is not supported; compile generated sources as GNU C
+(for example, `-std=gnu17`). The value-checking early-return macros are
+statement-safe and may be used as the body of an outer `if` without
+dangling-`else` surprises; `dj_if_sampled` remains an `if`-prefix intended to
+be followed by the sampled statement.
+`dj_return_*` evaluates its value expression once, writes the result slot, and
+returns the helper status (`DEJAVU_HOOK_OK` on success), not the Java value.
+
+`dj_get_arg_string` and `dj_get_result_string` return the copied byte length;
+on helper failure they log and return zero. `dj_counter` uses C11 atomics and
+is safe for concurrent callbacks. `dj_sample(n)` samples every `n`th call at
+its call site; `n` must be a positive integer.
+
 `DEJAVU_HOOK_TRY(expression)` returns immediately from the current callback
 when a helper fails. It is intended only inside `before_hook` or `after_hook`,
 which both return an integer status.

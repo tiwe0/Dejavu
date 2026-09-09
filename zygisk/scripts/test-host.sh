@@ -54,6 +54,18 @@ mkdir -p "${OUT_DIR}"
     -fsyntax-only \
     "${ROOT_DIR}/tests/hook_api_compile_test.c"
 
+# The convenience macro header intentionally uses GNU C extensions supported by
+# TinyCC (statement expressions and variadic comma elision), so compile it in
+# GNU C mode and execute the focused runtime regression test.
+"${CC}" \
+    -std=gnu17 \
+    -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/tests/hook_utils_test.c" \
+    -o "${OUT_DIR}/hook_utils_test"
+
+"${OUT_DIR}/hook_utils_test"
+
 PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
 "${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
