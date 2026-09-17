@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import io
 from pathlib import Path
+import socket
 import sys
 import unittest
 from unittest import mock
@@ -57,6 +58,8 @@ class ScriptValidationTest(unittest.TestCase):
         self.assertTrue(dejavuctl.is_reconnectable_error(dejavuctl.ControlError(
             "RPC connection closed unexpectedly"
         )))
+        self.assertTrue(dejavuctl.is_reconnectable_error(OSError("adb forward failed")))
+        self.assertTrue(dejavuctl.is_reconnectable_error(socket.timeout("slow")))
         self.assertFalse(dejavuctl.is_reconnectable_error(dejavuctl.ControlError(
             "execution error for pid 1: boom"
         )))

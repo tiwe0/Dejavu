@@ -6,7 +6,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import select
 import re
 import secrets
 import shlex
@@ -301,15 +300,7 @@ def is_reconnectable_error(error):
 
 
 def read_command(prompt):
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-    ready, _, _ = select.select([sys.stdin], [], [])
-    if not ready:
-        raise EOFError
-    line = sys.stdin.readline()
-    if not line:
-        raise EOFError
-    return line
+    return input(prompt) + "\n"
 
 
 def file_identity(path):
@@ -431,9 +422,10 @@ class ControlSession:
                     )
             except (ControlError, OSError, socket.error) as error:
                 last_error = error
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise last_error
-            time.sleep(delay)
+            time.sleep(min(delay, remaining))
             delay = min(delay * 2, RECONNECT_BACKOFF_MAX)
 
 
@@ -581,18 +573,19 @@ def run_watch(session, file_path):
         raise ControlError(f"cannot watch {file_path}: {error}") from error
     while True:
         try:
-            script = load_script_file(file_path)
-            status, payload = execute_with_reconnect(session, script)
-            if status == RPC_OK:
-                print_payload(payload)
-            else:
+            try:
+                script = load_script_file(file_path)
+                status, payload = execute_with_reconnect(session, script)
+                if status == RPC_OK:
+                    print_payload(payload)
+                else:
+                    had_error = True
+                    print_error(render_rpc_error(session.pid, status, payload))
+                current_identity = wait_for_watch_change(path, current_identity)
+            except (ControlError, OSError, socket.error) as error:
                 had_error = True
-                print_error(render_rpc_error(session.pid, status, payload))
-        except (ControlError, OSError, socket.error) as error:
-            had_error = True
-            print_error(error)
-        try:
-            current_identity = wait_for_watch_change(path, current_identity)
+                print_error(error)
+                current_identity = wait_for_watch_change(path, current_identity)
         except KeyboardInterrupt:
             print(file=sys.stderr)
             return 1 if had_error else 0
