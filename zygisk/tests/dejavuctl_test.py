@@ -42,6 +42,12 @@ class ParseArgumentsTest(unittest.TestCase):
         self.assertEqual(arguments.process_arg, "bin.mt.plus")
         self.assertIsNone(arguments.script)
 
+    def test_watch_without_positional_process_uses_default_target(self):
+        arguments = self.parse("--watch", "hooks.lua")
+        self.assertEqual(arguments.watch, "hooks.lua")
+        self.assertIsNone(arguments.process_arg)
+        self.assertIsNone(arguments.script)
+
     def test_interactive_sources_remain_mutually_exclusive(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO):
             with self.assertRaises(SystemExit):
@@ -88,7 +94,7 @@ class ScriptValidationTest(unittest.TestCase):
             ) as refresh_metadata:
             with self.assertRaisesRegex(OSError, "metadata missing"):
                 session.reconnect()
-        refresh_metadata.assert_called_once_with(wait=False)
+        refresh_metadata.assert_called_once_with(wait_seconds=0)
 
 
 if __name__ == "__main__":

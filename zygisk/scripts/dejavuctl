@@ -336,7 +336,7 @@ class ControlSession:
         self.port = None
 
     def __enter__(self):
-        self.refresh_metadata(wait=True)
+        self.refresh_metadata(wait_seconds=self.wait_seconds)
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -347,11 +347,11 @@ class ControlSession:
             adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
             self.port = None
 
-    def refresh_metadata(self, wait=False):
+    def refresh_metadata(self, wait_seconds=None):
         metadata = (
-            wait_for_metadata(self.serial, self.process_name, self.wait_seconds)
-            if wait
-            else read_metadata(self.serial, self.process_name)
+            read_metadata(self.serial, self.process_name)
+            if wait_seconds is None
+            else wait_for_metadata(self.serial, self.process_name, wait_seconds)
         )
         pid, socket_name, token = metadata
         if (
@@ -372,7 +372,7 @@ class ControlSession:
 
     def execute(self, script):
         if self.port is None:
-            self.refresh_metadata(wait=True)
+            self.refresh_metadata(wait_seconds=self.wait_seconds)
         return execute_with_port(
             self.port,
             self.token,
@@ -392,7 +392,9 @@ class ControlSession:
         self.close()
         while True:
             try:
-                self.refresh_metadata(wait=False)
+                self.refresh_metadata(
+                    wait_seconds=0 if single_attempt_only else max(0.0, deadline - time.monotonic())
+                )
                 status, payload = execute_with_port(
                     self.port,
                     self.token,
