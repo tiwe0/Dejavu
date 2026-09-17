@@ -65,7 +65,7 @@ Most users can skip the local NDK toolchain and download the prebuilt
 After downloading, the shortest install path is:
 
 ```sh
-adb push ~/Downloads/dejavu-zygisk-v0.1.0-arm64.zip /sdcard/Download/
+adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download/
 ```
 
 Then install the ZIP from Magisk or APatch Manager and reboot. Building from

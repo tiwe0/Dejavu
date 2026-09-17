@@ -77,7 +77,7 @@ LLVM_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-st
 设备，再在 Magisk Manager 或 APatch Manager 中选择 ZIP 安装：
 
 ```sh
-adb push ~/Downloads/dejavu-zygisk-v0.1.0-arm64.zip /sdcard/Download/
+adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download/
 ```
 
 将 ZIP 复制到设备：

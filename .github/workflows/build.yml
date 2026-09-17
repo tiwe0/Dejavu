@@ -111,8 +111,8 @@ jobs:
       - name: Derive package metadata
         id: package-meta
         run: |
-          default_version=$(sed -n "s/^version=v//p" zygisk/module/module.prop)
-          package_version=${default_version}
+          default_version=$(sed -n "s/^version=//p" zygisk/module/module.prop | head -n 1)
+          package_version=${default_version#v}
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
             package_version=${GITHUB_REF_NAME#v}
           fi
