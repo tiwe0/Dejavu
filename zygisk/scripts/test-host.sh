@@ -76,8 +76,24 @@ echo "OK: dejavuctl syntax and argument parser"
     -std=c11 \
     -O2 \
     -Wall -Wextra -Werror \
+    -DMAKE_LIB \
     -DLUA_USE_LINUX \
-    "${PROJECT_DIR}/extern/lua/onelua.c" \
+    -I"${PROJECT_DIR}/extern/lua" \
+    -c "${PROJECT_DIR}/extern/lua/onelua.c" \
+    -o "${OUT_DIR}/lua-lib.o"
+
+"${CC}" \
+    -std=c11 \
+    -O2 \
+    -Wall -Wextra -Werror \
+    -DLUA_USE_LINUX \
+    -I"${PROJECT_DIR}/extern/lua" \
+    -c "${PROJECT_DIR}/extern/lua/lua.c" \
+    -o "${OUT_DIR}/lua-main.o"
+
+"${CC}" \
+    "${OUT_DIR}/lua-lib.o" \
+    "${OUT_DIR}/lua-main.o" \
     -ldl -lm \
     -o "${OUT_DIR}/lua"
 

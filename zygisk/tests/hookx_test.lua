@@ -118,6 +118,13 @@ expect_error("hookx.force_return_void requires return type V", function()
     hookx.force_return_void("com.example.Target", "bad", "()I")
 end)
 
+local saved_hook = hook
+hook = nil
+expect_error("hook.install is unavailable in this Lua session", function()
+    hookx.trace("android.app.Activity", "onResume", "()V")
+end)
+hook = saved_hook
+
 local string_log_id = hookx.log_string_arg(
     "com.example.Target",
     "submit",

@@ -111,10 +111,17 @@ static void hookx_log_unsigned(const char *prefix, unsigned long long value) {
         buffer[length] = prefix[length];
         ++length;
     }
-    do {
+    while (1) {
+        if (digits == sizeof(reversed)) {
+            dejavu_hook_log("hookx.log_string_arg integer log overflow");
+            return;
+        }
         reversed[digits++] = (char)('0' + (value % 10ull));
         value /= 10ull;
-    } while (value != 0 && digits < sizeof(reversed));
+        if (value == 0) {
+            break;
+        }
+    }
     while (digits != 0 && length + 1 < sizeof(buffer)) {
         buffer[length++] = reversed[--digits];
     }
@@ -171,10 +178,17 @@ static void hookx_log_signed(const char *prefix, long long value) {
             buffer[length++] = '-';
         magnitude = 0ull - magnitude;
     }
-    do {
+    while (1) {
+        if (digits == sizeof(reversed)) {
+            dejavu_hook_log("hookx.log_result_int integer log overflow");
+            return;
+        }
         reversed[digits++] = (char)('0' + (magnitude % 10ull));
         magnitude /= 10ull;
-    } while (magnitude != 0 && digits < sizeof(reversed));
+        if (magnitude == 0) {
+            break;
+        }
+    }
     while (digits != 0 && length + 1 < sizeof(buffer)) {
         buffer[length++] = reversed[--digits];
     }

@@ -47,5 +47,6 @@ assert(logs[#logs] == "Dejavu Lua control ready (hookx available)")
 local id = hookx.trace("android.app.Activity", "onResume", "()V")
 assert(id == 2001)
 assert(installs[1].source:find("hookx.trace android.app.Activity#onResume()V", 1, true))
+assert(installs[1].source:find("hookx.log_result_int integer log overflow", 1, true) == nil)
 
 print("OK: bundled init exposes hookx")
