@@ -104,6 +104,14 @@ local replace_id = hookx.replace_arg_int(
     7)
 assert(replace_id == 1002)
 assert(last_source():find("dejavu_hook_set_arg_int(context, 1, 7)", 1, true))
+local replace_single_id = hookx.replace_arg_int(
+    "com.example.Target",
+    "single",
+    "(I)I",
+    0,
+    9)
+assert(replace_single_id == 1003)
+assert(last_source():find("dejavu_hook_set_arg_int(context, 0, 9)", 1, true))
 expect_error("hookx.replace_arg_int requires argument #0 to be I", function()
     hookx.replace_arg_int("com.example.Target", "bad", "(Z)I", 0, 1)
 end)
@@ -119,7 +127,7 @@ local force_int_id = hookx.force_return_int(
     "check",
     "()I",
     42)
-assert(force_int_id == 1003)
+assert(force_int_id == 1004)
 assert(last_source():find("return dejavu_hook_return_int(context, 42);", 1, true))
 expect_error("hookx.force_return_int requires return type I", function()
     hookx.force_return_int("com.example.Target", "bad", "()Z", 1)
@@ -130,7 +138,7 @@ local force_bool_id = hookx.force_return_bool(
     "check",
     "()Z",
     true)
-assert(force_bool_id == 1004)
+assert(force_bool_id == 1005)
 assert(last_source():find("return dejavu_hook_return_boolean(context, 1);", 1, true))
 expect_error("hookx.force_return_bool requires return type Z", function()
     hookx.force_return_bool("com.example.Target", "bad", "()I", true)
@@ -140,7 +148,7 @@ local force_void_id = hookx.force_return_void(
     "android.app.Activity",
     "onResume",
     "()V")
-assert(force_void_id == 1005)
+assert(force_void_id == 1006)
 assert(last_source():find("return dejavu_hook_return_void(context);", 1, true))
 expect_error("hookx.force_return_void requires return type V", function()
     hookx.force_return_void("com.example.Target", "bad", "()I")
@@ -158,7 +166,7 @@ local string_log_id = hookx.log_string_arg(
     "submit",
     "(Ljava/lang/String;)V",
     0)
-assert(string_log_id == 1006)
+assert(string_log_id == 1007)
 assert(last_source():find("dejavu_hook_get_arg_string_mutf8(", 1, true))
 assert(last_source():find("context, 0, buffer, sizeof(buffer), &size);", 1, true))
 assert(last_source():find("DEJAVU_HOOK_ERROR_RANGE", 1, true))
@@ -174,7 +182,7 @@ local result_log_id = hookx.log_result_int(
     "com.example.Target",
     "compute",
     "(I)I")
-assert(result_log_id == 1007)
+assert(result_log_id == 1008)
 assert(last_source():find("int after_hook", 1, true))
 assert(last_source():find("dejavu_hook_get_result_int(context, &value)", 1, true))
 assert(last_source():find("hookx_log_signed", 1, true))

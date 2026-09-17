@@ -59,7 +59,7 @@ do
         end
 
         local function ensure_arg_index(parsed_signature, index, helper_name, level)
-            if index >= #parsed_signature.args then
+            if parsed_signature.args[index + 1] == nil then
                 fail(
                     helper_name .. " argument index " .. index ..
                         " is out of range for signature with " ..
