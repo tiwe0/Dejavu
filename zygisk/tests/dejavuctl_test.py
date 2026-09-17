@@ -77,6 +77,19 @@ class ScriptValidationTest(unittest.TestCase):
         self.assertEqual(identity, (2, 3))
         print_error.assert_called_once()
 
+    def test_reconnect_with_zero_wait_still_attempts_once(self):
+        session = dejavuctl.ControlSession(None, "bin.mt.plus", 10.0, 0.0)
+        session.pid = 123
+        with mock.patch.object(session, "close"), \
+            mock.patch.object(
+                session,
+                "refresh_metadata",
+                side_effect=OSError("metadata missing"),
+            ) as refresh_metadata:
+            with self.assertRaisesRegex(OSError, "metadata missing"):
+                session.reconnect()
+        refresh_metadata.assert_called_once_with(wait=False)
+
 
 if __name__ == "__main__":
     unittest.main()
