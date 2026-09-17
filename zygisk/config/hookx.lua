@@ -335,11 +335,13 @@ static void hookx_log_signed(const char *prefix, long long value) {
         end
 
         function hookx.trace(class_name, method_name, signature, opts)
-            ensure_target(class_name, method_name, signature, 2)
+            local parsed_signature = ensure_target(class_name, method_name, signature, 2)
+            local normalized_signature =
+                "(" .. table.concat(parsed_signature.args) .. ")" .. parsed_signature.ret
             if opts ~= nil and type(opts) ~= "table" then
                 fail("trace options must be a table", 2)
             end
-            local message = "hookx.trace " .. class_name .. "#" .. method_name .. signature
+            local message = "hookx.trace " .. class_name .. "#" .. method_name .. normalized_signature
             if opts ~= nil and opts.message ~= nil then
                 message = message .. " :: " ..
                     ensure_non_empty_string("trace message", opts.message, 2)
