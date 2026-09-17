@@ -125,6 +125,9 @@ do
         end
 
         local function validate_full_descriptor(descriptor, allow_void, level)
+            if descriptor == "" then
+                fail("JNI descriptor must be non-empty", (level or 1) + 1)
+            end
             local parsed, next_index = parse_descriptor(
                 descriptor, 1, allow_void, (level or 1) + 1)
             if next_index <= #descriptor then
