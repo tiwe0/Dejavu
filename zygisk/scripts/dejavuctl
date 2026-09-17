@@ -628,10 +628,10 @@ def main():
                     raise ControlError("Agent reconnect probe failed")
                 payload = b"Agent reconnected"
                 status = RPC_OK
-    if status == RPC_OK:
-        print_payload(payload)
-        return 0
-    raise render_rpc_error(session.pid, status, payload)
+            if status == RPC_OK:
+                print_payload(payload)
+                return 0
+            raise render_rpc_error(session.pid, status, payload)
 
 
 if __name__ == "__main__":
