@@ -112,6 +112,10 @@ jobs:
         id: package-meta
         run: |
           default_version=$(sed -n "s/^version=//p" zygisk/module/module.prop | head -n 1)
+          if [[ -z "${default_version}" ]]; then
+            echo "error: missing version= entry in zygisk/module/module.prop" >&2
+            exit 1
+          fi
           package_version=${default_version#v}
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
             package_version=${GITHUB_REF_NAME#v}
