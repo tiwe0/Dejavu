@@ -118,7 +118,10 @@ jobs:
           fi
           package_version=${default_version#v}
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
-            package_version=${GITHUB_REF_NAME#v}
+            if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+              echo "error: tag ${GITHUB_REF_NAME} does not match zygisk/module/module.prop version ${default_version}" >&2
+              exit 1
+            fi
           fi
 
           echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
