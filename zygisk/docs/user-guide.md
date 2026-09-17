@@ -482,7 +482,8 @@ int before_hook(dejavu_hook_context *context) {
 ## 10. `dejavuctl` CLI 和 RPC
 
 CLI 会发现目标 PID 和 endpoint，创建临时 `adb forward`，完成 token 认证，
-执行一段 Lua 后自动移除 forward。命令在主机执行：
+执行 Lua 管理请求后自动移除 forward。一次性模式仍然是一条命令只发送一段
+Lua。命令在主机执行：
 
 ```sh
 ADB_SERIAL=c44d68aa \
@@ -508,12 +509,34 @@ ADB_SERIAL=c44d68aa \
 -s, --serial SERIAL     adb serial，也可使用 ADB_SERIAL
 --wait SECONDS          等待 Agent endpoint，默认 5 秒
 --timeout SECONDS       socket 超时，默认 10 秒
+-i, --repl              保持会话并按行执行 Lua，直到 exit/quit/EOF
+--watch FILE            先执行一次 FILE，再在每次保存后自动重新执行
 --reconnect             重新连接并验证同一个 PID 的 Agent 通道
 ```
 
 CLI 支持 `nil`、布尔、整数、浮点数和字符串结果。Lua 错误、目标不可用
 和协议错误写入 stderr，并返回非零状态。Lua 状态本身是单线程的，因此
 主机 CLI 调用使用 advisory lock 串行化。
+
+REPL 模式会复用同一轮 PID/endpoint 发现、临时 `adb forward`、token 认证
+和主机侧串行化逻辑；每输入一行就发送一次 Lua，请求之间不并发。使用
+`exit`、`quit`、EOF 或 `Ctrl-D` 退出：
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl --repl -p bin.mt.plus
+dejavu> return hook.list()
+dejavu> quit
+```
+
+Watch 模式会在进入时先执行一次当前文件内容，然后通过轮询 `mtime` / size
+监视变化；每次保存后都会重新读取整个文件并发送。使用 `Ctrl-C` 优雅退出，
+脚本会像一次性模式一样清理临时 `adb forward` 和本地 lock：
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl --watch /absolute/path/to/live-control.lua -p bin.mt.plus
+```
 
 Agent 通道断开时会以 100 ms 到 5 s 的指数退避自动重连。只要 PID 没有
 改变，Lua 状态和已安装 hook 会保留：
@@ -522,6 +545,10 @@ Agent 通道断开时会以 100 ms 到 5 s 的指数退避自动重连。只要 
 ADB_SERIAL=c44d68aa \
   ./zygisk/scripts/dejavuctl --reconnect -p bin.mt.plus
 ```
+
+`--repl` 与 `--watch` 遇到这类断线时会沿用同样的退避重连逻辑，并在终端上
+提示是否仍连回原 PID。若只是 Agent 通道短暂断开，保存的 Lua 状态和已装
+hook 继续可用；若应用重启导致 PID 变化，CLI 会重新附着到新的 Agent。
 
 旧的文件控制路径仍可用于兼容性和故障隔离：
 

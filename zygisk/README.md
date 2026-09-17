@@ -159,10 +159,10 @@ make -C zygisk package
 
 ## `dejavuctl` CLI
 
-`scripts/dejavuctl` sends one Lua request over the authenticated local RPC
-channel. It discovers the target PID and endpoint, creates a temporary `adb
+`scripts/dejavuctl` sends Lua management requests over the authenticated local
+RPC channel. It discovers the target PID and endpoint, creates a temporary `adb
 forward`, authenticates, sends the request, prints the result, and removes the
-forward.
+forward. One-shot mode still sends exactly one Lua chunk per invocation.
 
 Inline Lua:
 
@@ -187,6 +187,8 @@ Useful options:
 -s, --serial SERIAL     adb serial (or set ADB_SERIAL)
 --wait SECONDS          wait for PID/Agent metadata (default: 5)
 --timeout SECONDS       socket operation timeout (default: 10)
+-i, --repl              keep the CLI session open and execute one Lua line at a time
+--watch FILE            execute FILE immediately, then re-run it after each save
 --reconnect             reconnect and verify the same-PID Agent channel
 ```
 
@@ -195,6 +197,25 @@ string. Errors, unavailable Agents and protocol failures go to stderr and
 return a non-zero status. Local CLI invocations are serialized by a host-side
 advisory lock because Lua state is intentionally single-threaded.
 
+REPL mode keeps the host-side lock, endpoint discovery, temporary `adb forward`
+and authentication flow alive across commands while still sending one request
+per input line. Exit with `exit`, `quit` or EOF / `Ctrl-D`:
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl --repl -p bin.mt.plus
+dejavu> return hook.list()
+dejavu> quit
+```
+
+Watch mode executes the file once on startup, then polls for `mtime` / size
+changes and re-sends the full file after each save. Use `Ctrl-C` to stop it:
+
+```sh
+ADB_SERIAL=c44d68aa \
+  ./zygisk/scripts/dejavuctl --watch /absolute/path/to/live-control.lua -p bin.mt.plus
+```
+
 The Agent reconnects with exponential backoff from 100 ms to 5 seconds when
 only its channel is dropped. Lua state and installed hooks survive that event:
 
@@ -202,6 +223,11 @@ only its channel is dropped. Lua state and installed hooks survive that event:
 ADB_SERIAL=c44d68aa \
   ./zygisk/scripts/dejavuctl --reconnect -p bin.mt.plus
 ```
+
+`--repl` and `--watch` reuse the same reconnect semantics when the Agent channel
+drops. When the PID stays the same, the existing Lua state and installed hooks
+remain available after the reconnect. If the app restarts and the PID changes,
+`dejavuctl` reattaches to the new Agent and reports that transition.
 
 The legacy file-control path is still available for compatibility. It watches
 `run/<process>.lua` and is useful when diagnosing the RPC path:

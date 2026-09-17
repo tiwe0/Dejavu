@@ -79,6 +79,8 @@ mkdir -p "${OUT_DIR}"
 
 PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
+PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
+    python3 -m unittest "${ROOT_DIR}/tests/dejavuctl_test.py"
 "${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
 echo "OK: dejavuctl syntax and argument parser"
 
