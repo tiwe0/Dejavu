@@ -12,6 +12,11 @@ if type(hookx) ~= "table" then
     end
 end
 
+if type(_G.hookx_demo_id) == "number" then
+    hook.uninstall(_G.hookx_demo_id)
+end
+
 local id = hookx.trace("android.app.Activity", "onResume", "()V")
+_G.hookx_demo_id = id
 hook.log("hookx demo installed: " .. id)
 hook.log(hook.list())
