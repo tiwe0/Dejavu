@@ -117,18 +117,19 @@ jobs:
             echo "error: missing version= entry in zygisk/module/module.prop" >&2
             exit 1
           fi
-          package_version=${default_version#v}
+          module_version=${default_version#v}
+          module_version_tag=v${module_version}
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
-            if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "${module_version_tag}" ]]; then
               echo "error: tag ${GITHUB_REF_NAME} does not match zygisk/module/module.prop version ${default_version}" >&2
               exit 1
             fi
           fi
 
-          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=dejavu-zygisk-arm64-v${package_version}" >> "$GITHUB_OUTPUT"
-          echo "package_glob=zygisk/dist/dejavu-zygisk-v${package_version}-arm64.zip" >> "$GITHUB_OUTPUT"
-          echo "package_filename=dejavu-zygisk-v${package_version}-arm64.zip" >> "$GITHUB_OUTPUT"
+          echo "package_version=${module_version}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=dejavu-zygisk-arm64-v${module_version}" >> "$GITHUB_OUTPUT"
+          echo "package_glob=zygisk/dist/dejavu-zygisk-v${module_version}-arm64.zip" >> "$GITHUB_OUTPUT"
+          echo "package_filename=dejavu-zygisk-v${module_version}-arm64.zip" >> "$GITHUB_OUTPUT"
       
       - name: Build core first
         run: make android-arm64
