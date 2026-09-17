@@ -14,11 +14,15 @@ do
             ["void"] = "V",
             ["String"] = "Ljava/lang/String;",
         }
+        local safe_integer_limit = 9007199254740991
 
         local lua_tointeger = math.tointeger
         if lua_tointeger == nil then
             lua_tointeger = function(value)
-                if type(value) == "number" and value == math.floor(value) then
+                if type(value) == "number" and
+                    value >= -safe_integer_limit and
+                    value <= safe_integer_limit and
+                    value == math.floor(value) then
                     return value
                 end
                 return nil
