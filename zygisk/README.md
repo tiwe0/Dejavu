@@ -17,13 +17,14 @@ restart is needed only when the Loader or module installation changes.
 
 - Android 8 through 15 (API 26-35).
 - A rooted `arm64-v8a` device with a compatible Zygisk provider enabled.
-- For source builds: a host with `adb`, a C/C++ toolchain, Python 3 and an Android NDK.
+- For source builds: a host with `adb`, Python 3, CMake 3.28+ and Android NDK r29.
 - For source builds: the Dejavu library built from the project root before packaging.
 
 CI builds the API 26 release baseline and representative API 30, 34 and 35
 targets. These builds establish native link compatibility; ART hook behavior
-still requires device/ROM acceptance for each Android generation. The current
-pinned LSPlant revision does not support Android 16 (API 36).
+still requires device/ROM acceptance for each Android generation. The pinned
+LSPlant revision advertises Android 5-17 support, but Dejavu keeps its installer
+range at API 26-35 until Android 16/17 device acceptance is complete.
 
 The current device test target is MT Manager (`bin.mt.plus`). The target is
 selected by process name, not by package name alone.

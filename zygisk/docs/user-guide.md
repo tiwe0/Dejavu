@@ -15,12 +15,14 @@ Dejavu 的边界很简单：Lua 只负责管理 hook，真正进入目标进程�
 - 已启用兼容 Zygisk provider 的 root 环境，例如 Magisk Zygisk，或
   APatch/KernelSU + ZygiskNext。
 - 设备已 root。
-- 若需要从源码构建，主机还需安装 `adb`、Python 3 和 Android NDK。
+- 若需要从源码构建，主机还需安装 `adb`、Python 3、CMake 3.28+ 和
+  Android NDK r29。
 - 若需要从源码构建，根目录的 `libdejavu.so` 也需要预先构建完成。
 
 CI 会构建 API 26 发布基线以及 API 30、34、35 代表性目标。这些检查可以
 证明 native 链接兼容，但不能替代每个 Android 代际和 ROM 的真机 ART hook
-验收。当前固定版本的 LSPlant 不支持 Android 16（API 36）。
+验收。当前固定版本的 LSPlant 已声明支持 Android 5-17，但 Dejavu 在完成
+Android 16/17 真机验收前仍把安装范围限制为 API 26-35。
 
 APatch 本身不实现 Zygisk。APatch 用户需要额外安装并启用 ZygiskNext
 之类的 provider。APatch Manager 可以直接显示本模块的 WebUI；WebUI

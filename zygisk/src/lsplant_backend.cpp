@@ -169,6 +169,10 @@ extern "C" DejavuLsplantInitResult dejavu_lsplant_backend_initialize(JNIEnv *env
         },
         .generated_class_name = "DejavuHooker_",
         .generated_source_name = "Dejavu",
+        .generated_field_name = "hooker",
+        .generated_method_name = "{target}",
+        .executable_memory_allocator = {},
+        .executable_memory_recycler = {},
     };
 
     const bool initialized = lsplant::Init(env, info);

@@ -74,23 +74,23 @@ fetch_aar() {
 
 fetch_archive \
     lsplant \
-    7217ac6f41e2bda549e4acb54e632abb03e5ccaf \
-    d0bfedc5760b39768bfb965c27065fc0178ce7675ad667201417e76cffcaf12a \
-    https://github.com/LSPosed/LSPlant/archive/7217ac6f41e2bda549e4acb54e632abb03e5ccaf.tar.gz \
+    d8b5d1dbb664abc606644036822e4bb64547edf6 \
+    d640013c09037c2b771a68127b2910076715e639e814864287af5e8e4dcb06c9 \
+    https://github.com/LSPosed/LSPlant/archive/d8b5d1dbb664abc606644036822e4bb64547edf6.tar.gz \
     "${THIRD_PARTY_DIR}/LSPlant"
 
 fetch_archive \
     dex-builder \
-    9d57844a301077abf4c29e061b2458c56a363c8f \
-    da8687186389c3ce7a37d54a0e5ae213b57e4d63b6bb2505f39da4e655c6d9fc \
-    https://github.com/LSPosed/DexBuilder/archive/9d57844a301077abf4c29e061b2458c56a363c8f.tar.gz \
+    ac7fb2230954ee311808bad469b0db501f31bfb8 \
+    23fdcd5e92acb74b4d0b1b77554c93077ec7255538d852124c9b794d88284efc \
+    https://github.com/LSPosed/DexBuilder/archive/ac7fb2230954ee311808bad469b0db501f31bfb8.tar.gz \
     "${THIRD_PARTY_DIR}/LSPlant/lsplant/src/main/jni/external/dex_builder"
 
 fetch_archive \
     parallel-hashmap \
-    65775fa09fecaa65d0b0022ab6bf091c0e509445 \
-    a930ad39e956ee16183976aa64678f23404478a8edddd4a450e30c929514f74b \
-    https://github.com/greg7mdp/parallel-hashmap/archive/65775fa09fecaa65d0b0022ab6bf091c0e509445.tar.gz \
+    0cd57d29a959256ed66b2afdd1009928fc625d09 \
+    88f37e8c06b034e972b65abcd55ebc753d49374be801006d98faec3f16512684 \
+    https://github.com/greg7mdp/parallel-hashmap/archive/0cd57d29a959256ed66b2afdd1009928fc625d09.tar.gz \
     "${THIRD_PARTY_DIR}/LSPlant/lsplant/src/main/jni/external/dex_builder/external/parallel_hashmap"
 
 fetch_archive \
@@ -107,20 +107,11 @@ fetch_aar \
     https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/dobby-1.2.aar \
     "${THIRD_PARTY_DIR}/DobbyPrefab"
 
-LSPLANT_PATCH_STAMP="${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v3"
+LSPLANT_PATCH_STAMP="${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v4"
 if [[ ! -f "${LSPLANT_PATCH_STAMP}" ]]; then
-    if [[ ! -f "${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v1" ]]; then
-        patch -d "${THIRD_PARTY_DIR}/LSPlant" -p1 \
-            < "${ROOT_DIR}/patches/lsplant-v6.4-reflection-shorty.patch"
-    fi
-    if [[ ! -f "${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v2" ]]; then
-        patch -d "${THIRD_PARTY_DIR}/LSPlant" -p1 \
-            < "${ROOT_DIR}/patches/lsplant-v6.4-android15-interpreter-bridge.patch"
-    fi
     patch -d "${THIRD_PARTY_DIR}/LSPlant" -p1 \
-        < "${ROOT_DIR}/patches/lsplant-v6.4-jit-do-collection.patch"
-    printf '%s\n' "reflection-shorty-v1 android15-interpreter-bridge-v1 jit-do-collection-v1" \
-        > "${LSPLANT_PATCH_STAMP}"
+        < "${ROOT_DIR}/patches/lsplant-main-reflection-shorty.patch"
+    printf '%s\n' "reflection-shorty-v2" > "${LSPLANT_PATCH_STAMP}"
 fi
 
 echo "OK: pinned LSPlant dependencies are available in ${THIRD_PARTY_DIR}"

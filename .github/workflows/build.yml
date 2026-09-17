@@ -50,7 +50,7 @@ jobs:
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27d
+          ndk-version: r29
           add-to-path: true
       
       - name: Set ANDROID_NDK_HOME
@@ -96,7 +96,7 @@ jobs:
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27d
+          ndk-version: r29
           add-to-path: true
 
       - name: Set ANDROID_NDK_HOME
@@ -144,7 +144,7 @@ jobs:
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27d
+          ndk-version: r29
           add-to-path: true
       
       - name: Set ANDROID_NDK_HOME

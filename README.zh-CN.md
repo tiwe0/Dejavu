@@ -70,7 +70,7 @@ CMake。
 
 ```sh
 git submodule update --init --recursive
-export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r27d"
+export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r29"
 make smoke
 ```
 
@@ -103,7 +103,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 | --- | --- | --- |
 | Android 8-14 | 26-34 | 已支持构建和安装；仍需在各代设备及 ROM 上完成运行验收 |
 | Android 15 | 35 | 已支持构建和安装，并具备当前 MT Manager 真机及压力测试路径 |
-| Android 16+ | 36+ | 当前固定版本的 LSPlant 尚不支持 |
+| Android 16-17 | 36-37 | 上游 LSPlant 已支持；Dejavu 尚待真机运行验收，因此模块安装器暂未放开 |
 
 构建冒烟检查会验证产物满足以下条件：
 

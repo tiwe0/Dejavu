@@ -72,7 +72,7 @@ is required.
 
 ```sh
 git submodule update --init --recursive
-export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r27d"
+export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r29"
 make smoke
 ```
 
@@ -105,7 +105,7 @@ LSPlant compatibility validation.
 | --- | --- | --- |
 | Android 8-14 | 26-34 | Build and installer support; runtime acceptance must still be verified on each device/ROM generation |
 | Android 15 | 35 | Build and installer support plus the current MT Manager device/stress validation path |
-| Android 16+ | 36+ | Not supported by the pinned LSPlant revision |
+| Android 16-17 | 36-37 | Supported by upstream LSPlant; Dejavu runtime acceptance is pending, so the module installer does not enable these versions yet |
 
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports

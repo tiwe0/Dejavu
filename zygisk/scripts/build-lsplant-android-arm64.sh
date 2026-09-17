@@ -34,6 +34,12 @@ if [[ -z "${NDK_DIR}" ]]; then
     echo "error: Android NDK not found; set ANDROID_NDK_HOME" >&2
     exit 1
 fi
+NDK_REVISION=$(sed -n 's/^Pkg\.Revision = //p' "${NDK_DIR}/source.properties" | head -n 1)
+NDK_MAJOR=${NDK_REVISION%%.*}
+if [[ ! "${NDK_MAJOR}" =~ ^[0-9]+$ ]] || ((NDK_MAJOR < 29)); then
+    echo "error: LSPlant requires Android NDK r29 or newer (found ${NDK_REVISION:-unknown})" >&2
+    exit 1
+fi
 case "${RUN_DEVICE_SMOKE}" in
     0|1) ;;
     *) echo "error: RUN_DEVICE_SMOKE must be 0 or 1" >&2; exit 1 ;;
@@ -45,8 +51,18 @@ esac
 
 "${ROOT_DIR}/scripts/fetch-third-party.sh"
 
+TOOLCHAIN_FILE="${NDK_DIR}/build/cmake/android.toolchain.cmake"
+if [[ -f "${OUT_DIR}/CMakeCache.txt" ]]; then
+    CACHED_TOOLCHAIN=$(sed -n 's/^CMAKE_TOOLCHAIN_FILE:[^=]*=//p' \
+        "${OUT_DIR}/CMakeCache.txt" | head -n 1)
+    if [[ -n "${CACHED_TOOLCHAIN}" && "${CACHED_TOOLCHAIN}" != "${TOOLCHAIN_FILE}" ]]; then
+        echo "Removing stale CMake cache for ${CACHED_TOOLCHAIN}"
+        find "${OUT_DIR}" -mindepth 1 -delete
+    fi
+fi
+
 cmake -S "${ROOT_DIR}" -B "${OUT_DIR}" -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="${NDK_DIR}/build/cmake/android.toolchain.cmake" \
+    -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
     -DANDROID_ABI=arm64-v8a \
     -DANDROID_PLATFORM="android-${ANDROID_API}" \
     -DANDROID_STL=c++_static \
