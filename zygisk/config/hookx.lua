@@ -14,6 +14,8 @@ do
             ["void"] = "V",
             ["String"] = "Ljava/lang/String;",
         }
+        local c_int_min = -2147483648
+        local c_int_max = 2147483647
         local safe_integer_limit = 9007199254740991
 
         local lua_tointeger = math.tointeger
@@ -54,6 +56,14 @@ do
                 fail("argument index must be non-negative", (level or 1) + 1)
             end
             return index
+        end
+
+        local function ensure_c_int(label, value, level)
+            local integer = ensure_integer(label, value, (level or 1) + 1)
+            if integer < c_int_min or integer > c_int_max then
+                fail(label .. " must fit in C int range", (level or 1) + 1)
+            end
+            return integer
         end
 
         local function ensure_boolean_constant(label, value, level)
@@ -332,7 +342,7 @@ static void hookx_log_signed(const char *prefix, long long value) {
         function hookx.replace_arg_int(class_name, method_name, signature, index, new_value)
             local parsed_signature = ensure_target(class_name, method_name, signature, 2)
             local arg_index = ensure_non_negative_index(index, 2)
-            local replacement = ensure_integer("new_value", new_value, 2)
+            local replacement = ensure_c_int("new_value", new_value, 2)
             require_arg_descriptor(parsed_signature, arg_index, "I", "hookx.replace_arg_int", 2)
             return install_generated(class_name, method_name, signature, build_source({
                 "int before_hook(dejavu_hook_context *context) {",
@@ -345,7 +355,7 @@ static void hookx_log_signed(const char *prefix, long long value) {
 
         function hookx.force_return_int(class_name, method_name, signature, value)
             local parsed_signature = ensure_target(class_name, method_name, signature, 2)
-            local result = ensure_integer("value", value, 2)
+            local result = ensure_c_int("value", value, 2)
             require_return_descriptor(parsed_signature, "I", "hookx.force_return_int", 2)
             return install_generated(class_name, method_name, signature, build_source({
                 "int before_hook(dejavu_hook_context *context) {",

@@ -220,9 +220,10 @@ local rewrite_id = hookx.replace_arg_int("com.example.Target", "compute", "(I)I"
 - `hookx.log_result_int(class, method, sig)`
 - `hookx.sig{args=..., ret=...}`
 
-`hookx.sig` 支持 `"int"`、`"boolean"`、`"long"`、`"float"`、`"double"`、
-`"void"`、`"String"`，以及任意合法的对象/数组 JNI descriptor，例如
-`"Landroid/content/Context;"`、`"[I"`、`"[Ljava/lang/String;"`。
+`hookx.sig` 支持 `"boolean"`、`"byte"`、`"char"`、`"short"`、`"int"`、
+`"long"`、`"float"`、`"double"`、`"void"`、`"String"`，以及任意合法的
+对象/数组 JNI descriptor，例如 `"Landroid/content/Context;"`、`"[I"`、
+`"[Ljava/lang/String;"`。
 
 更多可直接运行的配方见 [cookbook.md](cookbook.md)。
 

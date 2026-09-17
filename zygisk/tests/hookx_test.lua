@@ -28,9 +28,13 @@ hook = {
     end,
 }
 
+local loaded_ok, loaded_error
 math.tointeger = nil
-assert(loadfile(root .. "/config/hookx.lua"))()
+loaded_ok, loaded_error = pcall(function()
+    assert(loadfile(root .. "/config/hookx.lua"))()
+end)
 math.tointeger = original_tointeger
+assert(loaded_ok, loaded_error)
 assert(type(hookx) == "table")
 
 local function last_source()
@@ -74,8 +78,8 @@ end)
 expect_error("new_value must be an integer", function()
     hookx.replace_arg_int("com.example.Target", "compute", "(I)I", 0, 1.5)
 end)
-expect_error("value must be an integer", function()
-    hookx.force_return_int("com.example.Target", "check", "()I", 9007199254740993)
+expect_error("value must fit in C int range", function()
+    hookx.force_return_int("com.example.Target", "check", "()I", 2147483648)
 end)
 
 local trace_id = hookx.trace(
