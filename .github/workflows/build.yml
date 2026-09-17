@@ -85,6 +85,7 @@ jobs:
     outputs:
       artifact_name: ${{ steps.package-meta.outputs.artifact_name }}
       package_glob: ${{ steps.package-meta.outputs.package_glob }}
+      package_filename: ${{ steps.package-meta.outputs.package_filename }}
     
     steps:
       - uses: actions/checkout@v4
@@ -127,6 +128,7 @@ jobs:
           echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
           echo "artifact_name=dejavu-zygisk-arm64-v${package_version}" >> "$GITHUB_OUTPUT"
           echo "package_glob=zygisk/dist/dejavu-zygisk-v${package_version}-arm64.zip" >> "$GITHUB_OUTPUT"
+          echo "package_filename=dejavu-zygisk-v${package_version}-arm64.zip" >> "$GITHUB_OUTPUT"
       
       - name: Build core first
         run: make android-arm64
@@ -163,17 +165,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
-          path: .
+          path: release-assets
 
       - name: Verify release asset
         run: |
-          ls -lh zygisk/dist/
-          unzip -l ${{ needs.build-zygisk-module.outputs.package_glob }}
+          ls -lh release-assets/
+          unzip -l release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ needs.build-zygisk-module.outputs.package_glob }}
+          files: release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
           generate_release_notes: true
 
   code-quality:
