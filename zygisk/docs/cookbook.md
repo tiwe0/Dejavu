@@ -12,7 +12,7 @@ Lua 高层封装。它不修改 Hook C ABI v1，也不改变 `hook.install/remov
 >
 > ```lua
 > if type(hookx) ~= "table" then
->     assert(loadfile("/data/adb/modules/dejavu_zygisk/config/hookx.lua"))()
+>     assert(loadfile("/data/adb/modules/dejavu_zygisk/config/init.lua"))()
 > end
 > ```
 

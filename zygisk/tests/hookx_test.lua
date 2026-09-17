@@ -68,6 +68,7 @@ local trace_id = hookx.trace(
 assert(trace_id == 1001)
 assert(last_source():find("int before_hook", 1, true))
 assert(not last_source():find("after_hook", 1, true))
+assert(last_source():find("hookx.trace android.app.Activity#onResume()V", 1, true))
 assert(last_source():find("line\\n\\\"quoted\\\"\\\\slash", 1, true))
 
 local replace_id = hookx.replace_arg_int(

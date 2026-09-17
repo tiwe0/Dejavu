@@ -1,5 +1,5 @@
 if type(hookx) ~= "table" then
-    assert(loadfile("/data/adb/modules/dejavu_zygisk/config/hookx.lua"))()
+    assert(loadfile("/data/adb/modules/dejavu_zygisk/config/init.lua"))()
 end
 
 local id = hookx.trace("android.app.Activity", "onResume", "()V")

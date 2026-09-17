@@ -299,7 +299,8 @@ static void hookx_log_signed(const char *prefix, long long value) {
             end
             local message = "hookx.trace " .. class_name .. "#" .. method_name .. signature
             if opts ~= nil and opts.message ~= nil then
-                message = ensure_non_empty_string("trace message", opts.message, 2)
+                message = message .. " :: " ..
+                    ensure_non_empty_string("trace message", opts.message, 2)
             end
             return install_generated(class_name, method_name, signature, build_source({
                 "int before_hook(dejavu_hook_context *context) {",
