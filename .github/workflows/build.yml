@@ -3,6 +3,7 @@ name: Build Dejavu
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
 
@@ -81,6 +82,10 @@ jobs:
     name: Build Zygisk Module
     runs-on: ubuntu-latest
     needs: build-android
+    outputs:
+      artifact_name: ${{ steps.package-meta.outputs.artifact_name }}
+      package_glob: ${{ steps.package-meta.outputs.package_glob }}
+      package_filename: ${{ steps.package-meta.outputs.package_filename }}
     
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +108,28 @@ jobs:
             build-essential \
             git \
             python3
+
+      - name: Derive package metadata
+        id: package-meta
+        run: |
+          default_version=$(sed -n "s/^version=//p" zygisk/module/module.prop | head -n 1)
+          if [[ -z "${default_version}" ]]; then
+            echo "error: missing version= entry in zygisk/module/module.prop" >&2
+            exit 1
+          fi
+          module_version=${default_version#v}
+          module_version_tag=v${module_version}
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "${module_version_tag}" ]]; then
+              echo "error: tag ${GITHUB_REF_NAME} does not match zygisk/module/module.prop version ${default_version}" >&2
+              exit 1
+            fi
+          fi
+
+          echo "package_version=${module_version}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=dejavu-zygisk-arm64-v${module_version}" >> "$GITHUB_OUTPUT"
+          echo "package_glob=zygisk/dist/dejavu-zygisk-v${module_version}-arm64.zip" >> "$GITHUB_OUTPUT"
+          echo "package_filename=dejavu-zygisk-v${module_version}-arm64.zip" >> "$GITHUB_OUTPUT"
       
       - name: Build core first
         run: make android-arm64
@@ -111,18 +138,46 @@ jobs:
         run: make -C zygisk test
       
       - name: Package Zygisk module
+        env:
+          PACKAGE_VERSION: ${{ steps.package-meta.outputs.package_version }}
         run: make -C zygisk package
       
       - name: Verify module package
         run: |
           ls -lh zygisk/dist/
-          unzip -l zygisk/dist/dejavu-zygisk-*.zip
+          unzip -l ${{ steps.package-meta.outputs.package_glob }}
       
       - name: Upload Zygisk module
         uses: actions/upload-artifact@v4
         with:
-          name: zygisk-module
-          path: zygisk/dist/
+          name: ${{ steps.package-meta.outputs.artifact_name }}
+          path: ${{ steps.package-meta.outputs.package_glob }}
+
+  release-zygisk-module:
+    name: Release Zygisk Module
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    needs: build-zygisk-module
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged module
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
+          path: release-assets
+
+      - name: Verify release asset
+        run: |
+          ls -lh release-assets/
+          unzip -l release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+          generate_release_notes: true
 
   code-quality:
     name: Code Quality Checks

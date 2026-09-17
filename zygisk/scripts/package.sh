@@ -13,7 +13,8 @@ HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 WEBROOT_DIR=${WEBROOT_DIR:-"${ROOT_DIR}/webroot"}
 STAGE_DIR="${ROOT_DIR}/out/package"
 DIST_DIR="${ROOT_DIR}/dist"
-ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v0.1.0-arm64.zip"}
+PACKAGE_VERSION=${PACKAGE_VERSION:-0.1.0}
+ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 LLVM_STRIP=${LLVM_STRIP:-llvm-strip}
 
 if [[ ! -f "${MODULE_LIB}" ]]; then

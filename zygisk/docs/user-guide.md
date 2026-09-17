@@ -13,8 +13,9 @@ Dejavu 的边界很简单：Lua 只负责管理 hook，真正进入目标进程�
 - Android 15 或更高版本（API 35+）。
 - `arm64-v8a` 设备。
 - Magisk 27+ 且启用 Zygisk，或者 APatch + 兼容的 Zygisk provider。
-- 设备已 root，主机安装 `adb`、Python 3 和 Android NDK。
-- 构建 Dejavu Zygisk 前，根目录的 `libdejavu.so` 已经构建完成。
+- 设备已 root。
+- 若需要从源码构建，主机还需安装 `adb`、Python 3 和 Android NDK。
+- 若需要从源码构建，根目录的 `libdejavu.so` 也需要预先构建完成。
 
 APatch 本身不实现 Zygisk。APatch 用户需要额外安装并启用 ZygiskNext
 之类的 provider。APatch Manager 可以直接显示本模块的 WebUI；WebUI
@@ -69,6 +70,15 @@ LLVM_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-st
 ```
 
 ## 4. 安装和首次验证
+
+普通用户可以直接从 [GitHub Releases](https://github.com/tiwe0/Dejavu/releases)
+下载预编译的 `dejavu-zygisk-v*-arm64.zip`，无需本地安装 Android NDK；只有
+在需要修改代码时才需要按上一节从源码构建。下载后最短安装路径就是先推送到
+设备，再在 Magisk Manager 或 APatch Manager 中选择 ZIP 安装：
+
+```sh
+adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download/
+```
 
 将 ZIP 复制到设备：
 

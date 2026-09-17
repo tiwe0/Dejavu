@@ -17,8 +17,8 @@ restart is needed only when the Loader or module installation changes.
 
 - Android 15 or newer (API 35+).
 - A rooted `arm64-v8a` device with Magisk 27.0+ and Zygisk enabled.
-- A host with `adb`, a C/C++ toolchain, Python 3 and an Android NDK.
-- The Dejavu library built from the project root before packaging.
+- For source builds: a host with `adb`, a C/C++ toolchain, Python 3 and an Android NDK.
+- For source builds: the Dejavu library built from the project root before packaging.
 
 The current device test target is MT Manager (`bin.mt.plus`). The target is
 selected by process name, not by package name alone.
@@ -60,7 +60,19 @@ request `DLCLOSE_MODULE_LIBRARY` after target selection.
 
 ## Build and install
 
-Run these commands from the repository root:
+Most users can skip the local NDK toolchain and download the prebuilt
+`dejavu-zygisk-v*-arm64.zip` from [GitHub Releases](https://github.com/tiwe0/Dejavu/releases).
+After downloading, the shortest install path is:
+
+```sh
+adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download/
+```
+
+Then install the ZIP from Magisk or APatch Manager and reboot. Building from
+source is only necessary when you need to modify Dejavu or the Zygisk module
+itself.
+
+Run these commands from the repository root when building from source:
 
 ```sh
 # Build libdejavu.so used by the Agent.
