@@ -58,6 +58,17 @@ do
             return index
         end
 
+        local function ensure_arg_index(parsed_signature, index, helper_name, level)
+            if index >= #parsed_signature.args then
+                fail(
+                    helper_name .. " argument index " .. index ..
+                        " is out of range for signature with " ..
+                        #parsed_signature.args .. " parameter(s)",
+                    (level or 1) + 1)
+            end
+            return index
+        end
+
         local function ensure_c_int(label, value, level)
             local integer = ensure_integer(label, value, (level or 1) + 1)
             if integer < c_int_min or integer > c_int_max then
@@ -344,7 +355,11 @@ static void hookx_log_signed(const char *prefix, long long value) {
 
         function hookx.replace_arg_int(class_name, method_name, signature, index, new_value)
             local parsed_signature = ensure_target(class_name, method_name, signature, 2)
-            local arg_index = ensure_non_negative_index(index, 2)
+            local arg_index = ensure_arg_index(
+                parsed_signature,
+                ensure_non_negative_index(index, 2),
+                "hookx.replace_arg_int",
+                2)
             local replacement = ensure_c_int("new_value", new_value, 2)
             require_arg_descriptor(parsed_signature, arg_index, "I", "hookx.replace_arg_int", 2)
             return install_generated(class_name, method_name, signature, build_source({
@@ -390,7 +405,11 @@ static void hookx_log_signed(const char *prefix, long long value) {
 
         function hookx.log_string_arg(class_name, method_name, signature, index)
             local parsed_signature = ensure_target(class_name, method_name, signature, 2)
-            local arg_index = ensure_non_negative_index(index, 2)
+            local arg_index = ensure_arg_index(
+                parsed_signature,
+                ensure_non_negative_index(index, 2),
+                "hookx.log_string_arg",
+                2)
             require_arg_descriptor(
                 parsed_signature, arg_index, "Ljava/lang/String;", "hookx.log_string_arg", 2)
             return install_generated(class_name, method_name, signature, build_source({

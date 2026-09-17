@@ -110,6 +110,9 @@ end)
 expect_error("argument index must be non-negative", function()
     hookx.replace_arg_int("com.example.Target", "bad", "(I)I", -1, 1)
 end)
+expect_error("hookx.replace_arg_int argument index 1 is out of range", function()
+    hookx.replace_arg_int("com.example.Target", "bad", "(I)I", 1, 1)
+end)
 
 local force_int_id = hookx.force_return_int(
     "com.example.Target",
@@ -162,6 +165,9 @@ assert(last_source():find("DEJAVU_HOOK_ERROR_RANGE", 1, true))
 assert(last_source():find("hookx.log_string_arg value:", 1, true))
 expect_error("hookx.log_string_arg requires argument #0 to be Ljava/lang/String;", function()
     hookx.log_string_arg("com.example.Target", "bad", "(I)V", 0)
+end)
+expect_error("hookx.log_string_arg argument index 1 is out of range", function()
+    hookx.log_string_arg("com.example.Target", "bad", "(Ljava/lang/String;)V", 1)
 end)
 
 local result_log_id = hookx.log_result_int(
