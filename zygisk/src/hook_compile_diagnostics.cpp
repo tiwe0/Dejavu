@@ -38,6 +38,10 @@ bool looks_like_jni_identifier(std::string_view identifier) {
             std::isalpha(static_cast<unsigned char>(identifier[1])) != 0);
 }
 
+bool is_generated_source_file(std::string_view file) {
+    return file == "<string>";
+}
+
 bool contains_jni_identifier(std::string_view message) {
     if (message.find("JNIEnv") != std::string_view::npos ||
         message.find("JavaVM") != std::string_view::npos) {
@@ -77,7 +81,8 @@ std::string rewrite_location(
         return line;
     }
 
-    if (file == "hook.c" || source_line <= preamble_lines) {
+    if (file == "hook.c" || !is_generated_source_file(file) ||
+        source_line <= preamble_lines) {
         return line;
     }
     return "hook.c:" + std::to_string(source_line - preamble_lines) +
