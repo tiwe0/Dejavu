@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -12,6 +13,48 @@ bool is_decimal(std::string_view text) {
            std::all_of(text.begin(), text.end(), [](unsigned char ch) {
                return std::isdigit(ch) != 0;
            });
+}
+
+bool parse_decimal(std::string_view text, size_t *value) {
+    size_t parsed = 0;
+    if (!is_decimal(text)) {
+        return false;
+    }
+    for (unsigned char ch : text) {
+        if (parsed > (std::numeric_limits<size_t>::max() - (ch - '0')) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + static_cast<size_t>(ch - '0');
+    }
+    if (value != nullptr) {
+        *value = parsed;
+    }
+    return true;
+}
+
+bool looks_like_jni_identifier(std::string_view identifier) {
+    return identifier == "JNIEnv" || identifier == "JavaVM" ||
+           (identifier.size() > 1 && identifier.front() == 'j' &&
+            std::isalpha(static_cast<unsigned char>(identifier[1])) != 0);
+}
+
+bool contains_jni_identifier(std::string_view message) {
+    if (message.find("JNIEnv") != std::string_view::npos ||
+        message.find("JavaVM") != std::string_view::npos) {
+        return true;
+    }
+    size_t start = 0;
+    while ((start = message.find('\'', start)) != std::string_view::npos) {
+        const size_t end = message.find('\'', start + 1);
+        if (end == std::string_view::npos) {
+            break;
+        }
+        if (looks_like_jni_identifier(message.substr(start + 1, end - start - 1))) {
+            return true;
+        }
+        start = end + 1;
+    }
+    return false;
 }
 
 std::string rewrite_location(
@@ -29,11 +72,11 @@ std::string rewrite_location(
     const std::string_view line_number(
         line.data() + first_colon + 1,
         second_colon - first_colon - 1);
-    if (!is_decimal(line_number)) {
+    size_t source_line = 0;
+    if (!parse_decimal(line_number, &source_line)) {
         return line;
     }
 
-    const size_t source_line = std::stoul(std::string(line_number));
     if (file == "hook.c" || source_line <= preamble_lines) {
         return line;
     }
@@ -82,10 +125,7 @@ std::vector<std::string> collect_hints(std::string_view message) {
             &hints,
             "Hint: hook source is freestanding C; check for a missing ';', brace, quote, or C++-only syntax near the reported line.");
     }
-    if (contains(message, "JNIEnv") ||
-        contains(message, "jobject") ||
-        contains(message, "jclass") ||
-        contains(message, "jstring")) {
+    if (contains_jni_identifier(message)) {
         append_hint(
             &hints,
             "Hint: raw JNI headers and types are not available here; use opaque void * handles plus dejavu_hook_* helpers.");

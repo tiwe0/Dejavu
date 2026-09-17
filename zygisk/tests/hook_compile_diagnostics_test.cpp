@@ -58,6 +58,13 @@ int main() {
         jni.find("Hint: raw JNI headers and types are not available here;") !=
             std::string::npos,
         "add JNI hint");
+    check(
+        dejavu_hook_format_compile_error(
+            "hook.c:9: error: unknown type name 'jarray'",
+            kPreamble)
+            .find("Hint: raw JNI headers and types are not available here;") !=
+            std::string::npos,
+        "match broader JNI identifiers");
 
     const std::string unresolved = dejavu_hook_format_compile_error(
         "<string>:8: warning: implicit declaration of function 'printf'\n"
