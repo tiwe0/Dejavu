@@ -47,6 +47,16 @@ mkdir -p "${OUT_DIR}"
 
 "${OUT_DIR}/hook_signature_test"
 
+"${CXX}" \
+    -std=c++17 \
+    -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/hook_compile_diagnostics.cpp" \
+    "${ROOT_DIR}/tests/hook_compile_diagnostics_test.cpp" \
+    -o "${OUT_DIR}/hook_compile_diagnostics_test"
+
+"${OUT_DIR}/hook_compile_diagnostics_test"
+
 "${CC}" \
     -std=c17 \
     -Wall -Wextra -Werror \

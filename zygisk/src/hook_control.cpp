@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 
+#include "hook_compile_diagnostics.h"
 #include "hook_api_runtime.h"
 
 namespace {
@@ -77,7 +78,10 @@ int HookManager::Impl::lua_install(
         compile_error,
         sizeof(compile_error));
     if (status != DEJAVU_OK) {
-        copy_error(error, error_size, compile_error);
+        copy_error(
+            error,
+            error_size,
+            dejavu_hook_format_compile_error(compile_error, dejavu_hook_api_preamble()));
         return status;
     }
     void *before_symbol =
