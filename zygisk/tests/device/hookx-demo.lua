@@ -1,9 +1,14 @@
 if type(hookx) ~= "table" then
-    local hookx_loader = loadfile("/data/adb/modules/dejavu_zygisk/config/hookx.lua")
+    local hookx_loader, hookx_error =
+        loadfile("/data/adb/modules/dejavu_zygisk/config/hookx.lua")
     if hookx_loader ~= nil then
         assert(hookx_loader)()
-    else
+    elseif hookx_error ~= nil and
+        (hookx_error:find("No such file", 1, true) ~= nil or
+            hookx_error:find("cannot open", 1, true) ~= nil) then
         assert(loadfile("/data/adb/modules/dejavu_zygisk/config/init.lua"))()
+    else
+        error(hookx_error)
     end
 end
 
