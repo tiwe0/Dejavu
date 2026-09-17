@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 PROJECT_DIR=$(cd -- "${ROOT_DIR}/.." && pwd)
-ANDROID_API=${ANDROID_API:-35}
+ANDROID_API=${ANDROID_API:-26}
 BUILD_TYPE=${BUILD_TYPE:-release}
 OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/android-arm64-v8a-api${ANDROID_API}"}
 LSPLANT_BACKEND_ARCHIVE=${LSPLANT_BACKEND_ARCHIVE:-}

@@ -1,5 +1,7 @@
 # Dejavu
 
+**English** | [简体中文](README.zh-CN.md)
+
 `libdejavu.so` is an Android arm64 shared library skeleton embedding:
 
 - Lua 5.4.8
@@ -8,6 +10,11 @@
 The public ABI is declared in `include/dejavu.h`. Lua and TinyCC are pinned as
 Git submodules and their symbols are hidden. The engine compiles freestanding C
 directly into memory; Lua is a small control layer around that engine.
+
+The core `libdejavu.so` library has no Magisk dependency. It can be embedded or
+loaded by any application that controls its own process. The `zygisk/` directory
+is an optional integration for injecting Dejavu into other Android processes;
+that path requires a compatible Zygisk provider, not Magisk specifically.
 
 For the Android Zygisk integration, common hook tasks also have a higher-level
 pure-Lua helper layer, `hookx.*`; see `zygisk/docs/user-guide.md` and
@@ -73,23 +80,32 @@ make smoke
 cross-compiles and inspects the Android artifact. Use `make android-arm64` when
 only the Android build is needed.
 
-The default build uses `arm64-v8a` and native API level 35, producing:
+The default build uses `arm64-v8a` and native API level 26, producing:
 
 ```text
-out/android-arm64-v8a-api35/libdejavu.so
+out/android-arm64-v8a-api26/libdejavu.so
 ```
 
 Override the native API level or build type when needed:
 
 ```sh
-ANDROID_API=36 BUILD_TYPE=release make smoke
+ANDROID_API=35 BUILD_TYPE=release make smoke
 ```
 
-For an Android app, `targetSdkVersion 36` is configured in the app manifest or
+For an Android app, `targetSdkVersion` is configured in the app manifest or
 Gradle build. The NDK API selected here is the minimum Android version whose
-native APIs the `.so` may use. Since this skeleton only uses stable libc and
-NDK APIs, the API 35 artifact is compatible with Android 16. Building with
-`ANDROID_API=36` requires an NDK that ships an API 36 Clang wrapper.
+native APIs the `.so` may use. The API 26 artifact targets Android 8 and newer
+while using stable libc and NDK APIs. The complete Zygisk integration currently
+supports Android 8 through 15 (API 26-35); Android 16 requires separate ART and
+LSPlant compatibility validation.
+
+### Android compatibility status
+
+| Android versions | API levels | Status |
+| --- | --- | --- |
+| Android 8-14 | 26-34 | Build and installer support; runtime acceptance must still be verified on each device/ROM generation |
+| Android 15 | 35 | Build and installer support plus the current MT Manager device/stress validation path |
+| Android 16+ | 36+ | Not supported by the pinned LSPlant revision |
 
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports
@@ -102,6 +118,6 @@ testing:
 
 Executable memory is allocated from a dedicated, page-aligned mapping. TinyCC
 writes and relocates through RW pages and changes generated code pages to RX;
-it never changes allocator heap pages to executable. Android 16 device testing
-is still required to validate the target process SELinux policy and 16 KB page
-configuration.
+it never changes allocator heap pages to executable. Device testing is still
+required to validate the target process SELinux policy and page-size
+configuration on every supported Android generation.

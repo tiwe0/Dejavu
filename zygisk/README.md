@@ -1,7 +1,7 @@
 # Dejavu Zygisk module
 
-This directory contains the Android 15 `arm64-v8a` Zygisk integration for
-Dejavu. It is a targeted dynamic-debugging bridge: Lua manages hooks, while
+This directory contains the Android 8 through 15 `arm64-v8a` Zygisk integration
+for Dejavu. It is a targeted dynamic-debugging bridge: Lua manages hooks, while
 hook callbacks are compiled by TinyCC and run as native code in the target
 process.
 
@@ -15,10 +15,15 @@ restart is needed only when the Loader or module installation changes.
 
 ## Requirements
 
-- Android 15 or newer (API 35+).
-- A rooted `arm64-v8a` device with Magisk 27.0+ and Zygisk enabled.
+- Android 8 through 15 (API 26-35).
+- A rooted `arm64-v8a` device with a compatible Zygisk provider enabled.
 - For source builds: a host with `adb`, a C/C++ toolchain, Python 3 and an Android NDK.
 - For source builds: the Dejavu library built from the project root before packaging.
+
+CI builds the API 26 release baseline and representative API 30, 34 and 35
+targets. These builds establish native link compatibility; ART hook behavior
+still requires device/ROM acceptance for each Android generation. The current
+pinned LSPlant revision does not support Android 16 (API 36).
 
 The current device test target is MT Manager (`bin.mt.plus`). The target is
 selected by process name, not by package name alone.
@@ -101,8 +106,9 @@ adb push zygisk/dist/dejavu-zygisk-v0.1.0-arm64.zip /sdcard/Download/
 ```
 
 Install the ZIP from Magisk or APatch Manager, then reboot so Zygisk
-rescans the module and restarts Zygote. The module installer rejects non-arm64
-devices, Android versions below API 35 and Magisk versions below 27.0.
+rescans the module and restarts Zygote. The release package is built against
+native API 26 so one artifact covers the supported API 26-35 range. The module
+installer rejects non-arm64 devices and Android versions outside that range.
 
 The package contains `webroot/index.html`. In APatch Manager, open the module's
 WebUI entry to configure scope without editing files. The page uses the APM
@@ -439,7 +445,7 @@ check `DejavuAgent` logcat output.
 
 **Module installs but no Agent logs appear**
 
-Check arm64/API/Magisk requirements, enable Zygisk, confirm the target list,
+Check the arm64/API requirements, enable a compatible Zygisk provider, confirm the target list,
 and reboot after the first install or any Loader change.
 
 **Lua or hook compilation fails**

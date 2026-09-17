@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-ANDROID_API=${ANDROID_API:-35}
+ANDROID_API=${ANDROID_API:-26}
 ADB_SERIAL=${ADB_SERIAL:-}
 PROCESS=${PROCESS:-bin.mt.plus}
 ACTIVITY=${ACTIVITY:-bin.mt.plus/.MainLightIcon}

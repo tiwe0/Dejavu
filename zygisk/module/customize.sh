@@ -13,12 +13,8 @@ if [ "$ARCH" != "arm64" ]; then
     abort "Dejavu Zygisk currently supports arm64 only"
 fi
 
-if [ "${MAGISK_VER_CODE:-0}" -lt 27000 ]; then
-    abort "Dejavu Zygisk requires Magisk 27.0 or newer"
-fi
-
-if [ "${API:-0}" -lt 35 ]; then
-    abort "Dejavu Zygisk requires Android 15 (API 35) or newer"
+if [ "${API:-0}" -lt 26 ] || [ "${API:-0}" -gt 35 ]; then
+    abort "Dejavu Zygisk supports Android 8 through 15 (API 26-35)"
 fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644

@@ -44,7 +44,8 @@ Before and after the move:
 
 - Host target-selection, socket protocol, JNI-signature and Hook API compile
   tests must pass.
-- Android API 35 arm64 must build with `-Werror` and 16 KB load alignment.
+- Android API 26 arm64 baseline and API 30/34/35 compatibility targets must
+  build with `-Werror` and 16 KB load alignment.
 - The MT device protocol test must still cover argument replacement, early
   return, after-result replacement, concurrent dispatch and logical removal.
 - The production package must contain the non-stress Agent build.
@@ -62,7 +63,7 @@ restored to the production Agent with no active user hooks.
   symbol registration.
 - `hook_manager.cpp` now owns hook installation, Lua control registration,
   record lifetime and before/original/after dispatch only.
-- Host tests, Android API 35 arm64 stress build, MT Manager protocol stress and
-  production deployment all pass. The stress run reached `calls=160000`,
+- Host tests, Android API 26-35 arm64 compatibility builds, MT Manager protocol
+  stress and production deployment all pass. The stress run reached `calls=160000`,
   `max_parallel=15`, `java_failures=0`; the final production `hook.list()` is
   empty.

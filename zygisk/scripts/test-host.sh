@@ -77,6 +77,8 @@ mkdir -p "${OUT_DIR}"
 
 "${OUT_DIR}/hook_utils_test"
 
+"${ROOT_DIR}/tests/module_installer_test.sh"
+
 PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
 PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \

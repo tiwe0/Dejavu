@@ -1,6 +1,6 @@
 # Dejavu Zygisk 使用手册
 
-本文是 Dejavu Zygisk 模块的完整使用手册，覆盖 Android 15 arm64 设备
+本文是 Dejavu Zygisk 模块的完整使用手册，覆盖 Android 8 至 15 arm64 设备
 上的安装、作用域配置、Lua 控制、TinyCC native hook、热更新、RPC CLI
 和常见故障处理。
 
@@ -10,12 +10,17 @@ Dejavu 的边界很简单：Lua 只负责管理 hook，真正进入目标进程�
 
 ## 1. 运行条件
 
-- Android 15 或更高版本（API 35+）。
+- Android 8 至 15（API 26-35）。
 - `arm64-v8a` 设备。
-- Magisk 27+ 且启用 Zygisk，或者 APatch + 兼容的 Zygisk provider。
+- 已启用兼容 Zygisk provider 的 root 环境，例如 Magisk Zygisk，或
+  APatch/KernelSU + ZygiskNext。
 - 设备已 root。
 - 若需要从源码构建，主机还需安装 `adb`、Python 3 和 Android NDK。
 - 若需要从源码构建，根目录的 `libdejavu.so` 也需要预先构建完成。
+
+CI 会构建 API 26 发布基线以及 API 30、34、35 代表性目标。这些检查可以
+证明 native 链接兼容，但不能替代每个 Android 代际和 ROM 的真机 ART hook
+验收。当前固定版本的 LSPlant 不支持 Android 16（API 36）。
 
 APatch 本身不实现 Zygisk。APatch 用户需要额外安装并启用 ZygiskNext
 之类的 provider。APatch Manager 可以直接显示本模块的 WebUI；WebUI
@@ -618,7 +623,7 @@ ADB_SERIAL=c44d68aa \
 
 ### 没有 Agent 日志
 
-1. 确认 API >= 35、设备为 arm64。
+1. 确认 API 位于 26-35、设备为 arm64。
 2. 确认 APatch + ZygiskNext 或 Magisk + Zygisk 已启用。
 3. 确认 `targets.txt` 使用的是实际进程名。
 4. 首次安装或 Loader 改动后重启 Zygote。
