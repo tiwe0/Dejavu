@@ -9,6 +9,7 @@ AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_A
 DEJAVU_LIB=${DEJAVU_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
 TARGETS_FILE=${TARGETS_FILE:-"${ROOT_DIR}/config/targets.txt"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
+HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 WEBROOT_DIR=${WEBROOT_DIR:-"${ROOT_DIR}/webroot"}
 STAGE_DIR="${ROOT_DIR}/out/package"
 DIST_DIR="${ROOT_DIR}/dist"
@@ -34,6 +35,10 @@ if [[ ! -f "${TARGETS_FILE}" ]]; then
 fi
 if [[ ! -f "${INIT_LUA}" ]]; then
     echo "error: init Lua file not found: ${INIT_LUA}" >&2
+    exit 1
+fi
+if [[ ! -f "${HOOKX_LUA}" ]]; then
+    echo "error: hookx Lua file not found: ${HOOKX_LUA}" >&2
     exit 1
 fi
 if [[ ! -f "${WEBROOT_DIR}/index.html" ]]; then
@@ -84,7 +89,11 @@ cp "${ROOT_DIR}/module/module.prop" "${STAGE_DIR}/module.prop"
 cp "${ROOT_DIR}/module/customize.sh" "${STAGE_DIR}/customize.sh"
 cp "${ROOT_DIR}/module/skip_mount" "${STAGE_DIR}/skip_mount"
 cp "${TARGETS_FILE}" "${STAGE_DIR}/config/targets.txt"
-cp "${INIT_LUA}" "${STAGE_DIR}/config/init.lua"
+{
+    cat "${HOOKX_LUA}"
+    printf '\n'
+    cat "${INIT_LUA}"
+} > "${STAGE_DIR}/config/init.lua"
 cp -R "${WEBROOT_DIR}/." "${STAGE_DIR}/webroot/"
 cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"

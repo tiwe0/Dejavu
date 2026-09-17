@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+PROJECT_DIR=$(cd -- "${ROOT_DIR}/.." && pwd)
 CC=${CC:-cc}
 CXX=${CXX:-c++}
 OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/host-tests"}
@@ -70,3 +71,32 @@ PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
 "${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
 echo "OK: dejavuctl syntax and argument parser"
+
+"${CC}" \
+    -std=c11 \
+    -O2 \
+    -Wall -Wextra -Werror \
+    -DMAKE_LIB \
+    -DLUA_USE_LINUX \
+    -I"${PROJECT_DIR}/extern/lua" \
+    -c "${PROJECT_DIR}/extern/lua/onelua.c" \
+    -o "${OUT_DIR}/lua-lib.o"
+
+"${CC}" \
+    -std=c11 \
+    -O2 \
+    -Wall -Wextra -Werror \
+    -DLUA_USE_LINUX \
+    -I"${PROJECT_DIR}/extern/lua" \
+    -c "${PROJECT_DIR}/extern/lua/lua.c" \
+    -o "${OUT_DIR}/lua-main.o"
+
+"${CC}" \
+    "${OUT_DIR}/lua-lib.o" \
+    "${OUT_DIR}/lua-main.o" \
+    -ldl -lm \
+    -o "${OUT_DIR}/lua"
+
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_test.lua" "${ROOT_DIR}"
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_compile_test.lua" "${ROOT_DIR}"
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_bundle_test.lua" "${ROOT_DIR}"

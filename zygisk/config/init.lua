@@ -1,1 +1,1 @@
-hook.log("Dejavu Lua control ready")
+hook.log("Dejavu Lua control ready (hookx available)")
