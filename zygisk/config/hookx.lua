@@ -77,7 +77,7 @@ do
                     ["\v"] = "\\v",
                     ["\0"] = "\\0",
                 }
-                return replacements[character] or string.format("\\x%02X", string.byte(character))
+                return replacements[character] or string.format("\\%03o", string.byte(character))
             end) .. '"'
         end
 

@@ -82,3 +82,4 @@ echo "OK: dejavuctl syntax and argument parser"
     -o "${OUT_DIR}/lua"
 
 "${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_test.lua" "${ROOT_DIR}"
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_bundle_test.lua" "${ROOT_DIR}"
