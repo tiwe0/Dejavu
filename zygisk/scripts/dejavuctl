@@ -388,7 +388,7 @@ class ControlSession:
         last_error = ControlError("Agent reconnect probe failed")
         delay = RECONNECT_BACKOFF_INITIAL
         deadline = time.monotonic() + self.wait_seconds
-        single_attempt_only = self.wait_seconds == 0
+        single_attempt_only = self.wait_seconds <= 0
         self.close()
         while True:
             try:
