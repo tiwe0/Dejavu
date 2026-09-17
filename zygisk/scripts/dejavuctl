@@ -354,20 +354,23 @@ class ControlSession:
             else wait_for_metadata(self.serial, self.process_name, wait_seconds)
         )
         pid, socket_name, token = metadata
-        if (
+        metadata_changed = (
             self.port is not None
             and (pid != self.pid or socket_name != self.socket_name or token != self.token)
-        ):
-            self.close()
-        self.pid = pid
-        self.socket_name = socket_name
-        self.token = token
-        if self.port is None:
+        )
+        port = self.port
+        if metadata_changed or port is None:
             forward = adb_command(self.serial, "forward", "tcp:0", f"localabstract:{socket_name}")
             port_text = forward.stdout.strip()
             if not port_text.isdigit():
                 raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
-            self.port = int(port_text)
+            port = int(port_text)
+        if metadata_changed and self.port is not None:
+            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
+        self.pid = pid
+        self.socket_name = socket_name
+        self.token = token
+        self.port = port
         return self.pid
 
     def execute(self, script):
@@ -525,21 +528,21 @@ def load_script_file(path_text):
 
 
 def execute_with_reconnect(session, script):
-    try:
-        status, payload = session.execute(script)
-    except (ControlError, OSError, socket.error) as error:
-        if not is_reconnectable_error(error):
-            raise
-        print_error(f"{error}; requesting Agent reconnect")
-        session.reconnect()
-        return session.execute(script)
-    if is_reconnectable_status(status, payload):
+    while True:
+        try:
+            status, payload = session.execute(script)
+        except (ControlError, OSError, socket.error) as error:
+            if not is_reconnectable_error(error):
+                raise
+            print_error(f"{error}; requesting Agent reconnect")
+            session.reconnect()
+            continue
+        if not is_reconnectable_status(status, payload):
+            return status, payload
         print_error(
             f"{render_rpc_error(session.pid, status, payload)}; requesting Agent reconnect"
         )
         session.reconnect()
-        return session.execute(script)
-    return status, payload
 
 
 def run_repl(session):

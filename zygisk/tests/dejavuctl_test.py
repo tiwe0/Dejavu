@@ -83,6 +83,19 @@ class ScriptValidationTest(unittest.TestCase):
         self.assertEqual(identity, (2, 3))
         print_error.assert_called_once()
 
+    def test_watch_change_reexecutes_when_file_recovers_without_new_mtime(self):
+        with mock.patch.object(dejavuctl, "WATCH_POLL_INTERVAL", 0), \
+            mock.patch.object(dejavuctl.time, "sleep"), \
+            mock.patch.object(
+                dejavuctl,
+                "file_identity",
+                side_effect=[OSError("gone"), (1, 1)],
+            ), \
+            mock.patch.object(dejavuctl, "print_error") as print_error:
+            identity = dejavuctl.wait_for_watch_change(Path("hooks.lua"), (1, 1))
+        self.assertEqual(identity, (1, 1))
+        print_error.assert_called_once()
+
     def test_reconnect_with_zero_wait_still_attempts_once(self):
         session = dejavuctl.ControlSession(None, "bin.mt.plus", 10.0, 0.0)
         session.pid = 123
@@ -95,6 +108,18 @@ class ScriptValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "metadata missing"):
                 session.reconnect()
         refresh_metadata.assert_called_once_with(wait_seconds=0)
+
+    def test_execute_with_reconnect_retries_until_transport_recovers(self):
+        session = mock.Mock()
+        session.pid = 321
+        session.execute.side_effect = [
+            dejavuctl.ControlError("RPC connection closed unexpectedly"),
+            (dejavuctl.RPC_OK, b"true"),
+        ]
+        with mock.patch.object(dejavuctl, "print_error"):
+            status, payload = dejavuctl.execute_with_reconnect(session, b"return true")
+        self.assertEqual((status, payload), (dejavuctl.RPC_OK, b"true"))
+        session.reconnect.assert_called_once_with()
 
 
 if __name__ == "__main__":
