@@ -359,14 +359,16 @@ class ControlSession:
             and (pid != self.pid or socket_name != self.socket_name or token != self.token)
         )
         port = self.port
-        if metadata_changed or port is None:
+        if metadata_changed and self.port is not None:
+            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
+            self.port = None
+            port = None
+        if port is None:
             forward = adb_command(self.serial, "forward", "tcp:0", f"localabstract:{socket_name}")
             port_text = forward.stdout.strip()
             if not port_text.isdigit():
                 raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
             port = int(port_text)
-        if metadata_changed and self.port is not None:
-            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
         self.pid = pid
         self.socket_name = socket_name
         self.token = token
