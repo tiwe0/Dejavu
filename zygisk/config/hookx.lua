@@ -250,7 +250,7 @@ do
 static void hookx_log_unsigned(const char *prefix, unsigned long long value) {
     char buffer[96];
     char reversed[32];
-    size_t length = 0;
+    unsigned long length = 0;
     unsigned int digits = 0;
     while (prefix[length] != '\0' && length + 1 < sizeof(buffer)) {
         buffer[length] = prefix[length];
@@ -280,7 +280,7 @@ static void hookx_log_signed(const char *prefix, long long value) {
     char buffer[96];
     char reversed[32];
     unsigned long long magnitude = (unsigned long long)value;
-    size_t length = 0;
+    unsigned long length = 0;
     unsigned int digits = 0;
     while (prefix[length] != '\0' && length + 1 < sizeof(buffer)) {
         buffer[length] = prefix[length];
@@ -418,7 +418,7 @@ static void hookx_log_signed(const char *prefix, long long value) {
                 unsigned_logger_source,
                 "int before_hook(dejavu_hook_context *context) {",
                 "    char buffer[256] = {0};",
-                "    size_t size = 0;",
+                "    unsigned long size = 0;",
                 "    int status = dejavu_hook_get_arg_string_mutf8(",
                 "        context, " .. arg_index .. ", buffer, sizeof(buffer), &size);",
                 "    if (status == DEJAVU_HOOK_OK) {",

@@ -167,6 +167,9 @@ local string_log_id = hookx.log_string_arg(
     "(Ljava/lang/String;)V",
     0)
 assert(string_log_id == 1007)
+assert(last_source():find("unsigned long length = 0;", 1, true))
+assert(last_source():find("unsigned long size = 0;", 1, true))
+assert(last_source():find("size_t", 1, true) == nil)
 assert(last_source():find("dejavu_hook_get_arg_string_mutf8(", 1, true))
 assert(last_source():find("context, 0, buffer, sizeof(buffer), &size);", 1, true))
 assert(last_source():find("DEJAVU_HOOK_ERROR_RANGE", 1, true))
@@ -185,6 +188,8 @@ local result_log_id = hookx.log_result_int(
 assert(result_log_id == 1008)
 assert(last_source():find("int after_hook", 1, true))
 assert(last_source():find("dejavu_hook_get_result_int(context, &value)", 1, true))
+assert(last_source():find("unsigned long length = 0;", 1, true))
+assert(last_source():find("size_t", 1, true) == nil)
 assert(last_source():find("hookx_log_signed", 1, true))
 expect_error("hookx.log_result_int requires return type I", function()
     hookx.log_result_int("com.example.Target", "bad", "(I)Z")
