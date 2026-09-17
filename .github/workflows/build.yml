@@ -163,7 +163,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
-          path: zygisk/dist
+          path: .
 
       - name: Verify release asset
         run: |
