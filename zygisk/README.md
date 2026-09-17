@@ -78,6 +78,10 @@ produces:
 zygisk/dist/dejavu-zygisk-v0.1.0-arm64.zip
 ```
 
+The packaged `config/init.lua` is assembled from `config/hookx.lua` and
+`config/init.lua`, so both bootstrap code and later `dejavuctl` scripts share
+the same pure-Lua helper library.
+
 For example, copy it to the connected device with:
 
 ```sh
@@ -113,9 +117,9 @@ restarting Zygote:
 ADB_SERIAL=c44d68aa make -C zygisk deploy-agent
 ```
 
-`deploy-agent.sh` atomically copies the Agent and init script into the module,
-then force-stops and starts the configured process. Override the defaults when
-testing another process or activity:
+`deploy-agent.sh` atomically copies the Agent and the assembled init script into
+the module, then force-stops and starts the configured process. Override the
+defaults when testing another process or activity:
 
 ```sh
 ADB_SERIAL=c44d68aa \
@@ -227,6 +231,39 @@ hook.log("message")
 - `hook.clear()` logically disables all user hooks and returns the number that
   changed. It does not physically uninstall them.
 - `hook.log(message)` writes to the `DejavuHook` logcat tag.
+
+### High-level `hookx` helpers
+
+`hookx` is a pure-Lua convenience layer built on top of `hook.install(...)`.
+It validates common arguments in Lua, generates ABI-v1-compliant hook C source,
+calls the existing install entry point, and returns the same hook id that the
+low-level API returns. It does not change the Hook C ABI or the semantics of
+`hook.install/remove/uninstall/clear/list/log`.
+
+```lua
+local sig = hookx.sig{
+    args = {"String", "int"},
+    ret = "boolean",
+}
+
+local trace_id = hookx.trace("android.app.Activity", "onResume", "()V")
+local bypass_id = hookx.force_return_bool("com.example.Guard", "check", "()Z", true)
+local rewrite_id = hookx.replace_arg_int("com.example.Target", "compute", "(I)I", 0, 42)
+```
+
+Available helpers:
+
+- `hookx.trace(class, method, sig[, opts])`
+- `hookx.replace_arg_int(class, method, sig, index, new_value)`
+- `hookx.force_return_int(class, method, sig, value)`
+- `hookx.force_return_bool(class, method, sig, value)`
+- `hookx.force_return_void(class, method, sig)`
+- `hookx.log_string_arg(class, method, sig, index)`
+- `hookx.log_result_int(class, method, sig)`
+- `hookx.sig{args=..., ret=...}`
+
+See [docs/cookbook.md](docs/cookbook.md) for runnable examples and the matching
+low-level `hook.install` + handwritten C forms.
 
 The WebUI represents each selected package by its default process name, which
 is normally the package name. Apps that declare additional processes need

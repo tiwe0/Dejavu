@@ -9,6 +9,10 @@ The public ABI is declared in `include/dejavu.h`. Lua and TinyCC are pinned as
 Git submodules and their symbols are hidden. The engine compiles freestanding C
 directly into memory; Lua is a small control layer around that engine.
 
+For the Android Zygisk integration, common hook tasks also have a higher-level
+pure-Lua helper layer, `hookx.*`; see `zygisk/docs/user-guide.md` and
+`zygisk/docs/cookbook.md`.
+
 ## Engine model
 
 The first ABI deliberately supports one generated entry signature:

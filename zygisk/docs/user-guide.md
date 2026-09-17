@@ -169,7 +169,8 @@ ACTIVITY=bin.mt.plus/.MainLightIcon \
 make -C zygisk deploy-agent
 ```
 
-脚本会先复制到临时文件，再原子替换模块中的 Agent 和 `init.lua`，然后
+脚本会先把 `config/hookx.lua` 和 `config/init.lua` 拼成最终部署的
+`init.lua`，再复制到临时文件，原子替换模块中的 Agent 和 `init.lua`，然后
 停止并重新启动目标进程。已经运行的进程不会自动映射新 Agent；只需重启
 目标进程即可。Loader、module.prop、Zygisk provider 或模块安装状态变化
 仍然需要 Zygote 重启。
@@ -189,7 +190,43 @@ local count = hook.clear()
 hook.log("message")
 ```
 
-### 7.1 安装一个最小 hook
+### 7.1 `hookx` 高层封装
+
+`hookx` 是构建在现有 `hook.install(...)` 之上的纯 Lua helper library。
+它在 Lua 层生成符合 Hook C ABI v1 的 C source，再调用底层 API 安装 hook，
+因此不会修改 ABI，也不会改变 `hook.install/remove/uninstall/clear/list/log`
+的语义。返回值仍然是底层 hook id，所以生命周期管理仍然使用现有 `hook.*`
+接口。
+
+```lua
+local sig = hookx.sig{
+    args = {"String", "int"},
+    ret = "boolean",
+}
+
+local trace_id = hookx.trace("android.app.Activity", "onResume", "()V")
+local bypass_id = hookx.force_return_bool("com.example.Guard", "isSafe", "()Z", true)
+local rewrite_id = hookx.replace_arg_int("com.example.Target", "compute", "(I)I", 0, 42)
+```
+
+可用 helper：
+
+- `hookx.trace(class, method, sig[, opts])`
+- `hookx.replace_arg_int(class, method, sig, index, new_value)`
+- `hookx.force_return_int(class, method, sig, value)`
+- `hookx.force_return_bool(class, method, sig, value)`
+- `hookx.force_return_void(class, method, sig)`
+- `hookx.log_string_arg(class, method, sig, index)`
+- `hookx.log_result_int(class, method, sig)`
+- `hookx.sig{args=..., ret=...}`
+
+`hookx.sig` 支持 `"int"`、`"boolean"`、`"long"`、`"float"`、`"double"`、
+`"void"`、`"String"`，以及任意合法的对象/数组 JNI descriptor，例如
+`"Landroid/content/Context;"`、`"[I"`、`"[Ljava/lang/String;"`。
+
+更多可直接运行的配方见 [cookbook.md](cookbook.md)。
+
+### 7.2 安装一个最小 hook
 
 下面的 hook 只在日志中记录 `Activity.onResume`：
 
@@ -216,7 +253,7 @@ hook.log(hook.list())
 `after_hook` 其中一个。类名使用 Java 点号形式，方法签名使用 JNI
 descriptor。
 
-### 7.2 管理 hook 生命周期
+### 7.3 管理 hook 生命周期
 
 ```lua
 -- 快速逻辑禁用：保留 LSPlant 和 TinyCC 资源

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+PROJECT_DIR=$(cd -- "${ROOT_DIR}/.." && pwd)
 CC=${CC:-cc}
 CXX=${CXX:-c++}
 OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/host-tests"}
@@ -70,3 +71,14 @@ PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
 "${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
 echo "OK: dejavuctl syntax and argument parser"
+
+"${CC}" \
+    -std=c11 \
+    -O2 \
+    -Wall -Wextra -Werror \
+    -DLUA_USE_LINUX \
+    "${PROJECT_DIR}/extern/lua/onelua.c" \
+    -ldl -lm \
+    -o "${OUT_DIR}/lua"
+
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_test.lua" "${ROOT_DIR}"
