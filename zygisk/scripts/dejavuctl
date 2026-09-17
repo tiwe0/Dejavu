@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import re
 import secrets
 import shlex
@@ -33,6 +34,9 @@ FRAME_HEADER = struct.Struct("<I")
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 SOCKET_PATTERN = re.compile(r"dejavu-[A-Za-z0-9_.-]+\Z")
 DEFAULT_PROCESS = "bin.mt.plus"
+RECONNECT_BACKOFF_INITIAL = 0.1
+RECONNECT_BACKOFF_MAX = 5.0
+WATCH_POLL_INTERVAL = 0.25
 
 
 class ControlError(RuntimeError):
@@ -188,6 +192,48 @@ def execute_once(port, token, request_type, expected_response_type, script, time
     return status, payload
 
 
+@contextmanager
+def forwarded_port(serial, socket_name):
+    forward = adb_command(serial, "forward", "tcp:0", f"localabstract:{socket_name}")
+    port_text = forward.stdout.strip()
+    if not port_text.isdigit():
+        raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
+    port = int(port_text)
+    try:
+        yield port
+    finally:
+        adb_command(serial, "forward", "--remove", f"tcp:{port}", check=False)
+
+
+def execute_with_port(
+    port,
+    token,
+    request_type,
+    expected_response_type,
+    script,
+    timeout,
+    wait_seconds,
+):
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        status, payload = execute_once(
+            port,
+            token,
+            request_type,
+            expected_response_type,
+            script,
+            timeout,
+        )
+        if (
+            status == RPC_UNAVAILABLE
+            and payload == b"target Agent is not connected"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.1)
+            continue
+        return status, payload
+
+
 def execute(
     serial,
     socket_name,
@@ -198,41 +244,215 @@ def execute(
     timeout,
     wait_seconds,
 ):
-    forward = adb_command(serial, "forward", "tcp:0", f"localabstract:{socket_name}")
-    port_text = forward.stdout.strip()
-    if not port_text.isdigit():
-        raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
-    port = int(port_text)
-    deadline = time.monotonic() + wait_seconds
-    try:
+    with forwarded_port(serial, socket_name) as port:
+        return execute_with_port(
+            port,
+            token,
+            request_type,
+            expected_response_type,
+            script,
+            timeout,
+            wait_seconds,
+        )
+
+
+def render_rpc_error(pid, status, payload):
+    labels = {
+        RPC_EXECUTION_ERROR: "execution error",
+        RPC_UNAVAILABLE: "unavailable",
+        RPC_PROTOCOL_ERROR: "protocol error",
+    }
+    detail = payload.decode("utf-8", errors="replace")
+    return ControlError(f"{labels.get(status, f'RPC status {status}')} for pid {pid}: {detail}")
+
+
+def print_payload(payload):
+    sys.stdout.buffer.write(payload)
+    if not payload.endswith(b"\n"):
+        sys.stdout.buffer.write(b"\n")
+    sys.stdout.buffer.flush()
+
+
+def print_error(error):
+    print(f"dejavuctl: {error}", file=sys.stderr)
+    sys.stderr.flush()
+
+
+def is_reconnectable_status(status, payload):
+    return status == RPC_UNAVAILABLE and payload in (
+        b"target Agent is not connected",
+        b"target Agent disconnected; retry the command",
+    )
+
+
+def is_reconnectable_error(error):
+    if isinstance(error, socket.timeout):
+        return True
+    if isinstance(error, OSError):
+        return True
+    if not isinstance(error, ControlError):
+        return False
+    return str(error) in (
+        "RPC connection closed unexpectedly",
+        "invalid authentication acknowledgement",
+        "truncated RPC response",
+        "invalid RPC response",
+    )
+
+
+def read_command(prompt):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    ready, _, _ = select.select([sys.stdin], [], [])
+    if not ready:
+        raise EOFError
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line
+
+
+def file_identity(path):
+    stat_result = path.stat()
+    return stat_result.st_mtime_ns, stat_result.st_size
+
+
+def wait_for_watch_change(path, current_identity):
+    reported_error = None
+    while True:
+        time.sleep(WATCH_POLL_INTERVAL)
+        try:
+            latest_identity = file_identity(path)
+        except OSError as error:
+            message = f"cannot watch {path}: {error}"
+            if message != reported_error:
+                print_error(message)
+                reported_error = message
+            continue
+        if latest_identity != current_identity or reported_error is not None:
+            return latest_identity
+
+
+class ControlSession:
+    def __init__(self, serial, process_name, timeout, wait_seconds):
+        self.serial = serial
+        self.process_name = process_name
+        self.timeout = timeout
+        self.wait_seconds = wait_seconds
+        self.pid = None
+        self.socket_name = None
+        self.token = None
+        self.port = None
+
+    def __enter__(self):
+        self.refresh_metadata(wait=True)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def close(self):
+        if self.port is not None:
+            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
+            self.port = None
+
+    def refresh_metadata(self, wait=False):
+        metadata = (
+            wait_for_metadata(self.serial, self.process_name, self.wait_seconds)
+            if wait
+            else read_metadata(self.serial, self.process_name)
+        )
+        pid, socket_name, token = metadata
+        if (
+            self.port is not None
+            and (pid != self.pid or socket_name != self.socket_name or token != self.token)
+        ):
+            self.close()
+        self.pid = pid
+        self.socket_name = socket_name
+        self.token = token
+        if self.port is None:
+            forward = adb_command(self.serial, "forward", "tcp:0", f"localabstract:{socket_name}")
+            port_text = forward.stdout.strip()
+            if not port_text.isdigit():
+                raise ControlError(f"adb returned an invalid forwarded port: {port_text!r}")
+            self.port = int(port_text)
+        return self.pid
+
+    def execute(self, script):
+        if self.port is None:
+            self.refresh_metadata(wait=True)
+        return execute_with_port(
+            self.port,
+            self.token,
+            RPC_EXECUTE_REQUEST,
+            RPC_EXECUTE_RESPONSE,
+            script,
+            self.timeout,
+            self.wait_seconds,
+        )
+
+    def reconnect(self):
+        previous_pid = self.pid
+        last_error = ControlError("Agent reconnect probe failed")
+        delay = RECONNECT_BACKOFF_INITIAL
+        deadline = time.monotonic() + self.wait_seconds
         while True:
-            status, payload = execute_once(
-                port,
-                token,
-                request_type,
-                expected_response_type,
-                script,
-                timeout,
-            )
-            if (
-                status == RPC_UNAVAILABLE
-                and payload == b"target Agent is not connected"
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.1)
-                continue
-            return status, payload
-    finally:
-        adb_command(serial, "forward", "--remove", f"tcp:{port}", check=False)
+            try:
+                self.refresh_metadata(wait=False)
+                status, payload = execute_with_port(
+                    self.port,
+                    self.token,
+                    RPC_RECONNECT_REQUEST,
+                    RPC_RECONNECT_RESPONSE,
+                    b"",
+                    self.timeout,
+                    self.wait_seconds,
+                )
+                if status != RPC_OK:
+                    last_error = render_rpc_error(self.pid, status, payload)
+                else:
+                    status, payload = self.execute(b"return true")
+                    if status == RPC_OK and payload == b"true":
+                        if self.pid != previous_pid:
+                            print(
+                                f"dejavuctl: reattached to pid {self.pid} after restart",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(f"dejavuctl: reconnected to pid {self.pid}", file=sys.stderr)
+                        sys.stderr.flush()
+                        return
+                    last_error = (
+                        render_rpc_error(self.pid, status, payload)
+                        if status != RPC_OK
+                        else ControlError("Agent reconnect probe failed")
+                    )
+            except (ControlError, OSError, socket.error) as error:
+                last_error = error
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(delay)
+            delay = min(delay * 2, RECONNECT_BACKOFF_MAX)
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Execute Lua management code in a running Dejavu Agent."
     )
-    parser.add_argument("script", nargs="?", help="Lua script file")
-    parser.add_argument("process_arg", nargs="?", help="target process name")
+    parser.add_argument("positionals", nargs="*", metavar="ARG")
     parser.add_argument("-e", "--execute", metavar="CODE", help="inline Lua code")
+    parser.add_argument(
+        "-i",
+        "--repl",
+        action="store_true",
+        help="read and execute one line of Lua at a time until exit/quit/EOF",
+    )
+    parser.add_argument(
+        "--watch",
+        metavar="FILE",
+        help="watch a Lua file and execute it whenever it changes",
+    )
     parser.add_argument(
         "--reconnect",
         action="store_true",
@@ -245,11 +465,32 @@ def parse_arguments():
     parser.add_argument("--wait", type=float, default=5.0, metavar="SECONDS")
     parser.add_argument("--timeout", type=float, default=10.0, metavar="SECONDS")
     arguments = parser.parse_args()
+    arguments.script = None
+    arguments.process_arg = None
+    positionals = arguments.positionals
+    if arguments.watch is not None or arguments.repl or arguments.execute is not None or arguments.reconnect:
+        if len(positionals) > 1:
+            parser.error("too many positional arguments")
+        if positionals:
+            arguments.process_arg = positionals[0]
+    else:
+        if len(positionals) > 2:
+            parser.error("too many positional arguments")
+        if positionals:
+            arguments.script = positionals[0]
+        if len(positionals) == 2:
+            arguments.process_arg = positionals[1]
     source_count = sum(
-        (arguments.execute is not None, arguments.script is not None, arguments.reconnect)
+        (
+            arguments.execute is not None,
+            arguments.script is not None,
+            arguments.reconnect,
+            arguments.repl,
+            arguments.watch is not None,
+        )
     )
     if source_count != 1:
-        parser.error("use exactly one of a script file, --execute or --reconnect")
+        parser.error("use exactly one of a script file, --execute, --repl, --watch or --reconnect")
     if arguments.process_option and arguments.process_arg:
         parser.error("process name was specified twice")
     if arguments.wait < 0 or arguments.timeout <= 0:
@@ -261,10 +502,12 @@ def load_script(arguments):
     if arguments.execute is not None:
         script = arguments.execute.encode("utf-8")
     else:
-        try:
-            script = Path(arguments.script).read_bytes()
-        except OSError as error:
-            raise ControlError(f"cannot read {arguments.script}: {error}") from error
+        script = load_script_file(arguments.script)
+    validate_script(script)
+    return script
+
+
+def validate_script(script):
     if not script:
         raise ControlError("Lua script is empty")
     if len(script) > MAX_PAYLOAD_SIZE:
@@ -274,60 +517,132 @@ def load_script(arguments):
     return script
 
 
+def load_script_file(path_text):
+    try:
+        script = Path(path_text).read_bytes()
+    except OSError as error:
+        raise ControlError(f"cannot read {path_text}: {error}") from error
+    validate_script(script)
+    return script
+
+
+def execute_with_reconnect(session, script):
+    try:
+        status, payload = session.execute(script)
+    except (ControlError, OSError, socket.error) as error:
+        if not is_reconnectable_error(error):
+            raise
+        print_error(f"{error}; requesting Agent reconnect")
+        session.reconnect()
+        return session.execute(script)
+    if is_reconnectable_status(status, payload):
+        print_error(
+            f"{render_rpc_error(session.pid, status, payload)}; requesting Agent reconnect"
+        )
+        session.reconnect()
+        return session.execute(script)
+    return status, payload
+
+
+def run_repl(session):
+    had_error = False
+    while True:
+        try:
+            line = read_command("dejavu> ")
+        except EOFError:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            break
+        command = line.rstrip("\n")
+        if command.strip() in ("exit", "quit"):
+            break
+        if not command.strip():
+            continue
+        try:
+            status, payload = execute_with_reconnect(session, command.encode("utf-8"))
+            if status == RPC_OK:
+                print_payload(payload)
+            else:
+                had_error = True
+                print_error(render_rpc_error(session.pid, status, payload))
+        except (ControlError, OSError, socket.error) as error:
+            had_error = True
+            print_error(error)
+    return 1 if had_error else 0
+
+
+def run_watch(session, file_path):
+    had_error = False
+    path = Path(file_path)
+    try:
+        current_identity = file_identity(path)
+    except OSError as error:
+        raise ControlError(f"cannot watch {file_path}: {error}") from error
+    while True:
+        try:
+            script = load_script_file(file_path)
+            status, payload = execute_with_reconnect(session, script)
+            if status == RPC_OK:
+                print_payload(payload)
+            else:
+                had_error = True
+                print_error(render_rpc_error(session.pid, status, payload))
+        except (ControlError, OSError, socket.error) as error:
+            had_error = True
+            print_error(error)
+        try:
+            current_identity = wait_for_watch_change(path, current_identity)
+        except KeyboardInterrupt:
+            print(file=sys.stderr)
+            return 1 if had_error else 0
+
+
 def main():
     arguments = parse_arguments()
     process_name = arguments.process_option or arguments.process_arg or DEFAULT_PROCESS
     if PROCESS_PATTERN.fullmatch(process_name) is None:
         raise ControlError(f"invalid process name: {process_name}")
-    script = b"" if arguments.reconnect else load_script(arguments)
     with exclusive_cli_session():
-        pid, socket_name, token = wait_for_metadata(
-            arguments.serial, process_name, arguments.wait
-        )
-        request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
-        response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
-        status, payload = execute(
+        with ControlSession(
             arguments.serial,
-            socket_name,
-            token,
-            request_type,
-            response_type,
-            script,
+            process_name,
             arguments.timeout,
             arguments.wait,
-        )
-        if arguments.reconnect and status == RPC_OK:
-            status, probe = execute(
-                arguments.serial,
-                socket_name,
-                token,
-                RPC_EXECUTE_REQUEST,
-                RPC_EXECUTE_RESPONSE,
-                b"return true",
+        ) as session:
+            if arguments.repl:
+                return run_repl(session)
+            if arguments.watch is not None:
+                return run_watch(session, arguments.watch)
+            script = b"" if arguments.reconnect else load_script(arguments)
+            request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
+            response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
+            status, payload = execute_with_port(
+                session.port,
+                session.token,
+                request_type,
+                response_type,
+                script,
                 arguments.timeout,
                 arguments.wait,
             )
-            if status != RPC_OK or probe != b"true":
-                raise ControlError("Agent reconnect probe failed")
-            payload = b"Agent reconnected"
+            if arguments.reconnect and status == RPC_OK:
+                status, probe = session.execute(b"return true")
+                if status != RPC_OK or probe != b"true":
+                    raise ControlError("Agent reconnect probe failed")
+                payload = b"Agent reconnected"
+                status = RPC_OK
     if status == RPC_OK:
-        sys.stdout.buffer.write(payload)
-        if not payload.endswith(b"\n"):
-            sys.stdout.buffer.write(b"\n")
+        print_payload(payload)
         return 0
-
-    labels = {
-        RPC_EXECUTION_ERROR: "execution error",
-        RPC_UNAVAILABLE: "unavailable",
-        RPC_PROTOCOL_ERROR: "protocol error",
-    }
-    detail = payload.decode("utf-8", errors="replace")
-    raise ControlError(f"{labels.get(status, f'RPC status {status}')} for pid {pid}: {detail}")
+    raise render_rpc_error(session.pid, status, payload)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        sys.exit(0)
     except (ControlError, OSError, socket.error) as error:
         print(f"dejavuctl: {error}", file=sys.stderr)
         sys.exit(1)
