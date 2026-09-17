@@ -64,7 +64,7 @@ make -C zygisk package
 产物为：
 
 ```text
-zygisk/dist/dejavu-zygisk-v0.1.0-arm64.zip
+zygisk/dist/dejavu-zygisk-v0.2.0-arm64.zip
 ```
 
 `package` 会自动查找 NDK 的 `llvm-strip`，并对 Loader、Agent 和
@@ -90,7 +90,7 @@ adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download
 将 ZIP 复制到设备：
 
 ```sh
-adb push zygisk/dist/dejavu-zygisk-v0.1.0-arm64.zip /sdcard/Download/
+adb push zygisk/dist/dejavu-zygisk-v0.2.0-arm64.zip /sdcard/Download/
 ```
 
 在 Magisk Manager 或 APatch Manager 中选择该 ZIP 安装，然后重启设备。
@@ -578,7 +578,7 @@ make -C zygisk package
 
 # 2. 推送安装包，之后在 APatch Manager 中安装并重启
 adb -s c44d68aa push \
-  zygisk/dist/dejavu-zygisk-v0.1.0-arm64.zip \
+  zygisk/dist/dejavu-zygisk-v0.2.0-arm64.zip \
   /sdcard/Download/
 
 # 3. 确认作用域并启动 MT Manager

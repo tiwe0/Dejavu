@@ -107,6 +107,15 @@ LSPlant compatibility validation.
 | Android 15 | 35 | Build and installer support plus the current MT Manager device/stress validation path |
 | Android 16-17 | 36-37 | Supported by upstream LSPlant; Dejavu runtime acceptance is pending, so the module installer does not enable these versions yet |
 
+### Automated releases
+
+Every successful push to `main` publishes the packaged Zygisk module as a
+GitHub prerelease named `v<module-version>-build.<workflow-run>`. Pull requests
+and `develop` builds never publish releases. Pushing a matching `v*` tag, such
+as `v0.2.0`, publishes the corresponding stable release instead. A release is
+created only after the host tests, Android API 26 baseline, compatibility
+builds, Zygisk package, and code-quality checks all pass.
+
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports
 exactly the Dejavu ABI. Runtime smoke entry points are included for device
