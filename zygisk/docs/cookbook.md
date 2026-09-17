@@ -6,6 +6,15 @@ Lua 高层封装。它不修改 Hook C ABI v1，也不改变 `hook.install/remov
 
 > 所有下面的手写 C 示例都面向 TinyCC 接受的 GNU C 方言（与
 > `hook-c-api.md` 中 `-std=gnu17` 的说明一致）。
+>
+> 如果目标进程已经执行过模块里拼装后的 `config/init.lua`，`hookx` 会自动存在于
+> 共享 Lua 会话中；若你是在一个全新的独立脚本里显式兜底，可以先加：
+>
+> ```lua
+> if type(hookx) ~= "table" then
+>     assert(loadfile("/data/adb/modules/dejavu_zygisk/config/hookx.lua"))()
+> end
+> ```
 
 ## 1. 追踪某方法的每次调用
 
@@ -216,7 +225,8 @@ hookx.trace("com.example.Api", "submit", "(Ljava/lang/String;Landroid/content/Co
 ```
 
 上面的 Lua 片段既可以保存成 `.lua` 文件后通过 `dejavuctl path/to/file.lua bin.mt.plus`
-执行，也可以根据需要改写成 `dejavuctl -e '...'` 的单行形式。
+执行，也可以根据需要改写成 `dejavuctl -e '...'` 的单行形式；如果是全新的独立
+脚本且当前会话还没有执行过模块里的 `init.lua`，先加上前面的兜底加载片段。
 
 ## 设备端快速验证
 

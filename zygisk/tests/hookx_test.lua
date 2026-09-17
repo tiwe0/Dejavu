@@ -1,5 +1,6 @@
 local root = assert(arg[1], "missing zygisk root path")
 local installs = {}
+local original_tointeger = math.tointeger
 
 hook = {
     install = function(class_name, method_name, signature, source)
@@ -27,7 +28,9 @@ hook = {
     end,
 }
 
+math.tointeger = nil
 assert(loadfile(root .. "/config/hookx.lua"))()
+math.tointeger = original_tointeger
 assert(type(hookx) == "table")
 
 local function last_source()

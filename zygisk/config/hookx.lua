@@ -15,6 +15,16 @@ do
             ["String"] = "Ljava/lang/String;",
         }
 
+        local lua_tointeger = math.tointeger
+        if lua_tointeger == nil then
+            lua_tointeger = function(value)
+                if type(value) == "number" and value == math.floor(value) then
+                    return value
+                end
+                return nil
+            end
+        end
+
         local function fail(message, level)
             error("hookx: " .. message, (level or 1) + 1)
         end
@@ -27,7 +37,7 @@ do
         end
 
         local function ensure_integer(label, value, level)
-            local integer = math.tointeger(value)
+            local integer = lua_tointeger(value)
             if integer == nil then
                 fail(label .. " must be an integer", (level or 1) + 1)
             end
@@ -46,7 +56,7 @@ do
             if type(value) == "boolean" then
                 return value and 1 or 0
             end
-            local integer = math.tointeger(value)
+            local integer = lua_tointeger(value)
             if integer == 0 or integer == 1 then
                 return integer
             end
