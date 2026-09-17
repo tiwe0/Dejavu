@@ -55,6 +55,7 @@ add_library(dejavu_agent SHARED
     src/hook_api_primitives.cpp
     src/hook_api_runtime.cpp
     src/hook_api_strings.cpp
+    src/hook_compile_diagnostics.cpp
     src/hook_control.cpp
     src/hook_dispatch.cpp
     src/hook_manager.cpp
