@@ -15,8 +15,9 @@ Dejavu 的边界很简单：Lua 只负责管理 hook，真正进入目标进程�
 - 已启用兼容 Zygisk provider 的 root 环境，例如 Magisk Zygisk，或
   APatch/KernelSU + ZygiskNext。
 - 设备已 root。
-- 若需要从源码构建，主机还需安装 `adb`、Python 3、CMake 3.28+ 和
-  Android NDK r29。
+- 若需要从源码构建，主机还需安装 `adb`、Python 3、CMake 3.28+、Ninja、
+  JDK 17+ 和 Android NDK r29；打包还需要 Android SDK build-tools（`d8`，
+  通过 `ANDROID_HOME` 查找）、`xxd`、`zip` 和 `unzip`。
 - 若需要从源码构建，根目录的 `libdejavu.so` 也需要预先构建完成。
 
 CI 会构建 API 26 发布基线以及 API 30、34、35 代表性目标。这些检查可以
@@ -516,6 +517,7 @@ ADB_SERIAL=c44d68aa \
 -s, --serial SERIAL     adb serial，也可使用 ADB_SERIAL
 --wait SECONDS          等待 Agent endpoint，默认 5 秒
 --timeout SECONDS       socket 超时，默认 10 秒
+-e, --execute CODE      执行一段内联 Lua 代码后退出
 -i, --repl              保持会话并按行执行 Lua，直到 exit/quit/EOF
 --watch FILE            先执行一次 FILE，再在每次保存后自动重新执行
 --reconnect             重新连接并验证同一个 PID 的 Agent 通道

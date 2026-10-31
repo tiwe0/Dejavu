@@ -4,6 +4,7 @@
 
 #include "dejavu.h"
 
+#include <limits.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,8 +51,8 @@ static void copy_error(char *error, size_t error_size, const char *message) {
 }
 
 static int lua_module_gc(lua_State *state) {
-    struct lua_dejavu_module *holder = (struct lua_dejavu_module *)
-        luaL_checkudata(state, 1, DEJAVU_MODULE_METATABLE);
+    struct lua_dejavu_module *holder =
+        (struct lua_dejavu_module *)luaL_checkudata(state, 1, DEJAVU_MODULE_METATABLE);
 
     dejavu_module_destroy(holder->module);
     holder->module = NULL;
@@ -59,8 +60,8 @@ static int lua_module_gc(lua_State *state) {
 }
 
 static int lua_module_call(lua_State *state) {
-    struct lua_dejavu_module *holder = (struct lua_dejavu_module *)
-        luaL_checkudata(state, lua_upvalueindex(1), DEJAVU_MODULE_METATABLE);
+    struct lua_dejavu_module *holder = (struct lua_dejavu_module *)luaL_checkudata(
+        state, lua_upvalueindex(1), DEJAVU_MODULE_METATABLE);
     int result;
     int status;
 
@@ -89,7 +90,8 @@ static int lua_dejavu_compile(lua_State *state) {
 
     status = dejavu_engine_compile(engine, source, &holder->module, error, sizeof(error));
     if (status != DEJAVU_OK) {
-        return luaL_error(state, "C compile failed: %s", error[0] != '\0' ? error : "unknown error");
+        return luaL_error(state, "C compile failed: %s",
+                          error[0] != '\0' ? error : "unknown error");
     }
 
     lua_pushvalue(state, -1);
@@ -131,66 +133,61 @@ void dejavu_value_release(dejavu_value *value) {
     clear_value(value);
 }
 
-static int copy_lua_value(
-    lua_State *state,
-    int index,
-    int copy_string,
-    dejavu_value *value,
-    char *error,
-    size_t error_size) {
+static int copy_lua_value(lua_State *state, int index, int copy_string, dejavu_value *value,
+                          char *error, size_t error_size) {
     size_t string_size;
     const char *string_value;
 
     clear_value(value);
     switch (lua_type(state, index)) {
-        case LUA_TNIL:
+    case LUA_TNIL:
+        return DEJAVU_OK;
+    case LUA_TBOOLEAN:
+        value->type = DEJAVU_VALUE_BOOLEAN;
+        value->boolean_value = lua_toboolean(state, index);
+        return DEJAVU_OK;
+    case LUA_TNUMBER:
+        if (lua_isinteger(state, index)) {
+            value->type = DEJAVU_VALUE_INTEGER;
+            value->integer_value = (long long)lua_tointegerx(state, index, NULL);
+        } else {
+            value->type = DEJAVU_VALUE_NUMBER;
+            value->number_value = (double)lua_tonumberx(state, index, NULL);
+        }
+        return DEJAVU_OK;
+    case LUA_TSTRING:
+        string_value = lua_tolstring(state, index, &string_size);
+        value->type = DEJAVU_VALUE_STRING;
+        value->string_size = string_size;
+        if (!copy_string) {
+            value->string_value = string_value;
             return DEJAVU_OK;
-        case LUA_TBOOLEAN:
-            value->type = DEJAVU_VALUE_BOOLEAN;
-            value->boolean_value = lua_toboolean(state, index);
-            return DEJAVU_OK;
-        case LUA_TNUMBER:
-            if (lua_isinteger(state, index)) {
-                value->type = DEJAVU_VALUE_INTEGER;
-                value->integer_value = (long long)lua_tointegerx(state, index, NULL);
-            } else {
-                value->type = DEJAVU_VALUE_NUMBER;
-                value->number_value = (double)lua_tonumberx(state, index, NULL);
+        }
+        {
+            char *copy = (char *)malloc(string_size + 1);
+            if (copy == NULL) {
+                copy_error(error, error_size, "unable to copy Lua string result");
+                return DEJAVU_ERROR_OUT_OF_MEMORY;
             }
-            return DEJAVU_OK;
-        case LUA_TSTRING:
-            string_value = lua_tolstring(state, index, &string_size);
-            value->type = DEJAVU_VALUE_STRING;
-            value->string_size = string_size;
-            if (!copy_string) {
-                value->string_value = string_value;
-                return DEJAVU_OK;
-            }
-            {
-                char *copy = (char *)malloc(string_size + 1);
-                if (copy == NULL) {
-                    copy_error(error, error_size, "unable to copy Lua string result");
-                    return DEJAVU_ERROR_OUT_OF_MEMORY;
-                }
-                memcpy(copy, string_value, string_size);
-                copy[string_size] = '\0';
-                value->string_value = copy;
-                value->owned = 1;
-            }
-            return DEJAVU_OK;
-        case LUA_TLIGHTUSERDATA:
-            value->type = DEJAVU_VALUE_HANDLE;
-            value->handle_value = lua_touserdata(state, index);
-            return DEJAVU_OK;
-        case LUA_TFUNCTION:
-            lua_pushvalue(state, index);
-            value->type = DEJAVU_VALUE_FUNCTION;
-            value->function_value = (unsigned long long)luaL_ref(state, LUA_REGISTRYINDEX);
+            memcpy(copy, string_value, string_size);
+            copy[string_size] = '\0';
+            value->string_value = copy;
             value->owned = 1;
-            return DEJAVU_OK;
-        default:
-            copy_error(error, error_size, "unsupported Lua value type");
-            return DEJAVU_ERROR_LUA_RESULT;
+        }
+        return DEJAVU_OK;
+    case LUA_TLIGHTUSERDATA:
+        value->type = DEJAVU_VALUE_HANDLE;
+        value->handle_value = lua_touserdata(state, index);
+        return DEJAVU_OK;
+    case LUA_TFUNCTION:
+        lua_pushvalue(state, index);
+        value->type = DEJAVU_VALUE_FUNCTION;
+        value->function_value = (unsigned long long)luaL_ref(state, LUA_REGISTRYINDEX);
+        value->owned = 1;
+        return DEJAVU_OK;
+    default:
+        copy_error(error, error_size, "unsupported Lua value type");
+        return DEJAVU_ERROR_LUA_RESULT;
     }
 }
 
@@ -204,46 +201,43 @@ static int push_value(lua_State *state, const dejavu_value *value) {
         return DEJAVU_OK;
     }
     switch (value->type) {
-        case DEJAVU_VALUE_BOOLEAN:
-            lua_pushboolean(state, value->boolean_value);
-            return DEJAVU_OK;
-        case DEJAVU_VALUE_INTEGER:
-            lua_pushinteger(state, (lua_Integer)value->integer_value);
-            return DEJAVU_OK;
-        case DEJAVU_VALUE_NUMBER:
-            lua_pushnumber(state, (lua_Number)value->number_value);
-            return DEJAVU_OK;
-        case DEJAVU_VALUE_STRING:
-            lua_pushlstring(
-                state,
-                value->string_value != NULL ? value->string_value : "",
-                value->string_value != NULL ? value->string_size : 0);
-            return DEJAVU_OK;
-        case DEJAVU_VALUE_HANDLE:
-            lua_pushlightuserdata(state, value->handle_value);
-            return DEJAVU_OK;
-        case DEJAVU_VALUE_FUNCTION:
-            lua_rawgeti(state, LUA_REGISTRYINDEX, (lua_Integer)value->function_value);
-            return lua_isfunction(state, -1) ? DEJAVU_OK : DEJAVU_ERROR_LUA_RESULT;
-        case DEJAVU_VALUE_HOST_FUNCTION:
-            if (value->host_function == NULL) {
-                return DEJAVU_ERROR_INVALID_ARGUMENT;
-            }
-            binding = (struct dejavu_host_binding *)lua_newuserdatauv(
-                state, sizeof(*binding), 0);
-            binding->function = value->host_function;
-            binding->context = value->host_context;
-            binding->next = NULL;
-            lua_pushcclosure(state, lua_host_dispatch, 1);
-            return DEJAVU_OK;
-        default:
+    case DEJAVU_VALUE_BOOLEAN:
+        lua_pushboolean(state, value->boolean_value);
+        return DEJAVU_OK;
+    case DEJAVU_VALUE_INTEGER:
+        lua_pushinteger(state, (lua_Integer)value->integer_value);
+        return DEJAVU_OK;
+    case DEJAVU_VALUE_NUMBER:
+        lua_pushnumber(state, (lua_Number)value->number_value);
+        return DEJAVU_OK;
+    case DEJAVU_VALUE_STRING:
+        lua_pushlstring(state, value->string_value != NULL ? value->string_value : "",
+                        value->string_value != NULL ? value->string_size : 0);
+        return DEJAVU_OK;
+    case DEJAVU_VALUE_HANDLE:
+        lua_pushlightuserdata(state, value->handle_value);
+        return DEJAVU_OK;
+    case DEJAVU_VALUE_FUNCTION:
+        lua_rawgeti(state, LUA_REGISTRYINDEX, (lua_Integer)value->function_value);
+        return lua_isfunction(state, -1) ? DEJAVU_OK : DEJAVU_ERROR_LUA_RESULT;
+    case DEJAVU_VALUE_HOST_FUNCTION:
+        if (value->host_function == NULL) {
             return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        binding = (struct dejavu_host_binding *)lua_newuserdatauv(state, sizeof(*binding), 0);
+        binding->function = value->host_function;
+        binding->context = value->host_context;
+        binding->next = NULL;
+        lua_pushcclosure(state, lua_host_dispatch, 1);
+        return DEJAVU_OK;
+    default:
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
 }
 
 static int lua_host_dispatch(lua_State *state) {
-    struct dejavu_host_binding *binding = (struct dejavu_host_binding *)
-        lua_touserdata(state, lua_upvalueindex(1));
+    struct dejavu_host_binding *binding =
+        (struct dejavu_host_binding *)lua_touserdata(state, lua_upvalueindex(1));
     dejavu_control_session *session;
     dejavu_value *arguments = NULL;
     dejavu_value result;
@@ -272,28 +266,36 @@ static int lua_host_dispatch(lua_State *state) {
     error[0] = '\0';
     clear_value(&result);
     for (index = 0; index < argument_count; ++index) {
-        status = copy_lua_value(
-            state, index + 1, 0, &arguments[index], error, sizeof(error));
+        status = copy_lua_value(state, index + 1, 0, &arguments[index], error, sizeof(error));
         if (status != DEJAVU_OK) {
             free(arguments);
             return luaL_error(state, "%s", error[0] != '\0' ? error : "invalid host argument");
         }
     }
 
-    status = binding->function(
-        session,
-        binding->context,
-        arguments,
-        (size_t)argument_count,
-        &result,
-        error,
-        sizeof(error));
+    status = binding->function(session, binding->context, arguments, (size_t)argument_count,
+                               &result, error, sizeof(error));
+    /* Function arguments are converted to registry references for the
+       callback; the engine owns them and releases them afterwards. */
+    for (index = 0; index < argument_count; ++index) {
+        if (arguments[index].type == DEJAVU_VALUE_FUNCTION) {
+            luaL_unref(state, LUA_REGISTRYINDEX, (int)arguments[index].function_value);
+        }
+    }
     free(arguments);
     if (status != DEJAVU_OK) {
+        if (result.type == DEJAVU_VALUE_FUNCTION) {
+            luaL_unref(state, LUA_REGISTRYINDEX, (int)result.function_value);
+        }
         dejavu_value_release(&result);
         return luaL_error(state, "%s", error[0] != '\0' ? error : "host function failed");
     }
     status = push_value(state, &result);
+    /* A function returned from a host callback transfers its registry
+       reference to the engine. */
+    if (result.type == DEJAVU_VALUE_FUNCTION) {
+        luaL_unref(state, LUA_REGISTRYINDEX, (int)result.function_value);
+    }
     dejavu_value_release(&result);
     if (status != DEJAVU_OK) {
         return luaL_error(state, "invalid host function result");
@@ -301,11 +303,8 @@ static int lua_host_dispatch(lua_State *state) {
     return 1;
 }
 
-int dejavu_control_session_create(
-    dejavu_engine *engine,
-    dejavu_control_session **session,
-    char *error,
-    size_t error_size) {
+int dejavu_control_session_create(dejavu_engine *engine, dejavu_control_session **session,
+                                  char *error, size_t error_size) {
     dejavu_control_session *created;
     pthread_mutexattr_t attributes;
 
@@ -380,19 +379,14 @@ void dejavu_control_session_destroy(dejavu_control_session *session) {
     free(session);
 }
 
-int dejavu_control_session_register(
-    dejavu_control_session *session,
-    const char *module_name,
-    const char *function_name,
-    dejavu_host_function function,
-    void *context,
-    char *error,
-    size_t error_size) {
+int dejavu_control_session_register(dejavu_control_session *session, const char *module_name,
+                                    const char *function_name, dejavu_host_function function,
+                                    void *context, char *error, size_t error_size) {
     struct dejavu_host_binding *binding;
 
     copy_error(error, error_size, NULL);
-    if (session == NULL || module_name == NULL || module_name[0] == '\0' ||
-        function_name == NULL || function_name[0] == '\0' || function == NULL) {
+    if (session == NULL || module_name == NULL || module_name[0] == '\0' || function_name == NULL ||
+        function_name[0] == '\0' || function == NULL) {
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     binding = (struct dejavu_host_binding *)calloc(1, sizeof(*binding));
@@ -420,12 +414,8 @@ int dejavu_control_session_register(
     return DEJAVU_OK;
 }
 
-int dejavu_control_session_eval(
-    dejavu_control_session *session,
-    const char *script,
-    dejavu_value *result,
-    char *error,
-    size_t error_size) {
+int dejavu_control_session_eval(dejavu_control_session *session, const char *script,
+                                dejavu_value *result, char *error, size_t error_size) {
     int status;
 
     copy_error(error, error_size, NULL);
@@ -454,14 +444,9 @@ int dejavu_control_session_eval(
     return status;
 }
 
-int dejavu_control_session_invoke(
-    dejavu_control_session *session,
-    unsigned long long function,
-    const dejavu_value *arguments,
-    size_t argument_count,
-    dejavu_value *result,
-    char *error,
-    size_t error_size) {
+int dejavu_control_session_invoke(dejavu_control_session *session, unsigned long long function,
+                                  const dejavu_value *arguments, size_t argument_count,
+                                  dejavu_value *result, char *error, size_t error_size) {
     size_t index;
     int status;
 
@@ -471,6 +456,10 @@ int dejavu_control_session_invoke(
         (argument_count != 0 && arguments == NULL)) {
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
+    if (argument_count > (size_t)INT_MAX) {
+        copy_error(error, error_size, "too many Lua callback arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
     pthread_mutex_lock(&session->mutex);
     lua_rawgeti(session->state, LUA_REGISTRYINDEX, (lua_Integer)function);
     if (!lua_isfunction(session->state, -1)) {
@@ -478,6 +467,12 @@ int dejavu_control_session_invoke(
         pthread_mutex_unlock(&session->mutex);
         copy_error(error, error_size, "invalid Lua function reference");
         return DEJAVU_ERROR_LUA_RESULT;
+    }
+    if (!lua_checkstack(session->state, (int)argument_count + 1)) {
+        lua_pop(session->state, 1);
+        pthread_mutex_unlock(&session->mutex);
+        copy_error(error, error_size, "unable to grow the Lua stack for callback arguments");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
     }
     for (index = 0; index < argument_count; ++index) {
         status = push_value(session->state, &arguments[index]);
@@ -501,9 +496,8 @@ int dejavu_control_session_invoke(
     return status;
 }
 
-void dejavu_control_session_release_function(
-    dejavu_control_session *session,
-    unsigned long long function) {
+void dejavu_control_session_release_function(dejavu_control_session *session,
+                                             unsigned long long function) {
     if (session == NULL || function == 0) {
         return;
     }
@@ -512,12 +506,8 @@ void dejavu_control_session_release_function(
     pthread_mutex_unlock(&session->mutex);
 }
 
-int dejavu_control_run(
-    dejavu_engine *engine,
-    const char *script,
-    int *result,
-    char *error,
-    size_t error_size) {
+int dejavu_control_run(dejavu_engine *engine, const char *script, int *result, char *error,
+                       size_t error_size) {
     dejavu_control_session *session;
     dejavu_value value;
     int status;

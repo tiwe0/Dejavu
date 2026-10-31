@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Lightweight Zygisk loader build that does not require LSPlant/Dobby. This is
+# useful for quickly compiling and validating the Zygisk entry library; the
+# production module is built by scripts/build-lsplant-android-arm64.sh.
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 PROJECT_DIR=$(cd -- "${ROOT_DIR}/.." && pwd)
 ANDROID_API=${ANDROID_API:-26}
 BUILD_TYPE=${BUILD_TYPE:-release}
 OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/android-arm64-v8a-api${ANDROID_API}"}
-LSPLANT_BACKEND_ARCHIVE=${LSPLANT_BACKEND_ARCHIVE:-}
-RUN_DEVICE_SMOKE=${RUN_DEVICE_SMOKE:-0}
 
 find_ndk() {
     local candidate
+    local found
+
     for candidate in \
         "${ANDROID_NDK_HOME:-}" \
         "${ANDROID_NDK_ROOT:-}" \
@@ -22,9 +25,13 @@ find_ndk() {
             return 0
         fi
         if [[ -d "${candidate}" ]]; then
-            find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
-                -exec test -f '{}/source.properties' \; -print 2>/dev/null | sort -V | tail -n 1
-            return 0
+            found=$(find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
+                -exec test -f '{}/source.properties' \; -print 2>/dev/null |
+                sort -V | tail -n 1)
+            if [[ -n "${found}" ]]; then
+                printf '%s\n' "${found}"
+                return 0
+            fi
         fi
     done
     return 1
@@ -79,6 +86,8 @@ COMMON_FLAGS=(
     -fvisibility-inlines-hidden
     -fno-omit-frame-pointer
     -D_FORTIFY_SOURCE=2
+    -DDEJAVU_WITH_LSPLANT=0
+    -DDEJAVU_RUN_DEVICE_SMOKE=0
     -Wall
     -Wextra
     -Werror
@@ -87,50 +96,21 @@ COMMON_FLAGS=(
     -I"${PROJECT_DIR}/include"
 )
 
-if [[ -n "${LSPLANT_BACKEND_ARCHIVE}" ]]; then
-    if [[ ! -f "${LSPLANT_BACKEND_ARCHIVE}" ]]; then
-        echo "error: LSPLANT_BACKEND_ARCHIVE does not exist: ${LSPLANT_BACKEND_ARCHIVE}" >&2
-        exit 1
-    fi
-    COMMON_FLAGS+=(-DDEJAVU_WITH_LSPLANT=1)
-else
-    COMMON_FLAGS+=(-DDEJAVU_WITH_LSPLANT=0)
-fi
-case "${RUN_DEVICE_SMOKE}" in
-    0|1) COMMON_FLAGS+=(-DDEJAVU_RUN_DEVICE_SMOKE="${RUN_DEVICE_SMOKE}") ;;
-    *)
-        echo "error: RUN_DEVICE_SMOKE must be 0 or 1" >&2
-        exit 1
-        ;;
-esac
-
-for source in module dejavu_runtime lsplant_runtime target_config; do
+for source in control_channel module target_config; do
     "${CXX}" "${COMMON_FLAGS[@]}" \
         -c "${ROOT_DIR}/src/${source}.cpp" -o "${OBJ_DIR}/${source}.o"
 done
 
-LINK_INPUTS=(
-    "${OBJ_DIR}/module.o"
-    "${OBJ_DIR}/dejavu_runtime.o"
-    "${OBJ_DIR}/lsplant_runtime.o"
-    "${OBJ_DIR}/target_config.o"
-)
-if [[ -n "${LSPLANT_BACKEND_ARCHIVE}" ]]; then
-    LINK_INPUTS+=(
-        -Wl,--whole-archive
-        "${LSPLANT_BACKEND_ARCHIVE}"
-        -Wl,--no-whole-archive
-    )
-fi
-
-"${CXX}" -shared -nostdlib++ \
+"${CXX}" -shared -static-libstdc++ \
     -Wl,-soname,libdejavu_zygisk.so \
     -Wl,--gc-sections \
     -Wl,--no-undefined \
     -Wl,-z,max-page-size=16384 \
     -Wl,--version-script,"${ROOT_DIR}/config/exports.map" \
-    "${LINK_INPUTS[@]}" \
-    -lstdc++ -llog -ldl \
+    "${OBJ_DIR}/control_channel.o" \
+    "${OBJ_DIR}/module.o" \
+    "${OBJ_DIR}/target_config.o" \
+    -llog -ldl \
     -o "${LIB_PATH}"
 
 "${READELF}" -h "${LIB_PATH}" > "${OUT_DIR}/elf-header.txt"
@@ -147,7 +127,7 @@ if [[ "${load_alignments}" != "0x4000" ]]; then
 fi
 
 exports=$("${NM}" -D --defined-only "${LIB_PATH}" | awk '{print $3}' | sed 's/@.*//' | sort -u)
-if [[ "${exports}" != "zygisk_module_entry" ]]; then
+if [[ "${exports}" != $'zygisk_companion_entry\nzygisk_module_entry' ]]; then
     echo "error: unexpected Zygisk export set" >&2
     printf '%s\n' "${exports}" >&2
     exit 1

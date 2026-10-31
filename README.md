@@ -68,7 +68,10 @@ return run()
 ## Build smoke
 
 Requirements: a Linux or macOS host and an Android NDK. No CMake installation
-is required.
+is required. The build scripts compile a patched copy of the pinned TinyCC
+sources (`patches/tinycc-runtime-safety.patch`, which keeps writable data off
+executable pages and turns relocation failures into errors); the submodule
+itself is not modified.
 
 ```sh
 git submodule update --init --recursive
@@ -130,3 +133,12 @@ writes and relocates through RW pages and changes generated code pages to RX;
 it never changes allocator heap pages to executable. Device testing is still
 required to validate the target process SELinux policy and page-size
 configuration on every supported Android generation.
+
+## License
+
+Dejavu is released under the MIT License; see [LICENSE](LICENSE).
+
+The bundled third-party components keep their own licenses: Lua 5.4 (MIT),
+TinyCC (LGPL-2.1), LSPlant and DexBuilder (LGPL-3.0), and Dobby (Apache-2.0).
+The module package ships the project LICENSE; review the third-party licenses
+before redistributing binaries.

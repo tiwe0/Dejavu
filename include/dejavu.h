@@ -35,14 +35,24 @@ enum dejavu_value_type {
 
 typedef struct dejavu_value dejavu_value;
 
-typedef int (*dejavu_host_function)(
-    dejavu_control_session *session,
-    void *context,
-    const dejavu_value *arguments,
-    size_t argument_count,
-    dejavu_value *result,
-    char *error,
-    size_t error_size);
+/*
+ * Value ownership and lifetimes:
+ * - Values returned through dejavu_control_session_eval()/invoke() are owned
+ *   by the caller. STRING results are heap copies that must be released with
+ *   dejavu_value_release(); FUNCTION results are Lua registry references that
+ *   must be released with dejavu_control_session_release_function() (using
+ *   dejavu_value_release() on a FUNCTION value only clears the handle).
+ * - NIL/BOOLEAN/INTEGER/NUMBER/HANDLE values need no release.
+ * - Arguments passed to a dejavu_host_function are borrowed for the duration
+ *   of the callback only. STRING pointers may point into the live Lua stack
+ *   and FUNCTION arguments are released by the engine once the callback
+ *   returns, so they must not be stored or released by the host.
+ */
+typedef struct dejavu_value dejavu_value;
+
+typedef int (*dejavu_host_function)(dejavu_control_session *session, void *context,
+                                    const dejavu_value *arguments, size_t argument_count,
+                                    dejavu_value *result, char *error, size_t error_size);
 
 struct dejavu_value {
     enum dejavu_value_type type;
@@ -83,21 +93,15 @@ DEJAVU_API dejavu_engine *dejavu_engine_create(void);
 DEJAVU_API void dejavu_engine_destroy(dejavu_engine *engine);
 
 /* Registers or replaces a host symbol made available to generated code. */
-DEJAVU_API int dejavu_engine_add_symbol(
-    dejavu_engine *engine,
-    const char *name,
-    const void *address);
+DEJAVU_API int dejavu_engine_add_symbol(dejavu_engine *engine, const char *name,
+                                        const void *address);
 
 /*
  * Compiles freestanding C. The returned module owns its executable code.
  * The engine must not be mutated concurrently with this call.
  */
-DEJAVU_API int dejavu_engine_compile(
-    const dejavu_engine *engine,
-    const char *source,
-    dejavu_module **module,
-    char *error,
-    size_t error_size);
+DEJAVU_API int dejavu_engine_compile(const dejavu_engine *engine, const char *source,
+                                     dejavu_module **module, char *error, size_t error_size);
 
 DEJAVU_API void *dejavu_module_symbol(dejavu_module *module, const char *name);
 DEJAVU_API int dejavu_module_call(dejavu_module *module, int *result);
@@ -105,49 +109,35 @@ DEJAVU_API void dejavu_module_destroy(dejavu_module *module);
 
 /*
  * Persistent Lua control session. All operations on one session are
- * serialized. Function values returned to host callbacks are registry
- * references and must eventually be released.
+ * serialized (the implementation uses a recursive mutex, so host callbacks may
+ * re-enter the session from the same thread). Function values returned to the
+ * host are registry references and must eventually be released with
+ * dejavu_control_session_release_function().
+ *
+ * The engine must outlive the session: a session holds a non-owning pointer to
+ * it, so destroying the engine first is undefined behaviour.
  */
-DEJAVU_API int dejavu_control_session_create(
-    dejavu_engine *engine,
-    dejavu_control_session **session,
-    char *error,
-    size_t error_size);
+DEJAVU_API int dejavu_control_session_create(dejavu_engine *engine,
+                                             dejavu_control_session **session, char *error,
+                                             size_t error_size);
 DEJAVU_API void dejavu_control_session_destroy(dejavu_control_session *session);
-DEJAVU_API int dejavu_control_session_register(
-    dejavu_control_session *session,
-    const char *module_name,
-    const char *function_name,
-    dejavu_host_function function,
-    void *context,
-    char *error,
-    size_t error_size);
-DEJAVU_API int dejavu_control_session_eval(
-    dejavu_control_session *session,
-    const char *script,
-    dejavu_value *result,
-    char *error,
-    size_t error_size);
-DEJAVU_API int dejavu_control_session_invoke(
-    dejavu_control_session *session,
-    unsigned long long function,
-    const dejavu_value *arguments,
-    size_t argument_count,
-    dejavu_value *result,
-    char *error,
-    size_t error_size);
-DEJAVU_API void dejavu_control_session_release_function(
-    dejavu_control_session *session,
-    unsigned long long function);
+DEJAVU_API int dejavu_control_session_register(dejavu_control_session *session,
+                                               const char *module_name, const char *function_name,
+                                               dejavu_host_function function, void *context,
+                                               char *error, size_t error_size);
+DEJAVU_API int dejavu_control_session_eval(dejavu_control_session *session, const char *script,
+                                           dejavu_value *result, char *error, size_t error_size);
+DEJAVU_API int dejavu_control_session_invoke(dejavu_control_session *session,
+                                             unsigned long long function,
+                                             const dejavu_value *arguments, size_t argument_count,
+                                             dejavu_value *result, char *error, size_t error_size);
+DEJAVU_API void dejavu_control_session_release_function(dejavu_control_session *session,
+                                                        unsigned long long function);
 DEJAVU_API void dejavu_value_release(dejavu_value *value);
 
 /* Runs a Lua control script. dejavu.compile(C_SOURCE) returns a Lua function. */
-DEJAVU_API int dejavu_control_run(
-    dejavu_engine *engine,
-    const char *script,
-    int *result,
-    char *error,
-    size_t error_size);
+DEJAVU_API int dejavu_control_run(dejavu_engine *engine, const char *script, int *result,
+                                  char *error, size_t error_size);
 
 /* Each smoke function writes 42 on success. */
 DEJAVU_API int dejavu_smoke_lua(int *result);

@@ -271,26 +271,55 @@ jobs:
   code-quality:
     name: Code Quality Checks
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+        with:
+          fetch-depth: 0
+
       - name: Install clang-format
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format
-      
-      - name: Check C code formatting
+          python3 -m venv /tmp/clang-format-venv
+          /tmp/clang-format-venv/bin/pip install --disable-pip-version-check clang-format==18.1.8
+          echo "/tmp/clang-format-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check C/C++ formatting (changed files)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          find src zygisk/src zygisk/include -type f \( -name "*.c" -o -name "*.cpp" -o -name "*.h" \) | while read -r file; do
-            echo "Checking $file..."
-            clang-format --dry-run "$file"
-          done
-      
-      - name: Check for issues
+          set -euo pipefail
+          if [[ -n "${BASE_REF}" ]]; then
+            git fetch --no-tags origin "refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            range="origin/${BASE_REF}...HEAD"
+          elif [[ -n "${BEFORE_SHA}" && ! "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            range="${BEFORE_SHA}..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          echo "Checking formatting for ${range}"
+          changed=$(git diff --name-only --diff-filter=ACMR "${range}" -- \
+            src include tests zygisk/src zygisk/include zygisk/tests |
+            grep -E '\.(c|cpp|h)$' || true)
+          if [[ -z "${changed}" ]]; then
+            echo "No C/C++ changes to check."
+            exit 0
+          fi
+          status=0
+          while IFS= read -r file; do
+            [[ -f "${file}" ]] || continue
+            echo "Checking ${file}..."
+            clang-format --dry-run --Werror "${file}" || status=1
+          done <<< "${changed}"
+          exit "${status}"
+
+      - name: Check for TODO/FIXME comments
         run: |
-          echo "=== Checking for TODO/FIXME comments ==="
-          grep -r "TODO\|FIXME" src/ zygisk/src/ || echo "None found"
+          if grep -rn "TODO\|FIXME" src/ zygisk/src/ zygisk/include/; then
+            echo "error: remove TODO/FIXME markers before merging" >&2
+            exit 1
+          fi
+          echo "No TODO/FIXME markers found."
 
   build-summary:
     name: Build Summary
@@ -311,7 +340,8 @@ jobs:
           if [ "${{ needs.build-host.result }}" != "success" ] || \
              [ "${{ needs.build-android.result }}" != "success" ] || \
              [ "${{ needs.build-android-compat.result }}" != "success" ] || \
-             [ "${{ needs.build-zygisk-module.result }}" != "success" ]; then
+             [ "${{ needs.build-zygisk-module.result }}" != "success" ] || \
+             [ "${{ needs.code-quality.result }}" != "success" ]; then
             echo "❌ Build failed!"
             exit 1
           fi

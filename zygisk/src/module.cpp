@@ -25,13 +25,13 @@ namespace {
 
 constexpr char kLogTag[] = "DejavuZygisk";
 constexpr char kAgentPath[] = "lib/arm64-v8a/libdejavu_agent.so";
+constexpr int kAgentRelayTimeoutSeconds = 30;
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
 
-template <typename Function>
-bool resolve(void *handle, const char *name, Function *function) {
+template <typename Function> bool resolve(void *handle, const char *name, Function *function) {
     dlerror();
     void *symbol = dlsym(handle, name);
     if (symbol == nullptr || dlerror() != nullptr) {
@@ -57,18 +57,13 @@ FileIdentity file_identity(const std::string &path) {
         return {};
     }
     return {
-        status.st_ino,
-        status.st_size,
-        status.st_mtim.tv_sec,
-        status.st_mtim.tv_nsec,
-        true,
+        status.st_ino, status.st_size, status.st_mtim.tv_sec, status.st_mtim.tv_nsec, true,
     };
 }
 
 bool operator==(const FileIdentity &left, const FileIdentity &right) {
-    return left.inode == right.inode && left.size == right.size &&
-        left.seconds == right.seconds && left.nanoseconds == right.nanoseconds &&
-        left.exists == right.exists;
+    return left.inode == right.inode && left.size == right.size && left.seconds == right.seconds &&
+           left.nanoseconds == right.nanoseconds && left.exists == right.exists;
 }
 
 bool read_control_file(const std::string &path, std::string *script) {
@@ -117,19 +112,15 @@ bool peer_matches_process(int fd, pid_t expected_pid) {
     struct ucred credentials = {};
     socklen_t size = sizeof(credentials);
     return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) == 0 &&
-        size == sizeof(credentials) && credentials.pid == expected_pid;
+           size == sizeof(credentials) && credentials.pid == expected_pid;
 }
 
-int accept_control_client(
-    int listener,
-    const DejavuControlEndpoint &endpoint,
-    pid_t expected_pid) {
+int accept_control_client(int listener, const DejavuControlEndpoint &endpoint, pid_t expected_pid) {
     const int fd = accept(listener, nullptr, nullptr);
     if (fd < 0) {
         return -1;
     }
-    if (!set_close_on_exec(fd) ||
-        !set_receive_timeout(fd, 2) ||
+    if (!set_close_on_exec(fd) || !set_receive_timeout(fd, 2) ||
         (expected_pid > 0 && !peer_matches_process(fd, expected_pid)) ||
         !dejavu_control_read_authentication(fd, endpoint) ||
         !dejavu_control_write_frame(fd, nullptr, 0)) {
@@ -143,12 +134,9 @@ int accept_control_client(
     return fd;
 }
 
-bool endpoint_metadata_path(
-    const DejavuControlClientInfo &client_info,
-    std::string *path) {
+bool endpoint_metadata_path(const DejavuControlClientInfo &client_info, std::string *path) {
     std::string script_path;
-    if (path == nullptr ||
-        !dejavu_control_file_path(client_info.process_name, &script_path) ||
+    if (path == nullptr || !dejavu_control_file_path(client_info.process_name, &script_path) ||
         script_path.size() < 4) {
         return false;
     }
@@ -157,25 +145,19 @@ bool endpoint_metadata_path(
     return true;
 }
 
-bool write_endpoint_metadata(
-    const std::string &path,
-    pid_t pid,
-    const DejavuControlEndpoint &endpoint) {
+bool write_endpoint_metadata(const std::string &path, pid_t pid,
+                             const DejavuControlEndpoint &endpoint) {
     constexpr char hex[] = "0123456789abcdef";
     char token[kDejavuControlTokenSize * 2 + 1] = {};
     for (size_t index = 0; index < sizeof(endpoint.token); ++index) {
         token[index * 2] = hex[endpoint.token[index] >> 4];
         token[index * 2 + 1] = hex[endpoint.token[index] & 0x0f];
     }
-    const std::string metadata =
-        "{\"version\":1,\"pid\":" + std::to_string(pid) +
-        ",\"socket\":\"" + endpoint.socket_name +
-        "\",\"token\":\"" + token + "\"}\n";
+    const std::string metadata = "{\"version\":1,\"pid\":" + std::to_string(pid) +
+                                 ",\"socket\":\"" + endpoint.socket_name + "\",\"token\":\"" +
+                                 token + "\"}\n";
     const std::string temporary = path + ".new";
-    const int fd = open(
-        temporary.c_str(),
-        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
-        0600);
+    const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) {
         return false;
     }
@@ -194,18 +176,14 @@ bool write_endpoint_metadata(
     }
     const bool permissions_set = fchmod(fd, 0600) == 0;
     const bool closed = close(fd) == 0;
-    const bool written = permissions_set && closed &&
-        rename(temporary.c_str(), path.c_str()) == 0;
+    const bool written = permissions_set && closed && rename(temporary.c_str(), path.c_str()) == 0;
     if (!written) {
         unlink(temporary.c_str());
     }
     return written;
 }
 
-DejavuControlRpcMessage rpc_error(
-    uint64_t request_id,
-    int32_t status,
-    const char *message) {
+DejavuControlRpcMessage rpc_error(uint64_t request_id, int32_t status, const char *message) {
     return {
         DejavuControlRpcType::kExecuteResponse,
         request_id,
@@ -214,10 +192,8 @@ DejavuControlRpcMessage rpc_error(
     };
 }
 
-bool relay_rpc(
-    int *agent_control,
-    const DejavuControlRpcMessage &request,
-    DejavuControlRpcMessage *response) {
+bool relay_rpc(int *agent_control, const DejavuControlRpcMessage &request,
+               DejavuControlRpcMessage *response) {
     if (agent_control == nullptr || response == nullptr) {
         return false;
     }
@@ -244,30 +220,37 @@ bool relay_rpc(
         return true;
     }
     if (request.type != DejavuControlRpcType::kExecuteRequest) {
-        *response = rpc_error(
-            request.request_id,
-            DEJAVU_CONTROL_RPC_PROTOCOL_ERROR,
-            "execute request required");
+        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_PROTOCOL_ERROR,
+                              "execute request required");
         return true;
     }
     if (*agent_control < 0) {
-        *response = rpc_error(
-            request.request_id,
-            DEJAVU_CONTROL_RPC_UNAVAILABLE,
-            "target Agent is not connected");
+        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
+                              "target Agent is not connected");
+        return true;
+    }
+    if (!set_receive_timeout(*agent_control, kAgentRelayTimeoutSeconds)) {
+        close(*agent_control);
+        *agent_control = -1;
+        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
+                              "unable to arm the Agent relay timeout");
         return true;
     }
     DejavuControlRpcMessage agent_response;
-    if (!dejavu_control_write_rpc(*agent_control, request) ||
-        !dejavu_control_read_rpc(*agent_control, &agent_response) ||
-        agent_response.type != DejavuControlRpcType::kExecuteResponse ||
+    const bool wrote = dejavu_control_write_rpc(*agent_control, request);
+    const bool read = wrote && dejavu_control_read_rpc(*agent_control, &agent_response);
+    const int read_errno = read ? 0 : errno;
+    if (!wrote || !read || agent_response.type != DejavuControlRpcType::kExecuteResponse ||
         agent_response.request_id != request.request_id) {
+        const bool timed_out =
+            wrote && !read &&
+            (read_errno == EAGAIN || read_errno == EWOULDBLOCK || read_errno == ETIMEDOUT);
         close(*agent_control);
         *agent_control = -1;
         *response = rpc_error(
-            request.request_id,
-            DEJAVU_CONTROL_RPC_UNAVAILABLE,
-            "target Agent disconnected; retry the command");
+            request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
+            timed_out ? "target Agent did not respond in time; a Lua session may be blocked"
+                      : "target Agent disconnected; retry the command");
         return true;
     }
     *response = std::move(agent_response);
@@ -281,8 +264,7 @@ void handle_cli_client(int client, int *agent_control) {
     }
     DejavuControlRpcMessage request;
     DejavuControlRpcMessage response;
-    if (dejavu_control_read_rpc(client, &request) &&
-        relay_rpc(agent_control, request, &response)) {
+    if (dejavu_control_read_rpc(client, &request) && relay_rpc(agent_control, request, &response)) {
         dejavu_control_write_rpc(client, response);
     }
     close(client);
@@ -325,14 +307,9 @@ void companion_handler(int client) {
         return;
     }
     close(client);
-    LOGI(
-        "companion RPC ready: agent=@%s cli=@%s pid=%d",
-        agent_endpoint.socket_name,
-        cli_endpoint.socket_name,
-        static_cast<int>(client_info.pid));
-    LOGI(
-        "companion monitoring %s",
-        path.c_str());
+    LOGI("companion RPC ready: agent=@%s cli=@%s pid=%d", agent_endpoint.socket_name,
+         cli_endpoint.socket_name, static_cast<int>(client_info.pid));
+    LOGI("companion monitoring %s", path.c_str());
 
     int agent_control = -1;
     uint64_t next_file_request_id = 1;
@@ -348,8 +325,7 @@ void companion_handler(int client) {
         if (status < 0 && errno == EINTR) {
             continue;
         }
-        if (status < 0 ||
-            (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
+        if (status < 0 || (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
             (descriptors[1].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
             break;
         }
@@ -357,25 +333,20 @@ void companion_handler(int client) {
             (descriptors[2].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) != 0) {
             close(agent_control);
             agent_control = -1;
-            LOGI(
-                "companion detected Agent disconnect for pid %d",
-                static_cast<int>(client_info.pid));
+            LOGI("companion detected Agent disconnect for pid %d",
+                 static_cast<int>(client_info.pid));
         }
         if ((descriptors[0].revents & POLLIN) != 0) {
-            const int candidate = accept_control_client(
-                agent_listener, agent_endpoint, client_info.pid);
+            const int candidate =
+                accept_control_client(agent_listener, agent_endpoint, client_info.pid);
             if (candidate >= 0) {
                 if (agent_control >= 0) {
                     close(agent_control);
                 }
                 agent_control = candidate;
-                LOGI(
-                    "companion authenticated Agent for pid %d",
-                    static_cast<int>(client_info.pid));
+                LOGI("companion authenticated Agent for pid %d", static_cast<int>(client_info.pid));
             } else {
-                LOGE(
-                    "companion rejected Agent for pid %d",
-                    static_cast<int>(client_info.pid));
+                LOGE("companion rejected Agent for pid %d", static_cast<int>(client_info.pid));
             }
         }
         if ((descriptors[1].revents & POLLIN) != 0) {
@@ -409,9 +380,8 @@ void companion_handler(int client) {
         }
         observed = current;
         if (response.status == DEJAVU_CONTROL_RPC_OK) {
-            LOGI(
-                "file control applied: request=%llu",
-                static_cast<unsigned long long>(request.request_id));
+            LOGI("file control applied: request=%llu",
+                 static_cast<unsigned long long>(request.request_id));
         } else {
             LOGE("file control failed: %s", response.payload.c_str());
         }
@@ -426,7 +396,7 @@ void companion_handler(int client) {
 }
 
 class DejavuZygiskModule final : public zygisk::ModuleBase {
-public:
+  public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         api_ = api;
         env_ = env;
@@ -443,12 +413,8 @@ public:
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         if (api_ == nullptr || env_ == nullptr || vm_ == nullptr || args == nullptr ||
             args->nice_name == nullptr) {
-            LOGE(
-                "preAppSpecialize rejected invalid state: api=%p env=%p vm=%p args=%p",
-                api_,
-                env_,
-                vm_,
-                args);
+            LOGE("preAppSpecialize rejected invalid state: api=%p env=%p vm=%p args=%p", api_, env_,
+                 vm_, args);
             unload_self();
             return;
         }
@@ -491,7 +457,7 @@ public:
         unload_self();
     }
 
-private:
+  private:
     zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
     JavaVM *vm_ = nullptr;
@@ -500,9 +466,7 @@ private:
     void *agent_instance_ = nullptr;
     bool selected_ = false;
 
-    bool connect_control(
-        const char *process_name,
-        DejavuControlEndpoint *endpoint) {
+    bool connect_control(const char *process_name, DejavuControlEndpoint *endpoint) {
         if (endpoint == nullptr) {
             return false;
         }
@@ -512,9 +476,8 @@ private:
             LOGE("connectCompanion failed for %s: fd=%d", process_name, fd);
             return false;
         }
-        const bool connected =
-            dejavu_control_write_client_info(fd, getpid(), process_name) &&
-            dejavu_control_read_endpoint(fd, endpoint);
+        const bool connected = dejavu_control_write_client_info(fd, getpid(), process_name) &&
+                               dejavu_control_read_endpoint(fd, endpoint);
         close(fd);
         if (!connected) {
             LOGE("companion did not provide a control endpoint for %s", process_name);
@@ -535,8 +498,7 @@ private:
         android_dlextinfo info = {};
         info.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
         info.library_fd = library_fd;
-        agent_library_ = android_dlopen_ext(
-            "libdejavu_agent.so", RTLD_NOW | RTLD_LOCAL, &info);
+        agent_library_ = android_dlopen_ext("libdejavu_agent.so", RTLD_NOW | RTLD_LOCAL, &info);
         close(library_fd);
         if (agent_library_ == nullptr) {
             LOGE("unable to load Agent for %s: %s", process_name, dlerror());
@@ -584,7 +546,7 @@ private:
     }
 };
 
-}  // namespace
+} // namespace
 
 REGISTER_ZYGISK_MODULE(DejavuZygiskModule)
 REGISTER_ZYGISK_COMPANION(companion_handler)

@@ -6,8 +6,21 @@ CC=${CC:-cc}
 OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/host-smoke"}
 OBJ_DIR="${OUT_DIR}/obj"
 GEN_DIR="${OUT_DIR}/generated"
+TINYCC_SRC="${OUT_DIR}/tinycc-src"
+TINYCC_PATCH="${ROOT_DIR}/patches/tinycc-runtime-safety.patch"
 
 mkdir -p "${OBJ_DIR}" "${GEN_DIR}"
+
+# TinyCC is pinned as a submodule; compile from a pristine + patched copy so the
+# submodule stays clean and the runtime-safety patch (writable-data page
+# separation and non-fatal relocation errors) is always applied.
+prepare_tinycc() {
+    rm -rf "${TINYCC_SRC}"
+    mkdir -p "${TINYCC_SRC}"
+    git -C "${ROOT_DIR}/extern/tinycc" archive --format=tar HEAD | tar -xf - -C "${TINYCC_SRC}"
+    patch -d "${TINYCC_SRC}" -p1 < "${TINYCC_PATCH}"
+}
+prepare_tinycc
 cat > "${GEN_DIR}/config.h" <<'EOF'
 #ifndef TCC_CONFIG_H
 #define TCC_CONFIG_H
@@ -26,7 +39,7 @@ COMMON_FLAGS=(
 PROJECT_INCLUDES=(
     -I"${ROOT_DIR}/include"
     -I"${ROOT_DIR}/extern/lua"
-    -I"${ROOT_DIR}/extern/tinycc"
+    -I"${TINYCC_SRC}"
 )
 
 for source in dejavu dejavu_engine dejavu_lua; do
@@ -42,8 +55,8 @@ done
 
 "${CC}" "${COMMON_FLAGS[@]}" -DONE_SOURCE=1 \
     -I"${GEN_DIR}" \
-    -I"${ROOT_DIR}/extern/tinycc" \
-    -c "${ROOT_DIR}/extern/tinycc/libtcc.c" -o "${OBJ_DIR}/tinycc.o"
+    -I"${TINYCC_SRC}" \
+    -c "${TINYCC_SRC}/libtcc.c" -o "${OBJ_DIR}/tinycc.o"
 
 "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
     -I"${ROOT_DIR}/include" \

@@ -1,0 +1,12 @@
+# Keep formatting deterministic: the code-quality CI job installs the
+# pinned clang-format 18.1.8 and enforces it on C/C++ files changed by a
+# push/PR. Existing code can be migrated incrementally with
+# `clang-format -i <file>`.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+SortIncludes: Never

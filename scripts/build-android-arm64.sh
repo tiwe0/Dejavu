@@ -8,6 +8,7 @@ OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/android-arm64-v8a-api${ANDROID_API}"}
 
 find_ndk() {
     local candidate
+    local found
 
     for candidate in \
         "${ANDROID_NDK_HOME:-}" \
@@ -20,9 +21,13 @@ find_ndk() {
             return 0
         fi
         if [[ -d "${candidate}" ]]; then
-            find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
-                -exec test -f '{}/source.properties' \; -print 2>/dev/null | sort -V | tail -n 1
-            return 0
+            found=$(find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
+                -exec test -f '{}/source.properties' \; -print 2>/dev/null |
+                sort -V | tail -n 1)
+            if [[ -n "${found}" ]]; then
+                printf '%s\n' "${found}"
+                return 0
+            fi
         fi
     done
     return 1
@@ -68,7 +73,20 @@ esac
 OBJ_DIR="${OUT_DIR}/obj"
 GEN_DIR="${OUT_DIR}/generated"
 LIB_PATH="${OUT_DIR}/libdejavu.so"
+TINYCC_SRC="${OUT_DIR}/tinycc-src"
+TINYCC_PATCH="${ROOT_DIR}/patches/tinycc-runtime-safety.patch"
 mkdir -p "${OBJ_DIR}" "${GEN_DIR}"
+
+# TinyCC is pinned as a submodule; compile from a pristine + patched copy so the
+# submodule stays clean and the runtime-safety patch (writable-data page
+# separation and non-fatal relocation errors) is always applied.
+prepare_tinycc() {
+    rm -rf "${TINYCC_SRC}"
+    mkdir -p "${TINYCC_SRC}"
+    git -C "${ROOT_DIR}/extern/tinycc" archive --format=tar HEAD | tar -xf - -C "${TINYCC_SRC}"
+    patch -d "${TINYCC_SRC}" -p1 < "${TINYCC_PATCH}"
+}
+prepare_tinycc
 
 cat > "${GEN_DIR}/config.h" <<'EOF'
 #ifndef TCC_CONFIG_H
@@ -94,13 +112,13 @@ echo "[1/6] Dejavu API"
     -DDEJAVU_TCC_VERSION='"0.9.27-frida"' \
     -I"${ROOT_DIR}/include" \
     -I"${ROOT_DIR}/extern/lua" \
-    -I"${ROOT_DIR}/extern/tinycc" \
+    -I"${TINYCC_SRC}" \
     -c "${ROOT_DIR}/src/dejavu.c" -o "${OBJ_DIR}/dejavu.o"
 
 echo "[2/6] Dejavu engine"
 "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
     -I"${ROOT_DIR}/include" \
-    -I"${ROOT_DIR}/extern/tinycc" \
+    -I"${TINYCC_SRC}" \
     -c "${ROOT_DIR}/src/dejavu_engine.c" -o "${OBJ_DIR}/dejavu_engine.o"
 
 echo "[3/6] Dejavu Lua control"
@@ -119,8 +137,8 @@ echo "[5/6] TinyCC (Frida)"
 "${CC}" "${COMMON_FLAGS[@]}" \
     -DONE_SOURCE=1 \
     -I"${GEN_DIR}" \
-    -I"${ROOT_DIR}/extern/tinycc" \
-    -c "${ROOT_DIR}/extern/tinycc/libtcc.c" -o "${OBJ_DIR}/tinycc.o"
+    -I"${TINYCC_SRC}" \
+    -c "${TINYCC_SRC}/libtcc.c" -o "${OBJ_DIR}/tinycc.o"
 
 echo "[6/6] libdejavu.so"
 "${CC}" -shared \

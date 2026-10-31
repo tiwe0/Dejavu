@@ -66,7 +66,9 @@ return run()
 ## 构建与冒烟验证
 
 构建环境需要 Linux 或 macOS 主机以及 Android NDK；核心库不要求安装
-CMake。
+CMake。构建脚本会在临时副本上为固定的 TinyCC 源码应用
+`patches/tinycc-runtime-safety.patch`（将可写数据与可执行页分离，并让
+重定位失败返回错误而不是退出进程），不会改动 submodule 本身。
 
 ```sh
 git submodule update --init --recursive
@@ -130,3 +132,11 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 随后只把生成代码所在页面切换为 RX；它不会把分配器堆页面改成可执行。
 每个受支持的 Android 代际仍需要真机验证目标进程的 SELinux 策略和页面
 大小配置。
+
+## 许可证
+
+Dejavu 以 MIT 许可证发布，详见 [LICENSE](LICENSE)。
+
+内置的第三方组件保留各自许可证：Lua 5.4（MIT）、TinyCC（LGPL-2.1）、
+LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附带
+本项目的 LICENSE；再分发二进制前请自行核对第三方许可证要求。

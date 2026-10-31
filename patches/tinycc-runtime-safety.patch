@@ -1,0 +1,89 @@
+--- a/tccrun.c
++++ b/tccrun.c
+@@ -56,6 +56,7 @@
+ #endif
+ #if !defined(_WIN32) && !defined(TCC_TARGET_NO_OS)
+ # include <sys/mman.h>
++# include <unistd.h>
+ #endif
+ 
+ static void set_pages_executable(TCCState *s1, void *ptr, unsigned long length);
+@@ -71,11 +72,25 @@
+ extern char **environ;
+ #endif
+ 
++/* DejaVu: runtime page-size mask used to keep writable data sections off the
++   executable pages marked by set_pages_executable() below. */
++static unsigned tinycc_page_size_mask(void)
++{
++#ifdef _WIN32
++    return 4095;
++#else
++    long page_size = sysconf(_SC_PAGESIZE);
++    if (page_size < 2)
++        page_size = 4096;
++    return (unsigned)(page_size - 1);
++#endif
++}
++
+ /* ------------------------------------------------------------- */
+ /* Do all relocations (needed before using tcc_get_symbol())
+    Returns -1 on error. */
+ 
+-LIBTCCAPI int tcc_relocate(TCCState *s1, void *ptr)
++static int tcc_relocate_unprotected(TCCState *s1, void *ptr)
+ {
+     int size;
+     addr_t ptr_diff = 0;
+@@ -113,6 +128,33 @@
+     return 0;
+ }
+ 
++/* DejaVu: relocation errors are fatal by default in TCC (tcc_error calls
++   exit() outside the compile-time jump buffer). Route them through the
++   error callback and return -1 so embedders can handle failure. The error
++   macros enter the TCC state before reporting, so release it here as the
++   compile-time longjmp handler does. */
++LIBTCCAPI int tcc_relocate(TCCState *s1, void *ptr)
++{
++    int result;
++
++    if (setjmp(s1->error_jmp_buf) != 0) {
++        s1->error_set_jmp_enabled = 0;
++        tcc_exit_state();
++        return -1;
++    }
++    s1->error_set_jmp_enabled = 1;
++    result = tcc_relocate_unprotected(s1, ptr);
++    if (tcc_state != NULL) {
++        /* A non-aborting diagnostic (tcc_error_noabort) entered the TCC state
++           but did not leave it; release it before returning. */
++        s1->error_set_jmp_enabled = 0;
++        tcc_exit_state();
++        return -1;
++    }
++    s1->error_set_jmp_enabled = 0;
++    return result;
++}
++
+ ST_FUNC void tcc_run_free(TCCState *s1)
+ {
+     int i;
+@@ -261,8 +303,15 @@
+             if (k != !(s->sh_flags & SHF_EXECINSTR))
+                 continue;
+             align = s->sh_addralign - 1;
+-            if (++f == 1 && align < RUN_SECTION_ALIGNMENT)
+-                align = RUN_SECTION_ALIGNMENT;
++            if (++f == 1) {
++                if (align < RUN_SECTION_ALIGNMENT)
++                    align = RUN_SECTION_ALIGNMENT;
++                /* DejaVu: page-align the first non-executable section so
++                   set_pages_executable() cannot turn .data/.bss pages
++                   read-only when they share a page with generated code. */
++                if (k == 1 && align < tinycc_page_size_mask())
++                    align = tinycc_page_size_mask();
++            }
+             if (max_align < align)
+                 max_align = align;
+             offset += -(addr + offset) & align;

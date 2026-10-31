@@ -10,6 +10,19 @@ AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_A
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 
+case "${PROCESS}" in
+    ''|*[!A-Za-z0-9_.:-]*)
+        echo "error: PROCESS must match [A-Za-z0-9_.:-]+" >&2
+        exit 1
+        ;;
+esac
+case "${ACTIVITY}" in
+    ''|*[!A-Za-z0-9_./:-]*)
+        echo "error: ACTIVITY must match [A-Za-z0-9_./:-]+" >&2
+        exit 1
+        ;;
+esac
+
 adb_command=(adb)
 if [[ -n "${ADB_SERIAL}" ]]; then
     adb_command+=(-s "${ADB_SERIAL}")

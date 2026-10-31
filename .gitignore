@@ -1,3 +1,6 @@
 /.DS_Store
 /.omx/
 /out/
+
+__pycache__/
+*.pyc

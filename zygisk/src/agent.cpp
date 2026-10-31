@@ -26,11 +26,7 @@ constexpr char kLogTag[] = "DejavuAgent";
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
 
-bool read_text_file_at(
-    int directory_fd,
-    const char *path,
-    std::string *text,
-    std::string *error) {
+bool read_text_file_at(int directory_fd, const char *path, std::string *text, std::string *error) {
     struct stat status = {};
     const int fd = openat(directory_fd, path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -62,7 +58,7 @@ bool read_text_file_at(
 }
 
 class DejavuAgent final {
-public:
+  public:
     explicit DejavuAgent(const DejavuAgentCreateArgs &args)
         : env_(args.env), vm_(args.vm), control_endpoint_(args.control_endpoint),
           process_name_(args.process_name) {
@@ -94,7 +90,7 @@ public:
 #endif
     }
 
-private:
+  private:
     JNIEnv *env_ = nullptr;
     JavaVM *vm_ = nullptr;
     DejavuControlEndpoint control_endpoint_ = {};
@@ -120,12 +116,9 @@ private:
         lsplant_backend_ = lsplant.backend;
 
         std::string script_error;
-        if (!read_text_file_at(
-                module_dir_fd, "config/init.lua", &init_script_, &script_error)) {
-            LOGE(
-                "failed to read config/init.lua for %s: %s",
-                process_name_.c_str(),
-                script_error.c_str());
+        if (!read_text_file_at(module_dir_fd, "config/init.lua", &init_script_, &script_error)) {
+            LOGE("failed to read config/init.lua for %s: %s", process_name_.c_str(),
+                 script_error.c_str());
             return;
         }
         ready_ = true;
@@ -134,8 +127,7 @@ private:
     static void application_attached(JNIEnv *env, jobject class_loader, void *context) {
         auto *agent = static_cast<DejavuAgent *>(context);
         std::string error;
-        if (!agent->hook_manager_.start_control(
-                env, class_loader, agent->init_script_, &error)) {
+        if (!agent->hook_manager_.start_control(env, class_loader, agent->init_script_, &error)) {
             LOGE("Lua control initialization failed: %s", error.c_str());
             return;
         }
@@ -170,17 +162,24 @@ private:
             if (hook_manager_.eval_control(request.payload, &result, &error)) {
                 response.status = DEJAVU_CONTROL_RPC_OK;
                 response.payload = std::move(result);
-                LOGD(
-                    "RPC control applied: request=%llu bytes=%zu",
-                    static_cast<unsigned long long>(request.request_id),
-                    request.payload.size());
+                if (response.payload.size() > kDejavuMaximumControlScriptSize) {
+                    /* Never drop the connection because the result is too
+                       large; report a regular execution error instead. */
+                    LOGE("RPC control result too large: request=%llu bytes=%zu",
+                         static_cast<unsigned long long>(request.request_id),
+                         response.payload.size());
+                    response.status = DEJAVU_CONTROL_RPC_EXECUTION_ERROR;
+                    response.payload = "control result exceeds the 1 MiB response limit";
+                } else {
+                    LOGD("RPC control applied: request=%llu bytes=%zu",
+                         static_cast<unsigned long long>(request.request_id),
+                         request.payload.size());
+                }
             } else {
                 response.status = DEJAVU_CONTROL_RPC_EXECUTION_ERROR;
                 response.payload = std::move(error);
-                LOGE(
-                    "RPC control failed: request=%llu error=%s",
-                    static_cast<unsigned long long>(request.request_id),
-                    response.payload.c_str());
+                LOGE("RPC control failed: request=%llu error=%s",
+                     static_cast<unsigned long long>(request.request_id), response.payload.c_str());
             }
         }
         return dejavu_control_write_rpc(control, response);
@@ -197,9 +196,8 @@ private:
                     unavailable_logged = true;
                 }
                 poll(nullptr, 0, static_cast<int>(retry_delay_ms));
-                retry_delay_ms = retry_delay_ms < 5000
-                    ? std::min(retry_delay_ms * 2, 5000u)
-                    : 5000u;
+                retry_delay_ms =
+                    retry_delay_ms < 5000 ? std::min(retry_delay_ms * 2, 5000u) : 5000u;
                 continue;
             }
             std::string acknowledgement;
@@ -211,9 +209,8 @@ private:
                 }
                 close(control);
                 poll(nullptr, 0, static_cast<int>(retry_delay_ms));
-                retry_delay_ms = retry_delay_ms < 5000
-                    ? std::min(retry_delay_ms * 2, 5000u)
-                    : 5000u;
+                retry_delay_ms =
+                    retry_delay_ms < 5000 ? std::min(retry_delay_ms * 2, 5000u) : 5000u;
                 continue;
             }
             retry_delay_ms = 100;
@@ -249,9 +246,9 @@ const DejavuAgentApi kAgentApi = {
     post_app_specialize,
 };
 
-}  // namespace
+} // namespace
 
-extern "C" __attribute__((visibility("default")))
-const DejavuAgentApi *dejavu_agent_get_api(uint32_t abi_version) {
+extern "C" __attribute__((visibility("default"))) const DejavuAgentApi *
+dejavu_agent_get_api(uint32_t abi_version) {
     return abi_version == DEJAVU_AGENT_ABI_VERSION ? &kAgentApi : nullptr;
 }

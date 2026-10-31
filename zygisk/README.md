@@ -17,7 +17,9 @@ restart is needed only when the Loader or module installation changes.
 
 - Android 8 through 15 (API 26-35).
 - A rooted `arm64-v8a` device with a compatible Zygisk provider enabled.
-- For source builds: a host with `adb`, Python 3, CMake 3.28+ and Android NDK r29.
+- For source builds: a host with `adb`, Python 3, CMake 3.28+, Ninja, a JDK (17+)
+  and Android NDK r29. Packaging also needs Android SDK build-tools (`d8`,
+  discovered through `ANDROID_HOME`), `xxd`, `zip` and `unzip`.
 - For source builds: the Dejavu library built from the project root before packaging.
 
 CI builds the API 26 release baseline and representative API 30, 34 and 35
@@ -192,6 +194,7 @@ Useful options:
 ```text
 -p, --process PROCESS   target process (default: bin.mt.plus)
 -s, --serial SERIAL     adb serial (or set ADB_SERIAL)
+-e, --execute CODE      execute an inline Lua snippet and exit
 --wait SECONDS          wait for PID/Agent metadata (default: 5)
 --timeout SECONDS       socket operation timeout (default: 10)
 -i, --repl              keep the CLI session open and execute one Lua line at a time

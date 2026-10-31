@@ -10,6 +10,7 @@ OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}"
 
 find_ndk() {
     local candidate
+    local found
     for candidate in \
         "${ANDROID_NDK_HOME:-}" \
         "${ANDROID_NDK_ROOT:-}" \
@@ -21,9 +22,13 @@ find_ndk() {
             return 0
         fi
         if [[ -d "${candidate}" ]]; then
-            find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
-                -exec test -f '{}/source.properties' \; -print 2>/dev/null | sort -V | tail -n 1
-            return 0
+            found=$(find "${candidate}" -mindepth 1 -maxdepth 1 -type d \
+                -exec test -f '{}/source.properties' \; -print 2>/dev/null |
+                sort -V | tail -n 1)
+            if [[ -n "${found}" ]]; then
+                printf '%s\n' "${found}"
+                return 0
+            fi
         fi
     done
     return 1

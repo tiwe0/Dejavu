@@ -11,8 +11,12 @@ TARGETS_FILE=${TARGETS_FILE:-"${ROOT_DIR}/config/targets.txt"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 WEBROOT_DIR=${WEBROOT_DIR:-"${ROOT_DIR}/webroot"}
+LICENSE_FILE=${LICENSE_FILE:-"${PROJECT_DIR}/LICENSE"}
 STAGE_DIR="${ROOT_DIR}/out/package"
 DIST_DIR="${ROOT_DIR}/dist"
+if [[ -z "${PACKAGE_VERSION:-}" ]]; then
+    PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
+fi
 PACKAGE_VERSION=${PACKAGE_VERSION:-0.2.0}
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 LLVM_STRIP=${LLVM_STRIP:-llvm-strip}
@@ -40,6 +44,10 @@ if [[ ! -f "${INIT_LUA}" ]]; then
 fi
 if [[ ! -f "${HOOKX_LUA}" ]]; then
     echo "error: hookx Lua file not found: ${HOOKX_LUA}" >&2
+    exit 1
+fi
+if [[ ! -f "${LICENSE_FILE}" ]]; then
+    echo "error: project license file not found: ${LICENSE_FILE}" >&2
     exit 1
 fi
 if [[ ! -f "${WEBROOT_DIR}/index.html" ]]; then
@@ -99,6 +107,7 @@ cp -R "${WEBROOT_DIR}/." "${STAGE_DIR}/webroot/"
 cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"
 cp "${DEJAVU_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
+cp "${LICENSE_FILE}" "${STAGE_DIR}/LICENSE"
 
 # Keep the unstripped build outputs in out/ for symbolized debugging. The
 # installable module contains only runtime sections.
