@@ -11,6 +11,19 @@ The public ABI is declared in `include/dejavu.h`. Lua and TinyCC are pinned as
 Git submodules and their symbols are hidden. The engine compiles freestanding C
 directly into memory; Lua is a small control layer around that engine.
 
+## Disclaimer and authorized use
+
+Dejavu is a **personal, self-use security research tool**. Use it only on
+devices you own or on processes/apps you have explicit authorization to test.
+You are responsible for complying with applicable laws, contracts and platform
+policies (including the target app's terms of service); do not use it for
+unauthorized access, bypassing protections, or causing harm to others.
+
+The software is provided **"as is"**, without warranty of any kind. The authors
+are not liable for any damage, data loss, account bans, legal consequences or
+other harm arising from its use or misuse. You are solely responsible for your
+actions and for ensuring that your testing is authorized.
+
 The core `libdejavu.so` library has no Magisk dependency. It can be embedded or
 loaded by any application that controls its own process. The `zygisk/` directory
 is an optional integration for injecting Dejavu into other Android processes;
