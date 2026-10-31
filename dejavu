@@ -507,6 +507,22 @@ def command_native(args: argparse.Namespace) -> int:
         return exec_inline(args, process, f"return native.uninstall({args.id})")
     if action == "clear":
         return exec_inline(args, process, "return native.clear()")
+    if action == "call":
+        source_path = Path(args.source).expanduser()
+        if not source_path.is_file():
+            fail(f"C source file not found: {source_path}")
+        source = source_path.read_text(encoding="utf-8")
+        call_arguments = "".join(f", {value}" for value in args.arguments)
+        script = "\n".join(
+            [
+                f"local source = {lua_long_string(source)}",
+                "return native.call("
+                + f"{lua_quote(args.module)}, {lua_quote(args.symbol)}, source"
+                + call_arguments
+                + ")",
+            ]
+        ) + "\n"
+        return exec_lua_file(args, process, script)
     if action == "install":
         source_path = Path(args.source).expanduser()
         if not source_path.is_file():
@@ -572,6 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu watch hooks/demo.lua -p com.android.settings\n"
             "  ./dejavu native -p com.android.settings list\n"
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
+            "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),
@@ -646,6 +663,19 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("symbol", help="exported symbol, e.g. read")
     install_parser.add_argument("source", help="C file defining dejavu_native_target")
     install_parser.set_defaults(func=command_native)
+    call_parser = native_actions.add_parser(
+        "call", help="actively call a native function from a C wrapper source file"
+    )
+    call_parser.add_argument("module", help="loaded module, e.g. libc.so")
+    call_parser.add_argument("symbol", help="exported symbol, e.g. getpid")
+    call_parser.add_argument(
+        "source", help="C file defining dejavu_native_call"
+    )
+    call_parser.add_argument(
+        "--arg", dest="arguments", action="append", type=int, default=[],
+        help="integer argument (repeatable)",
+    )
+    call_parser.set_defaults(func=command_native)
     stats_parser = native_actions.add_parser("stats", help="show a hook's hit count")
     stats_parser.add_argument("id", type=int)
     stats_parser.set_defaults(func=command_native)

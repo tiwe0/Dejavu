@@ -156,11 +156,32 @@ native.uninstall(id)
 - `native.list()` 查看、`native.clear()` 全部卸载；详见
   `zygisk/docs/native-hook-api.md`。
 
+主动调用（不安装 hook 直接执行目标函数，返回整数）：
+
+```lua
+local source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call('libc.so', 'getpid', source)   -- e.g. 12345
+```
+
+- C 源必须定义 `void dejavu_native_call(void)`，用注入的
+  `DEJAVU_NATIVE_CALL_ADDRESS` 拿函数地址；`dejavu_native_call_argument(i)`
+  取第 i 个整数参数（0 基），`dejavu_native_call_return(v)` 上报返回值。
+- 只支持整数参数（最多 32 个）和 int64 返回值；同步执行，阻塞函数会卡住控制
+  通道；签名不匹配会崩进程（受信代码模型）。
+- 常用来确定性地触发已安装的 native hook：`native.call` 后查
+  `native.stats(id)`。
+
 CLI 快捷方式（等价于在目标进程执行对应 Lua）：
 
 ```sh
 ./dejavu native -p com.android.settings list
 ./dejavu native -p com.android.settings install libc.so read replacement.c
+./dejavu native -p com.android.settings call libc.so getpid call.c
 ./dejavu native -p com.android.settings stats <id>
 ./dejavu native -p com.android.settings uninstall <id>
 ./dejavu native -p com.android.settings clear
@@ -192,7 +213,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 13 项（含 hang 为 14）
+./dejavu test -p com.android.settings               # 设备验收 17 项（含 hang 为 18）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```

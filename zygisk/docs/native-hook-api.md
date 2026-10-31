@@ -91,6 +91,59 @@ Installed hooks stay active until uninstalled or the process dies. All calls
 return normal Lua errors (visible through the CLI / companion log) instead of
 crashing the host on validation failures.
 
+## Active calls (native.call)
+
+`native.call(module, symbol, c_source, ...integer_args)` actively invokes an
+exported native function through a TinyCC-generated wrapper, without installing
+a hook. It returns the wrapper's return value as a Lua integer.
+
+The C source must define `void dejavu_native_call(void)` and may use:
+
+```c
+/* injected constant: address of the resolved target function */
+DEJAVU_NATIVE_CALL_ADDRESS
+
+/* 0-based int64 argument access; values come from the Lua call */
+long long dejavu_native_call_argument(unsigned int index);
+
+/* report the function result (required) */
+void dejavu_native_call_return(long long value);
+```
+
+Example: call `getpid()` with no arguments:
+
+```lua
+local source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call("libc.so", "getpid", source)   -- e.g. 12345
+```
+
+Example with arguments: `abs(-42)`:
+
+```lua
+local source = [[
+void dejavu_native_call(void) {
+    int (*target)(int) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    int value = (int)dejavu_native_call_argument(0);
+    dejavu_native_call_return((long long)target(value));
+}
+]]
+local result = native.call("libc.so", "abs", source, -42)   -- 42
+```
+
+Because the target can be a hooked function, `native.call` is also a reliable
+way to trigger a native hook in tests: install the hook, call the function, then
+check `native.stats(id)`.
+
+Limits: integer arguments only (up to 32), a single int64 return value, and one
+compile per call. The call is synchronous and runs on the control thread, so a
+blocking target blocks the Lua control channel until it returns. A mismatched
+signature or ABI is undefined behaviour and can crash the target process.
+
 ## CLI shortcuts
 
 The unified `./dejavu` CLI wraps the common operations (it still executes Lua
@@ -99,6 +152,7 @@ in the target process, so the API rules above apply):
 ```sh
 ./dejavu native -p com.android.settings list
 ./dejavu native -p com.android.settings install libc.so read replacement.c
+./dejavu native -p com.android.settings call libc.so getpid call.c
 ./dejavu native -p com.android.settings stats <id>
 ./dejavu native -p com.android.settings uninstall <id>
 ./dejavu native -p com.android.settings clear

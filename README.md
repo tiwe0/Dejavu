@@ -158,6 +158,7 @@ control channel into one command:
 ./dejavu exec -p <process> hooks/demo.lua
 ./dejavu native -p <process> list|stats|uninstall|clear
 ./dejavu native -p <process> install libc.so read replacement.c
+./dejavu native -p <process> call libc.so getpid call.c
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]
@@ -193,8 +194,8 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   the on-device acceptance flow against a rooted device with a Zygisk provider
   and this module installed (see `zygisk/README.md`). It uses the file control
   channel, never reboots the device, and verifies control, instance-method
-  hooks, native function hooks, writable generated data, oversized responses
-  and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
+  hooks, native function hooks (install and active call), writable generated
+  data, oversized responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
 - Patched dependencies: see `patches/README.md`.
 
 ## Known limitations

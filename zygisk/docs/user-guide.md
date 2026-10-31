@@ -320,6 +320,10 @@ native.clear()
   且目标必须位于可执行映射；目前仅 arm64。
 - 不要在有并发调用时 `uninstall`（销毁 trampoline 后仍在执行的替换函数
   行为未定义）；建议空闲期卸载或重启目标进程。
+- 主动调用：`native.call(module, symbol, c_source, ...整数参数)` 可直接执行目标
+  函数（C 源定义 `void dejavu_native_call(void)`，使用
+  `DEJAVU_NATIVE_CALL_ADDRESS`、`dejavu_native_call_argument(i)` 和
+  `dejavu_native_call_return(v)`），适合确定性触发已安装的 native hook。
 - 完整契约与限制见 `docs/native-hook-api.md`。
 
 ## 8. TinyCC Hook C ABI

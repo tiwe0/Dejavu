@@ -28,6 +28,14 @@ extern void dejavu_native_log(const char *message);
 #define dejavu_native_hit() dejavu_native_hit_by_id(DEJAVU_NATIVE_HOOK_ID)
 )DEJAVU_NATIVE";
 
+constexpr char kNativeCallPreamble[] = R"DEJAVU_CALL_API(
+extern long long dejavu_native_call_argument(unsigned int index);
+extern void dejavu_native_call_return(long long value);
+)DEJAVU_CALL_API";
+
+constexpr char kNativeCallEntry[] =
+    "\nint dejavu_entry(void) { dejavu_native_call(); return 0; }\n";
+
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
 
@@ -137,11 +145,23 @@ void *resolve_target(const std::string &module_name, const std::string &symbol_n
     return symbol;
 }
 
+struct NativeCallContext {
+    const long long *arguments = nullptr;
+    size_t count = 0;
+    bool result_set = false;
+    long long result = 0;
+    std::string error;
+};
+
+thread_local NativeCallContext *tls_call_context = nullptr;
+
 } // namespace
 
 extern "C" void *dejavu_native_original_by_id(unsigned long long id);
 extern "C" void dejavu_native_hit_by_id(unsigned long long id);
 extern "C" void dejavu_native_log(const char *message);
+extern "C" long long dejavu_native_call_argument(unsigned int index);
+extern "C" void dejavu_native_call_return(long long value);
 
 NativeHookManager *NativeHookManager::instance_ = nullptr;
 
@@ -166,6 +186,9 @@ bool NativeHookManager::initialize(DejavuRuntime *runtime, dejavu_engine *engine
          reinterpret_cast<const void *>(dejavu_native_original_by_id)},
         {"dejavu_native_hit_by_id", reinterpret_cast<const void *>(dejavu_native_hit_by_id)},
         {"dejavu_native_log", reinterpret_cast<const void *>(dejavu_native_log)},
+        {"dejavu_native_call_argument",
+         reinterpret_cast<const void *>(dejavu_native_call_argument)},
+        {"dejavu_native_call_return", reinterpret_cast<const void *>(dejavu_native_call_return)},
     };
     for (const HelperSymbol &helper : helpers) {
         if (runtime->engine_add_symbol(engine, helper.name, helper.address) != DEJAVU_OK) {
@@ -194,6 +217,7 @@ bool NativeHookManager::register_lua(dejavu_control_session *session, std::strin
         {"list", NativeHookManager::lua_list},
         {"stats", NativeHookManager::lua_stats},
         {"clear", NativeHookManager::lua_clear},
+        {"call", NativeHookManager::lua_call},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -418,6 +442,82 @@ bool NativeHookManager::stats(unsigned long long id, unsigned long long *hits,
     return true;
 }
 
+bool NativeHookManager::call(const std::string &module_name, const std::string &symbol_name,
+                             const std::string &source, const std::vector<long long> &arguments,
+                             long long *result, std::string *error) {
+    if (runtime_ == nullptr || engine_ == nullptr) {
+        *error = "native hook manager is not initialized";
+        return false;
+    }
+    if (module_name.empty() || symbol_name.empty() || source.empty()) {
+        *error = "native.call expects module, symbol and C source";
+        return false;
+    }
+    if (arguments.size() > 32) {
+        *error = "native.call accepts at most 32 integer arguments";
+        return false;
+    }
+    void *module_handle = nullptr;
+    void *target = resolve_target(module_name, symbol_name, &module_handle, error);
+    if (target == nullptr) {
+        return false;
+    }
+    int protection = 0;
+    if (query_protection(target, &protection, error) != 0) {
+        dlclose(module_handle);
+        return false;
+    }
+    if ((protection & PROT_EXEC) == 0) {
+        dlclose(module_handle);
+        *error = "target symbol is not in an executable mapping";
+        return false;
+    }
+    char address[32];
+    snprintf(address, sizeof(address), "0x%llxULL",
+             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(target)));
+    std::string full_source = "#define DEJAVU_NATIVE_CALL_ADDRESS ";
+    full_source += address;
+    full_source += "\n";
+    full_source += kNativeCallPreamble;
+    full_source += source;
+    full_source += kNativeCallEntry;
+    char compile_error[1024] = {};
+    dejavu_module *module = nullptr;
+    const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(), &module,
+                                                        compile_error, sizeof(compile_error));
+    if (compile_status != DEJAVU_OK) {
+        if (module != nullptr) {
+            runtime_->module_destroy(module);
+        }
+        dlclose(module_handle);
+        *error = compile_error[0] != '\0' ? compile_error : "native call compilation failed";
+        return false;
+    }
+    NativeCallContext context;
+    context.arguments = arguments.empty() ? nullptr : arguments.data();
+    context.count = arguments.size();
+    tls_call_context = &context;
+    int call_result = 0;
+    const int call_status = runtime_->module_call(module, &call_result);
+    tls_call_context = nullptr;
+    runtime_->module_destroy(module);
+    dlclose(module_handle);
+    if (!context.error.empty()) {
+        *error = context.error;
+        return false;
+    }
+    if (call_status != DEJAVU_OK) {
+        *error = "native call execution failed with status " + std::to_string(call_status);
+        return false;
+    }
+    if (!context.result_set) {
+        *error = "dejavu_native_call did not report a return value";
+        return false;
+    }
+    *result = context.result;
+    return true;
+}
+
 void NativeHookManager::shutdown() {
     std::vector<unsigned long long> ids;
     {
@@ -498,6 +598,27 @@ void NativeHookManager::log_message(const char *message) {
     __android_log_write(ANDROID_LOG_INFO, kLogTag, message != nullptr ? message : "(null)");
 }
 
+long long NativeHookManager::call_argument(unsigned int index) {
+    NativeCallContext *context = tls_call_context;
+    if (context == nullptr) {
+        return 0;
+    }
+    if (index >= context->count) {
+        context->error = "native call argument index out of range: " + std::to_string(index);
+        return 0;
+    }
+    return context->arguments[index];
+}
+
+void NativeHookManager::call_return(long long value) {
+    NativeCallContext *context = tls_call_context;
+    if (context == nullptr) {
+        return;
+    }
+    context->result = value;
+    context->result_set = true;
+}
+
 extern "C" void *dejavu_native_original_by_id(unsigned long long id) {
     return NativeHookManager::original_for_id(id);
 }
@@ -508,6 +629,14 @@ extern "C" void dejavu_native_hit_by_id(unsigned long long id) {
 
 extern "C" void dejavu_native_log(const char *message) {
     NativeHookManager::log_message(message);
+}
+
+extern "C" long long dejavu_native_call_argument(unsigned int index) {
+    return NativeHookManager::call_argument(index);
+}
+
+extern "C" void dejavu_native_call_return(long long value) {
+    NativeHookManager::call_return(value);
 }
 
 int NativeHookManager::lua_install(dejavu_control_session *, void *context,
@@ -603,5 +732,36 @@ int NativeHookManager::lua_clear(dejavu_control_session *, void *context, const 
     }
     result->type = DEJAVU_VALUE_INTEGER;
     result->integer_value = static_cast<long long>(removed);
+    return DEJAVU_OK;
+}
+
+int NativeHookManager::lua_call(dejavu_control_session *, void *context,
+                                const dejavu_value *arguments, size_t argument_count,
+                                dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<NativeHookManager *>(context);
+    if (manager == nullptr || argument_count < 3 || argument_count > 3 + 32 ||
+        arguments[0].type != DEJAVU_VALUE_STRING || arguments[1].type != DEJAVU_VALUE_STRING ||
+        arguments[2].type != DEJAVU_VALUE_STRING) {
+        copy_error(error, error_size,
+                   "native.call expects module, symbol, C source and optional integer arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::vector<long long> call_arguments;
+    for (size_t index = 3; index < argument_count; ++index) {
+        if (arguments[index].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "native.call arguments must be integers");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        call_arguments.push_back(arguments[index].integer_value);
+    }
+    long long call_result = 0;
+    std::string call_error;
+    if (!manager->call(value_string(arguments[0]), value_string(arguments[1]),
+                       value_string(arguments[2]), call_arguments, &call_result, &call_error)) {
+        copy_error(error, error_size, call_error);
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = call_result;
     return DEJAVU_OK;
 }

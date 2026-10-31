@@ -388,6 +388,91 @@ fi
 [[ -n "$(target_pid)" ]] || fail "native hook double uninstall: target died"
 pass "native hook double uninstall"
 
+# Active native calls: invoke exported functions through a TinyCC wrapper and
+# verify arguments/results, then use them to trigger a native hook reliably.
+echo "== native call (getpid)"
+write_script "local source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call('libc.so', 'getpid', source)
+if type(pid) ~= 'number' or pid <= 0 then
+    error('${RUN_TOKEN} native-call-getpid-failed ' .. tostring(pid))
+end
+error('${RUN_TOKEN} native-call-getpid-ok pid=' .. tostring(pid))"
+if ! wait_for_log "${RUN_TOKEN} native-call-getpid-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native call getpid: expected result not observed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native call getpid: target died"
+pass "native call (getpid)"
+
+echo "== native call (arguments)"
+write_script "local source = [[
+void dejavu_native_call(void) {
+    int (*target)(int) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    int value = (int)dejavu_native_call_argument(0);
+    dejavu_native_call_return((long long)target(value));
+}
+]]
+local result = native.call('libc.so', 'abs', source, -42)
+if result ~= 42 then error('${RUN_TOKEN} native-call-abs-failed ' .. tostring(result)) end
+error('${RUN_TOKEN} native-call-abs-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-call-abs-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native call arguments: expected abs(-42)=42"
+fi
+pass "native call (arguments)"
+
+echo "== native call triggers hook"
+write_script "local hook_source = [[
+int dejavu_native_target(void) {
+    dejavu_native_hit();
+    return ((int (*)(void))dejavu_native_original())();
+}
+]]
+local hook_ok, value = pcall(native.install, 'libc.so', 'getpid', hook_source)
+if not hook_ok then error('${RUN_TOKEN} native-call-trigger-install') end
+local call_source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call('libc.so', 'getpid', call_source)
+local hits = native.stats(value)
+native.uninstall(value)
+if type(hits) ~= 'number' or hits <= 0 then
+    error('${RUN_TOKEN} native-call-trigger-no-hits ' .. tostring(hits))
+end
+error('${RUN_TOKEN} native-call-trigger-ok hits=' .. tostring(hits))"
+if ! wait_for_log "${RUN_TOKEN} native-call-trigger-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native call trigger: hook was not hit"
+fi
+[[ -n "$(target_pid)" ]] || fail "native call trigger: target died"
+pass "native call triggers hook"
+
+echo "== native call error handling"
+write_script "local source = [[
+void dejavu_native_call(void) {
+    dejavu_native_call_return(0);
+}
+]]
+local module_ok = pcall(native.call, 'libdejavu-not-loaded.so', 'foo', source)
+local symbol_ok = pcall(native.call, 'libc.so', 'dejavu_missing_symbol_xyz', source)
+if module_ok or symbol_ok then
+    error('${RUN_TOKEN} native-call-errors-unexpected-success')
+end
+error('${RUN_TOKEN} native-call-errors-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-call-errors-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native call error handling: expected errors not observed"
+fi
+pass "native call error handling"
+
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.
 echo "== oversized control response (M1 regression)"

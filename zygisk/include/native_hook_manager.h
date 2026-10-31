@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "dejavu.h"
 #include "dejavu_runtime.h"
@@ -38,10 +39,20 @@ class NativeHookManager {
     bool register_lua(dejavu_control_session *session, std::string *error);
     void shutdown();
 
+    /* Actively invoke an exported function through a TinyCC-generated wrapper.
+     * The C source defines `void dejavu_native_call(void)` and uses
+     * DEJAVU_NATIVE_CALL_ADDRESS / dejavu_native_call_argument(i) /
+     * dejavu_native_call_return(value). */
+    bool call(const std::string &module_name, const std::string &symbol_name,
+              const std::string &source, const std::vector<long long> &arguments, long long *result,
+              std::string *error);
+
     /* C helper entry points, also registered as TinyCC symbols. */
     static void *original_for_id(unsigned long long id);
     static void hit_for_id(unsigned long long id);
     static void log_message(const char *message);
+    static long long call_argument(unsigned int index);
+    static void call_return(long long value);
 
   private:
     struct Record {
@@ -73,6 +84,8 @@ class NativeHookManager {
                          dejavu_value *, char *, size_t);
     static int lua_clear(dejavu_control_session *, void *, const dejavu_value *, size_t,
                          dejavu_value *, char *, size_t);
+    static int lua_call(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                        dejavu_value *, char *, size_t);
 
     static NativeHookManager *instance_;
 

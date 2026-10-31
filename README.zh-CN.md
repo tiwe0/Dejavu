@@ -156,6 +156,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu exec -p <进程> hooks/demo.lua
 ./dejavu native -p <进程> list|stats|uninstall|clear
 ./dejavu native -p <进程> install libc.so read replacement.c
+./dejavu native -p <进程> call libc.so getpid call.c
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
 ./dejavu log [-p <进程>] [--dump] [--clear]
