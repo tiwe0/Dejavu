@@ -482,6 +482,21 @@ def lua_long_string(text: str) -> str:
     fail("native hook source contains too many long-bracket delimiters")
 
 
+def lua_argument_literal(text: str) -> str:
+    """Convert a CLI argument into a typed Lua literal."""
+    if text in ("null", "nil"):
+        return "nil"
+    if text in ("true", "false"):
+        return text
+    if re.fullmatch(r"-?(0|[1-9][0-9]*)", text):
+        return text
+    if re.fullmatch(r"-?(([0-9]+\.[0-9]*)|(\.[0-9]+))([eE][+-]?[0-9]+)?", text):
+        return text
+    if text.startswith("s:"):
+        text = text[2:]
+    return lua_quote(text)
+
+
 def exec_inline(args: argparse.Namespace, process: str, code: str) -> int:
     return delegate_dejavuctl(args, ["-p", process, "-e", code])
 
@@ -512,7 +527,9 @@ def command_native(args: argparse.Namespace) -> int:
         if not source_path.is_file():
             fail(f"C source file not found: {source_path}")
         source = source_path.read_text(encoding="utf-8")
-        call_arguments = "".join(f", {value}" for value in args.arguments)
+        call_arguments = "".join(
+            f", {lua_argument_literal(value)}" for value in args.arguments
+        )
         script = "\n".join(
             [
                 f"local source = {lua_long_string(source)}",
@@ -538,6 +555,36 @@ def command_native(args: argparse.Namespace) -> int:
         ) + "\n"
         return exec_lua_file(args, process, script)
     fail(f"unsupported native action: {action}")
+
+
+def java_target_literal(text: str) -> str:
+    if re.fullmatch(r"[0-9]+", text):
+        return text
+    return lua_quote(text)
+
+
+def java_call_arguments(values: list[str]) -> str:
+    return "".join(f", {lua_argument_literal(value)}" for value in values)
+
+
+def command_java(args: argparse.Namespace) -> int:
+    action = args.java_action
+    if action == "invoke":
+        code = (
+            f"return java.invoke({java_target_literal(args.target)}, "
+            f"{lua_quote(args.method)}, {lua_quote(args.signature)}"
+            f"{java_call_arguments(args.arguments)})"
+        )
+        return exec_inline(args, args.process, code)
+    if action == "new":
+        code = (
+            f"return java.new({lua_quote(args.class_name)}, "
+            f"{lua_quote(args.signature)}{java_call_arguments(args.arguments)})"
+        )
+        return exec_inline(args, args.process, code)
+    if action == "release":
+        return exec_inline(args, args.process, f"return java.release({args.handle})")
+    fail(f"unsupported java action: {action}")
 
 
 def command_log(args: argparse.Namespace) -> int:
@@ -589,6 +636,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings list\n"
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
+            "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),
@@ -672,8 +720,14 @@ def build_parser() -> argparse.ArgumentParser:
         "source", help="C file defining dejavu_native_call"
     )
     call_parser.add_argument(
-        "--arg", dest="arguments", action="append", type=int, default=[],
-        help="integer argument (repeatable)",
+        "--arg",
+        dest="arguments",
+        action="append",
+        default=[],
+        help=(
+            "typed argument (repeatable): integer, float, true/false, null, "
+            "or a string; use s:<value> to force a numeric-looking string"
+        ),
     )
     call_parser.set_defaults(func=command_native)
     stats_parser = native_actions.add_parser("stats", help="show a hook's hit count")
@@ -685,6 +739,38 @@ def build_parser() -> argparse.ArgumentParser:
     native_actions.add_parser("clear", help="uninstall all native hooks").set_defaults(
         func=command_native
     )
+
+    sub = subparsers.add_parser("java", help="actively invoke Java methods")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    java_actions = sub.add_subparsers(dest="java_action", required=True)
+    invoke_parser = java_actions.add_parser(
+        "invoke", help="invoke a static method (class name) or instance method (handle)"
+    )
+    invoke_parser.add_argument("target", help="class name or integer object handle")
+    invoke_parser.add_argument("method", help="method name")
+    invoke_parser.add_argument("signature", help="JNI signature, e.g. (I)Ljava/lang/String;")
+    invoke_parser.add_argument(
+        "--arg",
+        dest="arguments",
+        action="append",
+        default=[],
+        help="typed argument (repeatable): integer, float, true/false, null or string",
+    )
+    invoke_parser.set_defaults(func=command_java)
+    new_parser = java_actions.add_parser("new", help="construct a Java object and return its handle")
+    new_parser.add_argument("class_name", help="class name, e.g. java.lang.StringBuilder")
+    new_parser.add_argument("signature", help="constructor JNI signature, e.g. (Ljava/lang/String;)V")
+    new_parser.add_argument(
+        "--arg",
+        dest="arguments",
+        action="append",
+        default=[],
+        help="typed argument (repeatable): integer, float, true/false, null or string",
+    )
+    new_parser.set_defaults(func=command_java)
+    release_parser = java_actions.add_parser("release", help="release a Java object handle")
+    release_parser.add_argument("handle", type=int)
+    release_parser.set_defaults(func=command_java)
 
     sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
     sub.add_argument("-p", "--process", help="only show lines mentioning this process")

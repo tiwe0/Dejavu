@@ -65,7 +65,7 @@ make -C zygisk package
 产物为：
 
 ```text
-zygisk/dist/dejavu-zygisk-v0.3.0-arm64.zip
+zygisk/dist/dejavu-zygisk-v0.4.0-arm64.zip
 ```
 
 `package` 会自动查找 NDK 的 `llvm-strip`，并对 Loader、Agent 和
@@ -91,7 +91,7 @@ adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download
 将 ZIP 复制到设备：
 
 ```sh
-adb push zygisk/dist/dejavu-zygisk-v0.3.0-arm64.zip /sdcard/Download/
+adb push zygisk/dist/dejavu-zygisk-v0.4.0-arm64.zip /sdcard/Download/
 ```
 
 在 Magisk Manager 或 APatch Manager 中选择该 ZIP 安装，然后重启设备。
@@ -320,11 +320,30 @@ native.clear()
   且目标必须位于可执行映射；目前仅 arm64。
 - 不要在有并发调用时 `uninstall`（销毁 trampoline 后仍在执行的替换函数
   行为未定义）；建议空闲期卸载或重启目标进程。
-- 主动调用：`native.call(module, symbol, c_source, ...整数参数)` 可直接执行目标
+- 主动调用：`native.call(module, symbol, c_source, ...参数)` 可直接执行目标
   函数（C 源定义 `void dejavu_native_call(void)`，使用
-  `DEJAVU_NATIVE_CALL_ADDRESS`、`dejavu_native_call_argument(i)` 和
+  `DEJAVU_NATIVE_CALL_ADDRESS`、类型化参数访问器和
   `dejavu_native_call_return(v)`），适合确定性触发已安装的 native hook。
-- 完整契约与限制见 `docs/native-hook-api.md`。
+- 参数类型协议（nil/boolean/integer/number/string）与 `java.invoke` 共用；
+  完整契约与限制见 `docs/native-hook-api.md`。
+
+### 7.5 Java 主动调用
+
+```lua
+-- 静态方法：类名 + 方法 + JNI 签名
+local text = java.invoke("java.lang.String", "valueOf", "(I)Ljava/lang/String;", 42)
+
+-- 构造 + 实例方法 + 释放 handle
+local handle = java.new("java.lang.StringBuilder", "(Ljava/lang/String;)V", "abc")
+local value = java.invoke(handle, "toString", "()Ljava/lang/String;")
+java.release(handle)
+```
+
+参数和返回值由 **JNI 签名驱动转换**：`Z`→boolean、`B/C/S/I/J`→integer、
+`F/D`→number、`Ljava/lang/String;`↔string（UTF-8/UTF-16）、其他引用/数组↔
+整数对象 handle（`nil` 为 null）。Java 异常会转成 Lua 错误；handle 是进程内
+全局引用（最多 1024 个），目标进程重启后失效。完整协议见
+`docs/java-invoke-api.md`。
 
 ## 8. TinyCC Hook C ABI
 
@@ -612,7 +631,7 @@ make -C zygisk package
 
 # 2. 推送安装包，之后在 APatch Manager 中安装并重启
 adb -s c44d68aa push \
-  zygisk/dist/dejavu-zygisk-v0.3.0-arm64.zip \
+  zygisk/dist/dejavu-zygisk-v0.4.0-arm64.zip \
   /sdcard/Download/
 
 # 3. 确认作用域并启动 MT Manager

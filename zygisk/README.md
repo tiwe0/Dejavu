@@ -95,7 +95,7 @@ make -C zygisk package
 produces:
 
 ```text
-zygisk/dist/dejavu-zygisk-v0.3.0-arm64.zip
+zygisk/dist/dejavu-zygisk-v0.4.0-arm64.zip
 ```
 
 The packaged `config/init.lua` is assembled from `config/hookx.lua` and
@@ -105,7 +105,7 @@ the same pure-Lua helper library.
 For example, copy it to the connected device with:
 
 ```sh
-adb push zygisk/dist/dejavu-zygisk-v0.3.0-arm64.zip /sdcard/Download/
+adb push zygisk/dist/dejavu-zygisk-v0.4.0-arm64.zip /sdcard/Download/
 ```
 
 Install the ZIP from Magisk or APatch Manager, then reboot so Zygisk
@@ -375,6 +375,22 @@ must be named `dejavu_native_target`; `dejavu_native_original()`,
 Full contract and limitations: [docs/native-hook-api.md](docs/native-hook-api.md).
 Uninstall only while the target is idle: destroying the trampoline while a
 replacement is in flight is undefined behaviour.
+
+## Active invocation (ABI 1)
+
+The control session can also call into the target without installing a hook:
+
+- `native.call(module, symbol, c_source, ...typed_args)` calls an exported
+  native function through a TinyCC wrapper (typed arguments: nil/boolean/
+  integer/number/string; see [docs/native-hook-api.md](docs/native-hook-api.md)).
+- `java.invoke(class_or_handle, method, jni_signature, ...args)`,
+  `java.new(class, constructor_signature, ...args)` and
+  `java.release(handle)` call Java methods/constructors with a signature-driven
+  conversion protocol; object/array results become process-scoped handles.
+  See [docs/java-invoke-api.md](docs/java-invoke-api.md).
+
+Both are synchronous on the Lua control thread, and both enforce Lua-side type
+checks before entering the target code.
 
 ## Native Hook C contract (Java method callbacks)
 

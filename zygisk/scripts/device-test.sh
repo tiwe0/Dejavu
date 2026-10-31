@@ -9,9 +9,10 @@ set -euo pipefail
 #
 # Cases assert on the companion's logcat lines using a unique per-run token:
 # control channel, writable generated data (SIGSEGV regression), an
-# instance-method hook, a native function hook, oversized control responses and
-# the documented header-include limitation. --with-hang-test additionally checks
-# that a hung
+# instance-method hook, native function hooks and active calls (including typed
+# arguments), Java active invocation (static/constructor/instance), oversized
+# control responses and the documented header-include limitation.
+# --with-hang-test additionally checks that a hung
 # Lua eval no longer wedges the control channel forever.
 #
 # Usage:
@@ -472,6 +473,82 @@ if ! wait_for_log "${RUN_TOKEN} native-call-errors-ok" "${LOG_TIMEOUT}"; then
     fail "native call error handling: expected errors not observed"
 fi
 pass "native call error handling"
+
+# Typed argument protocol: strings and doubles go through the same Lua -> C
+# conversion rules as the rest of the invoke APIs.
+echo "== native call typed arguments"
+write_script "local strlen_source = [[
+void dejavu_native_call(void) {
+    unsigned long size = 0;
+    const char *text = dejavu_native_call_argument_string(0, &size);
+    if (text == 0 || size != 6) { dejavu_native_call_return(-1); return; }
+    int (*target)(const char *) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target(text));
+}
+]]
+local length = native.call('libc.so', 'strlen', strlen_source, 'dejavu')
+if length ~= 6 then error('${RUN_TOKEN} native-call-string-failed ' .. tostring(length)) end
+local sqrt_source = [[
+void dejavu_native_call(void) {
+    double value = dejavu_native_call_argument_double(0);
+    double (*target)(double) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)(target(value) * 1000.0));
+}
+]]
+local scaled = native.call('libm.so', 'sqrt', sqrt_source, 81.0)
+if scaled ~= 9000 then error('${RUN_TOKEN} native-call-double-failed ' .. tostring(scaled)) end
+error('${RUN_TOKEN} native-call-typed-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-call-typed-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native call typed arguments failed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native call typed arguments: target died"
+pass "native call typed arguments"
+
+echo "== java invoke static conversions"
+write_script "local text = java.invoke('java.lang.String', 'valueOf', '(I)Ljava/lang/String;', 42)
+local number = java.invoke('java.lang.Integer', 'parseInt', '(Ljava/lang/String;)I', '123')
+local big = java.invoke('java.lang.Long', 'parseLong', '(Ljava/lang/String;)J', '9007199254740993')
+local decimal = java.invoke('java.lang.Double', 'parseDouble', '(Ljava/lang/String;)D', '2.5')
+local flag = java.invoke('java.lang.Boolean', 'parseBoolean', '(Ljava/lang/String;)Z', 'true')
+if text ~= '42' or number ~= 123 or big ~= 9007199254740993 or
+    decimal ~= 2.5 or flag ~= true then
+    error('${RUN_TOKEN} java-invoke-static-failed')
+end
+error('${RUN_TOKEN} java-invoke-static-ok')"
+if ! wait_for_log "${RUN_TOKEN} java-invoke-static-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "java invoke static conversions failed"
+fi
+pass "java invoke static conversions"
+
+echo "== java constructor/instance/release"
+write_script "local handle = java.new('java.lang.StringBuilder', '(Ljava/lang/String;)V', 'abc')
+local text = java.invoke(handle, 'toString', '()Ljava/lang/String;')
+if text ~= 'abc' then error('${RUN_TOKEN} java-instance-failed ' .. tostring(text)) end
+if java.release(handle) ~= true then error('${RUN_TOKEN} java-release-failed') end
+local after_release = pcall(java.invoke, handle, 'toString', '()Ljava/lang/String;')
+if after_release then error('${RUN_TOKEN} java-release-use-after-free') end
+error('${RUN_TOKEN} java-instance-ok')"
+if ! wait_for_log "${RUN_TOKEN} java-instance-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "java constructor/instance/release failed"
+fi
+pass "java constructor/instance/release"
+
+echo "== java invoke error handling"
+write_script "local missing = pcall(java.invoke, 'java.lang.String', 'noSuchMethod', '()V')
+local wrong_type = pcall(java.invoke, 'java.lang.Integer', 'parseInt', '(Ljava/lang/String;)I', 123)
+local unknown_class = pcall(java.invoke, 'com.example.NoSuchClass', 'foo', '()V')
+if missing or wrong_type or unknown_class then
+    error('${RUN_TOKEN} java-errors-unexpected-success')
+end
+error('${RUN_TOKEN} java-errors-ok')"
+if ! wait_for_log "${RUN_TOKEN} java-errors-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "java invoke error handling failed"
+fi
+pass "java invoke error handling"
 
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.

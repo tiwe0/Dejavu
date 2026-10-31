@@ -30,6 +30,11 @@ extern void dejavu_native_log(const char *message);
 
 constexpr char kNativeCallPreamble[] = R"DEJAVU_CALL_API(
 extern long long dejavu_native_call_argument(unsigned int index);
+extern long long dejavu_native_call_argument_int(unsigned int index);
+extern double dejavu_native_call_argument_double(unsigned int index);
+extern int dejavu_native_call_argument_boolean(unsigned int index);
+extern const char *dejavu_native_call_argument_string(unsigned int index, unsigned long *size);
+extern int dejavu_native_call_argument_type(unsigned int index);
 extern void dejavu_native_call_return(long long value);
 )DEJAVU_CALL_API";
 
@@ -146,8 +151,7 @@ void *resolve_target(const std::string &module_name, const std::string &symbol_n
 }
 
 struct NativeCallContext {
-    const long long *arguments = nullptr;
-    size_t count = 0;
+    const std::vector<NativeCallArgument> *arguments = nullptr;
     bool result_set = false;
     long long result = 0;
     std::string error;
@@ -155,12 +159,36 @@ struct NativeCallContext {
 
 thread_local NativeCallContext *tls_call_context = nullptr;
 
+const NativeCallArgument *current_argument(unsigned int index) {
+    NativeCallContext *context = tls_call_context;
+    if (context == nullptr || context->arguments == nullptr) {
+        return nullptr;
+    }
+    if (index >= context->arguments->size()) {
+        context->error = "native call argument index out of range: " + std::to_string(index);
+        return nullptr;
+    }
+    return &(*context->arguments)[index];
+}
+
+void set_argument_type_error(unsigned int index, const char *expected) {
+    NativeCallContext *context = tls_call_context;
+    if (context != nullptr) {
+        context->error = "native call argument " + std::to_string(index) + " expects " + expected;
+    }
+}
+
 } // namespace
 
 extern "C" void *dejavu_native_original_by_id(unsigned long long id);
 extern "C" void dejavu_native_hit_by_id(unsigned long long id);
 extern "C" void dejavu_native_log(const char *message);
 extern "C" long long dejavu_native_call_argument(unsigned int index);
+extern "C" long long dejavu_native_call_argument_int(unsigned int index);
+extern "C" double dejavu_native_call_argument_double(unsigned int index);
+extern "C" int dejavu_native_call_argument_boolean(unsigned int index);
+extern "C" const char *dejavu_native_call_argument_string(unsigned int index, unsigned long *size);
+extern "C" int dejavu_native_call_argument_type(unsigned int index);
 extern "C" void dejavu_native_call_return(long long value);
 
 NativeHookManager *NativeHookManager::instance_ = nullptr;
@@ -188,6 +216,16 @@ bool NativeHookManager::initialize(DejavuRuntime *runtime, dejavu_engine *engine
         {"dejavu_native_log", reinterpret_cast<const void *>(dejavu_native_log)},
         {"dejavu_native_call_argument",
          reinterpret_cast<const void *>(dejavu_native_call_argument)},
+        {"dejavu_native_call_argument_int",
+         reinterpret_cast<const void *>(dejavu_native_call_argument_int)},
+        {"dejavu_native_call_argument_double",
+         reinterpret_cast<const void *>(dejavu_native_call_argument_double)},
+        {"dejavu_native_call_argument_boolean",
+         reinterpret_cast<const void *>(dejavu_native_call_argument_boolean)},
+        {"dejavu_native_call_argument_string",
+         reinterpret_cast<const void *>(dejavu_native_call_argument_string)},
+        {"dejavu_native_call_argument_type",
+         reinterpret_cast<const void *>(dejavu_native_call_argument_type)},
         {"dejavu_native_call_return", reinterpret_cast<const void *>(dejavu_native_call_return)},
     };
     for (const HelperSymbol &helper : helpers) {
@@ -443,8 +481,9 @@ bool NativeHookManager::stats(unsigned long long id, unsigned long long *hits,
 }
 
 bool NativeHookManager::call(const std::string &module_name, const std::string &symbol_name,
-                             const std::string &source, const std::vector<long long> &arguments,
-                             long long *result, std::string *error) {
+                             const std::string &source,
+                             const std::vector<NativeCallArgument> &arguments, long long *result,
+                             std::string *error) {
     if (runtime_ == nullptr || engine_ == nullptr) {
         *error = "native hook manager is not initialized";
         return false;
@@ -494,8 +533,7 @@ bool NativeHookManager::call(const std::string &module_name, const std::string &
         return false;
     }
     NativeCallContext context;
-    context.arguments = arguments.empty() ? nullptr : arguments.data();
-    context.count = arguments.size();
+    context.arguments = &arguments;
     tls_call_context = &context;
     int call_result = 0;
     const int call_status = runtime_->module_call(module, &call_result);
@@ -599,15 +637,93 @@ void NativeHookManager::log_message(const char *message) {
 }
 
 long long NativeHookManager::call_argument(unsigned int index) {
-    NativeCallContext *context = tls_call_context;
-    if (context == nullptr) {
+    const NativeCallArgument *argument = current_argument(index);
+    if (argument == nullptr) {
         return 0;
     }
-    if (index >= context->count) {
-        context->error = "native call argument index out of range: " + std::to_string(index);
+    switch (argument->type) {
+    case NativeCallArgument::kNull:
+        return 0;
+    case NativeCallArgument::kBoolean:
+        return argument->boolean_value ? 1 : 0;
+    case NativeCallArgument::kInteger:
+        return argument->integer_value;
+    case NativeCallArgument::kNumber:
+        return static_cast<long long>(argument->number_value);
+    case NativeCallArgument::kString:
+        set_argument_type_error(index, "an integer, got a string");
         return 0;
     }
-    return context->arguments[index];
+    return 0;
+}
+
+long long NativeHookManager::call_argument_int(unsigned int index) {
+    const NativeCallArgument *argument = current_argument(index);
+    if (argument == nullptr) {
+        return 0;
+    }
+    if (argument->type != NativeCallArgument::kInteger) {
+        set_argument_type_error(index, "an integer");
+        return 0;
+    }
+    return argument->integer_value;
+}
+
+double NativeHookManager::call_argument_double(unsigned int index) {
+    const NativeCallArgument *argument = current_argument(index);
+    if (argument == nullptr) {
+        return 0.0;
+    }
+    if (argument->type == NativeCallArgument::kNumber) {
+        return argument->number_value;
+    }
+    if (argument->type == NativeCallArgument::kInteger) {
+        return static_cast<double>(argument->integer_value);
+    }
+    set_argument_type_error(index, "a number");
+    return 0.0;
+}
+
+int NativeHookManager::call_argument_boolean(unsigned int index) {
+    const NativeCallArgument *argument = current_argument(index);
+    if (argument == nullptr) {
+        return 0;
+    }
+    if (argument->type == NativeCallArgument::kBoolean) {
+        return argument->boolean_value ? 1 : 0;
+    }
+    if (argument->type == NativeCallArgument::kInteger &&
+        (argument->integer_value == 0 || argument->integer_value == 1)) {
+        return static_cast<int>(argument->integer_value);
+    }
+    set_argument_type_error(index, "a boolean");
+    return 0;
+}
+
+const char *NativeHookManager::call_argument_string(unsigned int index, unsigned long *size) {
+    if (size != nullptr) {
+        *size = 0;
+    }
+    const NativeCallArgument *argument = current_argument(index);
+    if (argument == nullptr) {
+        return nullptr;
+    }
+    if (argument->type == NativeCallArgument::kNull) {
+        return nullptr;
+    }
+    if (argument->type != NativeCallArgument::kString) {
+        set_argument_type_error(index, "a string");
+        return nullptr;
+    }
+    if (size != nullptr) {
+        *size = static_cast<unsigned long>(argument->string_value.size());
+    }
+    return argument->string_value.c_str();
+}
+
+int NativeHookManager::call_argument_type(unsigned int index) {
+    const NativeCallArgument *argument = current_argument(index);
+    return argument == nullptr ? -1 : static_cast<int>(argument->type);
 }
 
 void NativeHookManager::call_return(long long value) {
@@ -633,6 +749,26 @@ extern "C" void dejavu_native_log(const char *message) {
 
 extern "C" long long dejavu_native_call_argument(unsigned int index) {
     return NativeHookManager::call_argument(index);
+}
+
+extern "C" long long dejavu_native_call_argument_int(unsigned int index) {
+    return NativeHookManager::call_argument_int(index);
+}
+
+extern "C" double dejavu_native_call_argument_double(unsigned int index) {
+    return NativeHookManager::call_argument_double(index);
+}
+
+extern "C" int dejavu_native_call_argument_boolean(unsigned int index) {
+    return NativeHookManager::call_argument_boolean(index);
+}
+
+extern "C" const char *dejavu_native_call_argument_string(unsigned int index, unsigned long *size) {
+    return NativeHookManager::call_argument_string(index, size);
+}
+
+extern "C" int dejavu_native_call_argument_type(unsigned int index) {
+    return NativeHookManager::call_argument_type(index);
 }
 
 extern "C" void dejavu_native_call_return(long long value) {
@@ -743,16 +879,38 @@ int NativeHookManager::lua_call(dejavu_control_session *, void *context,
         arguments[0].type != DEJAVU_VALUE_STRING || arguments[1].type != DEJAVU_VALUE_STRING ||
         arguments[2].type != DEJAVU_VALUE_STRING) {
         copy_error(error, error_size,
-                   "native.call expects module, symbol, C source and optional integer arguments");
+                   "native.call expects module, symbol, C source and optional typed arguments");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    std::vector<long long> call_arguments;
+    std::vector<NativeCallArgument> call_arguments;
     for (size_t index = 3; index < argument_count; ++index) {
-        if (arguments[index].type != DEJAVU_VALUE_INTEGER) {
-            copy_error(error, error_size, "native.call arguments must be integers");
+        NativeCallArgument argument;
+        switch (arguments[index].type) {
+        case DEJAVU_VALUE_NIL:
+            argument.type = NativeCallArgument::kNull;
+            break;
+        case DEJAVU_VALUE_BOOLEAN:
+            argument.type = NativeCallArgument::kBoolean;
+            argument.boolean_value = arguments[index].boolean_value != 0;
+            break;
+        case DEJAVU_VALUE_INTEGER:
+            argument.type = NativeCallArgument::kInteger;
+            argument.integer_value = arguments[index].integer_value;
+            break;
+        case DEJAVU_VALUE_NUMBER:
+            argument.type = NativeCallArgument::kNumber;
+            argument.number_value = arguments[index].number_value;
+            break;
+        case DEJAVU_VALUE_STRING:
+            argument.type = NativeCallArgument::kString;
+            argument.string_value = value_string(arguments[index]);
+            break;
+        default:
+            copy_error(error, error_size,
+                       "native.call arguments support nil, boolean, integer, number and string");
             return DEJAVU_ERROR_INVALID_ARGUMENT;
         }
-        call_arguments.push_back(arguments[index].integer_value);
+        call_arguments.push_back(std::move(argument));
     }
     long long call_result = 0;
     std::string call_error;

@@ -93,7 +93,7 @@ crashing the host on validation failures.
 
 ## Active calls (native.call)
 
-`native.call(module, symbol, c_source, ...integer_args)` actively invokes an
+`native.call(module, symbol, c_source, ...typed_args)` actively invokes an
 exported native function through a TinyCC-generated wrapper, without installing
 a hook. It returns the wrapper's return value as a Lua integer.
 
@@ -103,12 +103,37 @@ The C source must define `void dejavu_native_call(void)` and may use:
 /* injected constant: address of the resolved target function */
 DEJAVU_NATIVE_CALL_ADDRESS
 
-/* 0-based int64 argument access; values come from the Lua call */
-long long dejavu_native_call_argument(unsigned int index);
+/* typed argument accessors; index is 0-based */
+long long dejavu_native_call_argument(unsigned int index);          /* int64 view */
+long long dejavu_native_call_argument_int(unsigned int index);
+double dejavu_native_call_argument_double(unsigned int index);
+int dejavu_native_call_argument_boolean(unsigned int index);
+const char *dejavu_native_call_argument_string(unsigned int index,
+                                               unsigned long *size);
+int dejavu_native_call_argument_type(unsigned int index);
 
 /* report the function result (required) */
 void dejavu_native_call_return(long long value);
 ```
+
+## Argument conversion protocol (shared with java.invoke)
+
+Lua values are converted to typed call arguments before the wrapper runs. C
+code selects the accessor matching the target signature; using a mismatched
+accessor reports an error instead of silently reinterpreting bytes.
+
+| Lua value | Native argument type | Accessor |
+| --- | --- | --- |
+| `nil` | null | `_argument` returns 0, `_type` returns 0 |
+| boolean | boolean | `_argument_boolean` |
+| integer | int64 | `_argument_int` / `_argument` |
+| number | double | `_argument_double` |
+| string | UTF-8 string (pointer + length) | `_argument_string` |
+| other | unsupported | error |
+
+`dejavu_native_call_argument_type(i)` returns `0` null, `1` boolean,
+`2` integer, `3` number, `4` string, or `-1` on a missing argument. Up to 32
+arguments are accepted.
 
 Example: call `getpid()` with no arguments:
 
@@ -128,21 +153,39 @@ Example with arguments: `abs(-42)`:
 local source = [[
 void dejavu_native_call(void) {
     int (*target)(int) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
-    int value = (int)dejavu_native_call_argument(0);
+    int value = (int)dejavu_native_call_argument_int(0);
     dejavu_native_call_return((long long)target(value));
 }
 ]]
 local result = native.call("libc.so", "abs", source, -42)   -- 42
 ```
 
+String and double arguments:
+
+```lua
+-- strlen("dejavu") == 6
+local strlen_source = [[
+void dejavu_native_call(void) {
+    unsigned long size = 0;
+    const char *text = dejavu_native_call_argument_string(0, &size);
+    if (text == 0 || size != 6) { dejavu_native_call_return(-1); return; }
+    int (*target)(const char *) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target(text));
+}
+]]
+local length = native.call("libc.so", "strlen", strlen_source, "dejavu")  -- 6
+```
+
 Because the target can be a hooked function, `native.call` is also a reliable
 way to trigger a native hook in tests: install the hook, call the function, then
 check `native.stats(id)`.
 
-Limits: integer arguments only (up to 32), a single int64 return value, and one
-compile per call. The call is synchronous and runs on the control thread, so a
+Limits: up to 32 typed arguments, a single int64 return value, and one compile
+per call. The call is synchronous and runs on the control thread, so a
 blocking target blocks the Lua control channel until it returns. A mismatched
-signature or ABI is undefined behaviour and can crash the target process.
+C signature (as declared in the wrapper) or ABI is undefined behaviour and can
+crash the target process; the conversion protocol only validates the Lua-side
+types and never reinterprets memory.
 
 ## CLI shortcuts
 

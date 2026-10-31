@@ -4,8 +4,9 @@ description: >-
   Dejavu Android Zygisk hook toolkit. Use this skill when building, installing
   or operating Dejavu on a rooted Android device with a Zygisk provider:
   packaging the module, selecting target processes, running Lua control
-  scripts, installing Java hooks (hook.*/hookx.*) or native function hooks
-  (native.*), reading Dejavu logcat, and
+  scripts, installing Java hooks (hook.*/hookx.*), native function hooks
+  (native.*) and active invocation (native.call/java.invoke), reading Dejavu
+  logcat, and
   running the on-device acceptance suite. Covers environment checks, safety
   rules (soft reboot only, targets allowlist, trusted native callbacks),
   hook source constraints and troubleshooting.
@@ -169,10 +170,12 @@ local pid = native.call('libc.so', 'getpid', source)   -- e.g. 12345
 ```
 
 - C 源必须定义 `void dejavu_native_call(void)`，用注入的
-  `DEJAVU_NATIVE_CALL_ADDRESS` 拿函数地址；`dejavu_native_call_argument(i)`
-  取第 i 个整数参数（0 基），`dejavu_native_call_return(v)` 上报返回值。
-- 只支持整数参数（最多 32 个）和 int64 返回值；同步执行，阻塞函数会卡住控制
-  通道；签名不匹配会崩进程（受信代码模型）。
+  `DEJAVU_NATIVE_CALL_ADDRESS` 拿函数地址；`dejavu_native_call_return(v)`
+  上报返回值。
+- 参数按统一类型协议转换：nil/boolean/integer/number/string，C 侧用
+  `dejavu_native_call_argument_int/_double/_boolean/_string(i, &size)` 取对应
+  类型（`_argument` 是 int64 兼容视图），最多 32 个参数。
+- 同步执行，阻塞函数会卡住控制通道；C 签名不匹配会崩进程（受信代码模型）。
 - 常用来确定性地触发已安装的 native hook：`native.call` 后查
   `native.stats(id)`。
 
@@ -185,8 +188,54 @@ CLI 快捷方式（等价于在目标进程执行对应 Lua）：
 ./dejavu native -p com.android.settings stats <id>
 ./dejavu native -p com.android.settings uninstall <id>
 ./dejavu native -p com.android.settings clear
+
+./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
+./dejavu java -p com.android.settings new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
+./dejavu java -p com.android.settings invoke <handle> toString '()Ljava/lang/String;'
+./dejavu java -p com.android.settings release <handle>
 ```
 
+
+### 4.2 Java 主动调用（java.invoke）
+
+不装 hook，直接调用目标进程里的 Java 方法：
+
+```lua
+-- 静态方法：第一个参数是类名
+local text = java.invoke('java.lang.String', 'valueOf', '(I)Ljava/lang/String;', 42)
+
+-- 构造 + 实例方法 + 释放
+local handle = java.new('java.lang.StringBuilder', '(Ljava/lang/String;)V', 'abc')
+local value = java.invoke(handle, 'toString', '()Ljava/lang/String;')
+java.release(handle)
+```
+
+- `java.invoke(类名, 方法, JNI签名, ...)` 调静态方法；
+  `java.invoke(handle, 方法, JNI签名, ...)` 调实例方法。
+- 参数/返回值由 **JNI 签名驱动转换**：Z→boolean、B/C/S/I/J→integer（范围
+  校验）、F/D→number、`Ljava/lang/String;`↔string（UTF-8/UTF-16）、其他引用
+  与数组↔整数对象 handle（`nil` 为 null）。
+- Java 异常会转成 Lua 错误（`Throwable.toString()`，异常已清理）；对象
+  handle 是进程内全局引用，最多 1024 个，用 `java.release` 释放，目标进程
+  重启后失效。
+- 同步执行；阻塞的 Java 调用会卡住控制通道。详见
+  `zygisk/docs/java-invoke-api.md`。
+
+### 4.3 统一参数类型协议
+
+`native.call` 与 `java.invoke` 共用同一套 Lua 值模型：`nil`、boolean、
+integer（64 位精确）、number（double）、string（UTF-8）。
+
+| Lua 值 | native.call（C 访问器） | java.invoke（按 JNI 签名） |
+| --- | --- | --- |
+| nil | null，`_argument` 返回 0 | null（引用类型） |
+| boolean | `_argument_boolean` | `Z` |
+| integer | `_argument_int` / `_argument` | `B C S I J`、（`F D` 也接受） |
+| number | `_argument_double` | `F D` |
+| string | `_argument_string(i, &size)` | `Ljava/lang/String;` |
+| 对象 handle（integer） | 作为整数传递 | 其他引用类型 / 数组 |
+
+类型不匹配由协议检查并返回 Lua 错误（不会静默重解释内存）。
 
 ### 5. hookx 高层封装（推荐）
 
@@ -213,7 +262,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 17 项（含 hang 为 18）
+./dejavu test -p com.android.settings               # 设备验收 21 项（含 hang 为 22）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```
@@ -238,7 +287,8 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 - `zygisk/include/dejavu_hook_api.h` — Hook C ABI v1（preamble 暴露的函数）
 - `zygisk/docs/user-guide.md` — 安装、部署、Lua API、真机开发循环
 - `zygisk/docs/hook-c-api.md` — Java hook 回调 ABI、结果通道、限制
-- `zygisk/docs/native-hook-api.md` — native 函数 hook API 与限制
+- `zygisk/docs/native-hook-api.md` — native 函数 hook/call API 与限制
+- `zygisk/docs/java-invoke-api.md` — Java 主动调用与类型转换协议
 - `zygisk/docs/cookbook.md` — hookx 常见任务
 - `zygisk/scripts/device-test.sh` — 自动化真机验收
 - `patches/README.md` — TinyCC 维护补丁说明

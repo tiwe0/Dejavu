@@ -11,6 +11,23 @@
 #include "dejavu.h"
 #include "dejavu_runtime.h"
 
+/* Typed Lua -> C argument protocol used by native.call(). */
+struct NativeCallArgument {
+    enum Type {
+        kNull = 0,
+        kBoolean = 1,
+        kInteger = 2,
+        kNumber = 3,
+        kString = 4,
+    };
+
+    Type type = kNull;
+    bool boolean_value = false;
+    long long integer_value = 0;
+    double number_value = 0.0;
+    std::string string_value;
+};
+
 /*
  * Native function hooks (ABI 1).
  *
@@ -44,14 +61,19 @@ class NativeHookManager {
      * DEJAVU_NATIVE_CALL_ADDRESS / dejavu_native_call_argument(i) /
      * dejavu_native_call_return(value). */
     bool call(const std::string &module_name, const std::string &symbol_name,
-              const std::string &source, const std::vector<long long> &arguments, long long *result,
-              std::string *error);
+              const std::string &source, const std::vector<NativeCallArgument> &arguments,
+              long long *result, std::string *error);
 
     /* C helper entry points, also registered as TinyCC symbols. */
     static void *original_for_id(unsigned long long id);
     static void hit_for_id(unsigned long long id);
     static void log_message(const char *message);
     static long long call_argument(unsigned int index);
+    static long long call_argument_int(unsigned int index);
+    static double call_argument_double(unsigned int index);
+    static int call_argument_boolean(unsigned int index);
+    static const char *call_argument_string(unsigned int index, unsigned long *size);
+    static int call_argument_type(unsigned int index);
     static void call_return(long long value);
 
   private:

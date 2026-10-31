@@ -2,6 +2,7 @@
 
 #include "hook_manager.h"
 #include "hook_api_runtime.h"
+#include "java_invoker.h"
 #include "native_hook_manager.h"
 
 #include <atomic>
@@ -60,6 +61,7 @@ struct HookManager::Impl {
     dejavu_engine *engine = nullptr;
     dejavu_control_session *session = nullptr;
     std::unique_ptr<NativeHookManager> native_hooks;
+    std::unique_ptr<JavaInvoker> java_invoker;
     jobject app_class_loader = nullptr;
     jobject bridge_class_loader = nullptr;
     jclass bridge_class = nullptr;

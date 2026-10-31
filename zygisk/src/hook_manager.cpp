@@ -469,6 +469,14 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
     if (!impl_->native_hooks->register_lua(impl_->session, error)) {
         return false;
     }
+    impl_->java_invoker = std::make_unique<JavaInvoker>();
+    if (!impl_->java_invoker->initialize(impl_->runtime, impl_->vm, impl_->app_class_loader,
+                                         error)) {
+        return false;
+    }
+    if (!impl_->java_invoker->register_lua(impl_->session, error)) {
+        return false;
+    }
     dejavu_value result = {};
     status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &result,
                                                   runtime_error, sizeof(runtime_error));

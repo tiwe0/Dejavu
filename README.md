@@ -24,6 +24,12 @@ The Zygisk integration supports both Java/Kotlin method hooks (LSPlant) and
 inline native function hooks (Dobby + a TinyCC-compiled replacement); see
 `zygisk/docs/native-hook-api.md` for the `native.*` API and its limits.
 
+Active invocation is available as well: `native.call(...)` calls an exported
+native function through a TinyCC wrapper, and `java.invoke(...)` /
+`java.new(...)` / `java.release(...)` call Java methods through JNI with a
+signature-driven type conversion protocol (see `zygisk/docs/java-invoke-api.md`
+and `zygisk/docs/native-hook-api.md`).
+
 ## Engine model
 
 The first ABI deliberately supports one generated entry signature:
@@ -120,7 +126,7 @@ Pushes to `main` and pull requests run the full build and test pipeline but do
 **not** publish releases. A release is published only when explicitly
 requested:
 
-- push a matching `v*` tag, such as `v0.3.0`, to create the stable release; or
+- push a matching `v*` tag, such as `v0.4.0`, to create the stable release; or
 - run the workflow manually with `workflow_dispatch` to create a prerelease
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
@@ -159,6 +165,9 @@ control channel into one command:
 ./dejavu native -p <process> list|stats|uninstall|clear
 ./dejavu native -p <process> install libc.so read replacement.c
 ./dejavu native -p <process> call libc.so getpid call.c
+./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
+./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
+./dejavu java -p <process> release <handle>
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]
@@ -178,7 +187,7 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **Zygisk module package version** (currently `0.3.0`). Module packaging,
+  **Zygisk module package version** (currently `0.4.0`). Module packaging,
   loader/agent behavior and documentation changes bump it independently.
 - CI builds and tests pushes to `main`, but only publishes a release from a
   matching `v*` tag (stable) or a manual `workflow_dispatch` run (prerelease).
@@ -194,8 +203,9 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   the on-device acceptance flow against a rooted device with a Zygisk provider
   and this module installed (see `zygisk/README.md`). It uses the file control
   channel, never reboots the device, and verifies control, instance-method
-  hooks, native function hooks (install and active call), writable generated
-  data, oversized responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
+  hooks, native function hooks (install and active call), Java active
+  invocation (static/constructor/instance with type conversions), writable
+  generated data, oversized responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
 - Patched dependencies: see `patches/README.md`.
 
 ## Known limitations

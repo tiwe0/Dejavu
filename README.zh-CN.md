@@ -23,6 +23,11 @@ Zygisk 集成同时支持 Java/Kotlin 方法 hook（LSPlant）和已加载模块
 native 函数 inline hook（Dobby + TinyCC 生成的替换函数）；`native.*`
 API 与限制见 `zygisk/docs/native-hook-api.md`。
 
+也支持主动调用：`native.call(...)` 通过 TinyCC 包装器直接调用已加载模块的
+导出函数；`java.invoke(...)` / `java.new(...)` / `java.release(...)` 通过 JNI
+直接调用 Java 方法，参数由 JNI 签名驱动转换（见
+`zygisk/docs/java-invoke-api.md` 和 `zygisk/docs/native-hook-api.md`）。
+
 ## 引擎模型
 
 第一版 ABI 有意只支持一种生成代码入口签名：
@@ -116,7 +121,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 向 `main` 推送和 Pull Request 只执行构建与测试，**不会**发布 Release。只有
 显式请求时才发布：
 
-- 推送与模块版本一致的 `v*` 标签（例如 `v0.3.0`）时创建正式版本；
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.4.0`）时创建正式版本；
 - 手动运行 `workflow_dispatch` 时，从所选分支创建
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
@@ -157,6 +162,9 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu native -p <进程> list|stats|uninstall|clear
 ./dejavu native -p <进程> install libc.so read replacement.c
 ./dejavu native -p <进程> call libc.so getpid call.c
+./dejavu java -p <进程> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
+./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
+./dejavu java -p <进程> release <handle>
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
 ./dejavu log [-p <进程>] [--dump] [--clear]
@@ -174,7 +182,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.3.0`）；模块打包、loader/agent 行为与文档更新独立递增。
+  版本**（当前 `0.4.0`）；模块打包、loader/agent 行为与文档更新独立递增。
 - CI 对 `main` 的 push 只构建与测试；只有推送匹配的 `v*` tag（正式版本）或
   手动 `workflow_dispatch`（预发布）才会创建 Release。
 
