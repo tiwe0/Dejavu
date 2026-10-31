@@ -2,12 +2,12 @@
 
 #include <android/log.h>
 #include <dlfcn.h>
-#include <sched.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

@@ -113,11 +113,15 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 
 ### 自动发布
 
-每次向 `main` 推送且全部检查通过后，工作流都会把 Zygisk 模块 ZIP 发布为
-GitHub 预发布版本，标签格式为 `v<模块版本>-build.<工作流运行号>`。Pull
-Request 和 `develop` 构建不会创建 Release。推送与模块版本一致的 `v*` 标签
-（例如 `v0.2.0`）时，则会创建对应的正式版本。只有主机测试、Android API
-26 基线、兼容性构建、Zygisk 打包和代码质量检查全部通过后才会发布。
+向 `main` 推送和 Pull Request 只执行构建与测试，**不会**发布 Release。只有
+显式请求时才发布：
+
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.3.0`）时创建正式版本；
+- 手动运行 `workflow_dispatch` 时，从所选分支创建
+  `v<模块版本>-build.<工作流运行号>` 预发布版本。
+
+只有主机测试、Android API 26 基线、兼容性构建、Zygisk 打包和代码质量检查
+全部通过后才会发布。
 
 构建冒烟检查会验证产物满足以下条件：
 
@@ -169,9 +173,9 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.2.0`）；模块打包、loader/agent 行为与文档更新独立递增。
-- CI 对 `main` 的 push 发布 `v<模块版本>-build.<run>` 预发布；推送匹配的
-  `v*` tag 才发布正式版本。
+  版本**（当前 `0.3.0`）；模块打包、loader/agent 行为与文档更新独立递增。
+- CI 对 `main` 的 push 只构建与测试；只有推送匹配的 `v*` tag（正式版本）或
+  手动 `workflow_dispatch`（预发布）才会创建 Release。
 
 ## 测试
 

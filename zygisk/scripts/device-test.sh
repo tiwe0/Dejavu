@@ -101,7 +101,19 @@ launch_target() {
             return 1
     else
         adb_cmd shell "monkey -p ${TARGET_PROCESS} -c android.intent.category.LAUNCHER 1" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || true
+        # `monkey` occasionally injects the launch event without starting the
+        # process; fall back to the resolved launcher activity.
+        sleep 2
+        if [[ -z "$(target_pid)" ]]; then
+            local resolved
+            resolved=$(adb_cmd shell \
+                "cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${TARGET_PROCESS}" \
+                2>/dev/null | tr -d '\r' | tail -n 1)
+            if [[ -n "${resolved}" ]]; then
+                adb_cmd shell "am start -W -n ${resolved}" >/dev/null 2>&1 || true
+            fi
+        fi
     fi
 }
 

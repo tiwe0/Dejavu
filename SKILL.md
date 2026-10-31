@@ -4,7 +4,8 @@ description: >-
   Dejavu Android Zygisk hook toolkit. Use this skill when building, installing
   or operating Dejavu on a rooted Android device with a Zygisk provider:
   packaging the module, selecting target processes, running Lua control
-  scripts, installing Java hooks (hook.*/hookx.*), reading Dejavu logcat, and
+  scripts, installing Java hooks (hook.*/hookx.*) or native function hooks
+  (native.*), reading Dejavu logcat, and
   running the on-device acceptance suite. Covers environment checks, safety
   rules (soft reboot only, targets allowlist, trusted native callbacks),
   hook source constraints and troubleshooting.
@@ -191,7 +192,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 8 项
+./dejavu test -p com.android.settings               # 设备验收 13 项（含 hang 为 14）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```

@@ -22,6 +22,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 REPO_ROOT = Path(__file__).resolve().parent
 MODULE_ID = "dejavu_zygisk"
@@ -275,7 +276,8 @@ def command_build(args: argparse.Namespace) -> int:
     env["ANDROID_API"] = str(args.api)
     command = f"cd {shlex.quote(str(REPO_ROOT))} && make android-arm64"
     print(f"building core library (API {args.api})")
-    run(["bash", "-c", f". {shlex.quote(str(REPO_ROOT / 'out' / 'tooling' / 'env.sh'))} 2>/dev/null || true; {command}"], env=env)
+    helper = shlex.quote(str(REPO_ROOT / "out" / "tooling" / "env.sh"))
+    run(["bash", "-c", f". {helper} 2>/dev/null || true; {command}"], env=env)
     print(f"OK: {REPO_ROOT}/out/android-arm64-v8a-api{args.api}/libdejavu.so")
     return 0
 
@@ -365,13 +367,34 @@ def restart_target(args: argparse.Namespace, process: str, activity: str | None)
     adb(args, "shell", f"am force-stop {process}", check=False)
     if activity:
         adb(args, "shell", f"am start -W -n {activity}", check=False)
-    else:
-        adb(
-            args,
-            "shell",
-            f"monkey -p {process} -c android.intent.category.LAUNCHER 1",
-            check=False,
-        )
+        return
+    adb(
+        args,
+        "shell",
+        f"monkey -p {process} -c android.intent.category.LAUNCHER 1",
+        check=False,
+    )
+    time.sleep(2)
+    if target_pid_text(args, process):
+        return
+    resolved = resolve_launcher_activity(args, process)
+    if resolved:
+        adb(args, "shell", f"am start -W -n {resolved}", check=False)
+
+
+def target_pid_text(args: argparse.Namespace, process: str) -> str:
+    return adb_text(args, "shell", f"pidof {process}")
+
+
+def resolve_launcher_activity(args: argparse.Namespace, process: str) -> str:
+    output = adb_text(
+        args,
+        "shell",
+        "cmd package resolve-activity --brief "
+        f"-c android.intent.category.LAUNCHER {process}",
+    )
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def command_deploy_agent(args: argparse.Namespace) -> int:
