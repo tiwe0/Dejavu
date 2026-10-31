@@ -159,6 +159,8 @@ files over the adb shell when the adb binary cannot read host paths (for
 example the Windows `adb.exe` invoked from WSL). Run `./dejavu --help` or
 `./dejavu <command> --help` for the full option list.
 
+Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
+
 ## Versions
 
 - `dejavu_version()` / `DEJAVU_VERSION_*` in `include/dejavu.h` identify the

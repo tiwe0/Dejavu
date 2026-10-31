@@ -156,6 +156,8 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 （例如从 WSL 调用 Windows 的 `adb.exe`）时会自动改用 adb shell 流式传输
 文件。`./dejavu --help` 或 `./dejavu <命令> --help` 查看完整选项。
 
+供 agent/助手使用的配套说明见 [SKILL.md](SKILL.md)。
+
 ## 版本语义
 
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
