@@ -25,8 +25,9 @@ API 与限制见 `zygisk/docs/native-hook-api.md`。
 
 也支持主动调用：`native.call(...)` 通过 TinyCC 包装器直接调用已加载模块的
 导出函数；`java.invoke(...)` / `java.new(...)` / `java.release(...)` 通过 JNI
-直接调用 Java 方法，参数由 JNI 签名驱动转换（见
-`zygisk/docs/java-invoke-api.md` 和 `zygisk/docs/native-hook-api.md`）。
+直接调用 Java 方法，参数由 JNI 签名驱动转换；返回值（primitive、string、
+对象/数组 handle）可以继续参与后续调用（见 `zygisk/docs/java-invoke-api.md`
+和 `zygisk/docs/native-hook-api.md`）。
 
 ## 引擎模型
 

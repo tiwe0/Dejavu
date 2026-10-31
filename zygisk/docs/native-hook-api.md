@@ -180,6 +180,11 @@ Because the target can be a hooked function, `native.call` is also a reliable
 way to trigger a native hook in tests: install the hook, call the function, then
 check `native.stats(id)`.
 
+The int64 return value can be passed to a subsequent `native.call` or
+`java.invoke` (for example as an integer/long argument). Raw pointers can be
+returned and passed back as integers, but that is trusted-code territory: the
+wrapper must cast the integer back to the original pointer type.
+
 Limits: up to 32 typed arguments, a single int64 return value, and one compile
 per call. The call is synchronous and runs on the control thread, so a
 blocking target blocks the Lua control channel until it returns. A mismatched

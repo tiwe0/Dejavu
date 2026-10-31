@@ -83,6 +83,50 @@ Return values use the same table in reverse:
 | other object / array | integer handle, or nil |
 | Java exception | Lua error (`Throwable.toString()`, exception cleared) |
 
+## Chaining invocation results
+
+Every return value can be fed into the next invocation:
+
+- Primitive results and strings are ordinary Lua values, so they can be passed
+  directly to another `java.invoke`.
+- Object and array results are integer handles. They can be used as an instance
+  receiver or as a reference argument, then released with `java.release`.
+- Calls can be nested because handles are created before the outer invocation
+  runs.
+
+```lua
+-- nested: java.new(...) returns a handle that java.invoke uses immediately
+local length = java.invoke(
+    java.new("java.lang.StringBuilder", "(Ljava/lang/String;)V", "abcd"),
+    "length", "()I")                                  -- 4
+
+-- returned String -> next call argument
+local builder = java.new("java.lang.StringBuilder", "(Ljava/lang/String;)V", "123")
+local text = java.invoke(builder, "toString", "()Ljava/lang/String;")
+java.release(builder)
+local parsed = java.invoke("java.lang.Integer", "parseInt", "(Ljava/lang/String;)I", text)
+-- parsed == 123
+
+-- returned array handle -> another call argument
+local string_handle = java.new("java.lang.String", "(Ljava/lang/String;)V", "a,b,c")
+local parts = java.invoke(string_handle, "split", "(Ljava/lang/String;)[Ljava/lang/String;", ",")
+local count = java.invoke("java.lang.reflect.Array", "getLength",
+                          "(Ljava/lang/Object;)I", parts)
+java.release(parts)
+-- count == 3
+```
+
+Lifetime rules still apply: a handle is valid until `java.release` or target
+process exit. Passing a released handle fails with a clear Lua error. When
+nesting object-returning calls, release each intermediate handle unless it is
+the receiver you want to keep.
+
+Cross-API chaining works for scalar values: an integer returned by
+`native.call` can be passed to `java.invoke` (for example as a `J` argument),
+and a primitive returned by `java.invoke` can be passed to `native.call`.
+Object handles are *not* jobject pointers and only have meaning to
+`java.invoke`/`java.new`/`java.release`.
+
 ## Handles and lifetimes
 
 - Handles are positive integers scoped to the target process. They stay valid

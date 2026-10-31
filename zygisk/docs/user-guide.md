@@ -342,8 +342,10 @@ java.release(handle)
 参数和返回值由 **JNI 签名驱动转换**：`Z`→boolean、`B/C/S/I/J`→integer、
 `F/D`→number、`Ljava/lang/String;`↔string（UTF-8/UTF-16）、其他引用/数组↔
 整数对象 handle（`nil` 为 null）。Java 异常会转成 Lua 错误；handle 是进程内
-全局引用（最多 1024 个），目标进程重启后失效。完整协议见
-`docs/java-invoke-api.md`。
+全局引用（最多 1024 个），目标进程重启后失效。返回值可以继续参与后续调用：
+primitive/string 直接传入下一次调用，对象/数组 handle 可作 receiver 或引用
+参数（用完 `java.release`）；`native.call` 的 int64 返回值也可传给
+`native.call`/`java.invoke`。完整协议见 `docs/java-invoke-api.md`。
 
 ## 8. TinyCC Hook C ABI
 

@@ -27,8 +27,9 @@ inline native function hooks (Dobby + a TinyCC-compiled replacement); see
 Active invocation is available as well: `native.call(...)` calls an exported
 native function through a TinyCC wrapper, and `java.invoke(...)` /
 `java.new(...)` / `java.release(...)` call Java methods through JNI with a
-signature-driven type conversion protocol (see `zygisk/docs/java-invoke-api.md`
-and `zygisk/docs/native-hook-api.md`).
+signature-driven type conversion protocol; returned values (primitives,
+strings and object/array handles) can be chained into subsequent calls (see
+`zygisk/docs/java-invoke-api.md` and `zygisk/docs/native-hook-api.md`).
 
 ## Engine model
 
@@ -204,8 +205,9 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   and this module installed (see `zygisk/README.md`). It uses the file control
   channel, never reboots the device, and verifies control, instance-method
   hooks, native function hooks (install and active call), Java active
-  invocation (static/constructor/instance with type conversions), writable
-  generated data, oversized responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
+  invocation (static/constructor/instance with type conversions), chained
+  invocation results (including cross-API), writable generated data, oversized
+  responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
 - Patched dependencies: see `patches/README.md`.
 
 ## Known limitations

@@ -550,6 +550,58 @@ if ! wait_for_log "${RUN_TOKEN} java-errors-ok" "${LOG_TIMEOUT}"; then
 fi
 pass "java invoke error handling"
 
+# Invocation results must be reusable: nested calls, returned strings and
+# object/array handles feed the next invocation.
+echo "== java chained invocation results"
+write_script "local nested = java.invoke(
+    java.new('java.lang.StringBuilder', '(Ljava/lang/String;)V', 'abcd'),
+    'length', '()I')
+local builder = java.new('java.lang.StringBuilder', '(Ljava/lang/String;)V', '123')
+local text = java.invoke(builder, 'toString', '()Ljava/lang/String;')
+java.release(builder)
+local parsed = java.invoke('java.lang.Integer', 'parseInt', '(Ljava/lang/String;)I', text)
+local string_handle = java.new('java.lang.String', '(Ljava/lang/String;)V', 'a,b,c')
+local parts = java.invoke(string_handle, 'split', '(Ljava/lang/String;)[Ljava/lang/String;', ',')
+local count = java.invoke('java.lang.reflect.Array', 'getLength', '(Ljava/lang/Object;)I', parts)
+java.release(parts)
+java.release(string_handle)
+if nested ~= 4 or parsed ~= 123 or count ~= 3 then
+    error('${RUN_TOKEN} java-chain-failed ' .. tostring(nested) .. '/' ..
+          tostring(parsed) .. '/' .. tostring(count))
+end
+error('${RUN_TOKEN} java-chain-ok')"
+if ! wait_for_log "${RUN_TOKEN} java-chain-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "java chained invocation results failed"
+fi
+pass "java chained invocation results"
+
+echo "== cross-API chained invocation results"
+write_script "local getpid_source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call('libc.so', 'getpid', getpid_source)
+local pid_text = java.invoke('java.lang.Long', 'toString', '(J)Ljava/lang/String;', pid)
+if pid_text ~= tostring(pid) then error('${RUN_TOKEN} native-java-chain-failed') end
+local abs_source = [[
+void dejavu_native_call(void) {
+    int (*target)(int) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target((int)dejavu_native_call_argument_int(0)));
+}
+]]
+local value = java.invoke('java.lang.Math', 'abs', '(I)I', -7)
+local result = native.call('libc.so', 'abs', abs_source, value)
+if result ~= 7 then error('${RUN_TOKEN} java-native-chain-failed ' .. tostring(result)) end
+error('${RUN_TOKEN} cross-api-chain-ok')"
+if ! wait_for_log "${RUN_TOKEN} cross-api-chain-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "cross-API chained invocation results failed"
+fi
+pass "cross-API chained invocation results"
+
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.
 echo "== oversized control response (M1 regression)"

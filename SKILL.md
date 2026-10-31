@@ -237,6 +237,13 @@ integer（64 位精确）、number（double）、string（UTF-8）。
 
 类型不匹配由协议检查并返回 Lua 错误（不会静默重解释内存）。
 
+**链式调用**：返回值可以继续参与下一次主动调用。`java.invoke` 返回的
+primitive/string 可直接作为下一次参数；返回的对象/数组是 handle，可作为
+receiver 或引用参数继续调用，用完 `java.release`。`native.call` 返回的
+int64 可传给后续 `native.call`/`java.invoke`。注意 handle 释放后失效、
+目标进程重启后失效；对象 handle 不能当作 jobject 传给 `native.call`。
+详见 `zygisk/docs/java-invoke-api.md` 的 "Chaining invocation results"。
+
 ### 5. hookx 高层封装（推荐）
 
 ```lua
@@ -262,7 +269,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 21 项（含 hang 为 22）
+./dejavu test -p com.android.settings               # 设备验收 23 项（含 hang 为 24）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```
