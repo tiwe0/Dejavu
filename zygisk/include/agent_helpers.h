@@ -23,6 +23,17 @@
  *   module.symbols(target[, filter]) -> newline-separated symbol table
  *   module.resolve(target, symbol)   -> integer address or nil
  *
+ * Memory helpers (addresses are integers, typically from module.resolve):
+ *
+ *   mem.read(address, size)              -> string
+ *   mem.write(address, data)             -> integer bytes written
+ *   mem.read_u8/u16/u32/u64(address)     -> integer
+ *   mem.write_u8/u16/u32/u64(address, v) -> true
+ *   mem.dump(address, size[, width])     -> hex + ASCII dump string
+ *   mem.query(address)                   -> "start-end perms path" or nil
+ *   mem.protect(address, size, perms)    -> previous perms string ("rw-")
+ *   mem.maps([filter])                   -> newline-separated /proc maps lines
+ *
  * `target` is a module id from module.load(), or a library name/path that is
  * already loaded. File helpers run with the target process' UID and are not a
  * sandbox: only pass paths the target process is allowed to access.
@@ -68,6 +79,35 @@ class AgentHelpers {
                                   dejavu_value *, char *, size_t);
     static int lua_module_resolve(dejavu_control_session *, void *, const dejavu_value *, size_t,
                                   dejavu_value *, char *, size_t);
+
+    static int lua_mem_read(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
+    static int lua_mem_write(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                             dejavu_value *, char *, size_t);
+    static int lua_mem_read_u8(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                               dejavu_value *, char *, size_t);
+    static int lua_mem_read_u16(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_mem_read_u32(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_mem_read_u64(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_mem_write_u8(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_mem_write_u16(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_mem_write_u32(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_mem_write_u64(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_mem_dump(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
+    static int lua_mem_query(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                             dejavu_value *, char *, size_t);
+    static int lua_mem_protect(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                               dejavu_value *, char *, size_t);
+    static int lua_mem_maps(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
 
     bool library_path(long long id, std::string *path, std::string *error) const;
 

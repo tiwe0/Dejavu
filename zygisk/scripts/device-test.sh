@@ -11,8 +11,9 @@ set -euo pipefail
 # control channel, writable generated data (SIGSEGV regression), an
 # instance-method hook, native function hooks and active calls (including typed
 # arguments), Java active invocation (static/constructor/instance), chained
-# results, filesystem and module/symbol helpers, oversized control responses and
-# the documented header-include limitation.
+# results, filesystem/module/hidden-symbol helpers, memory read/write/dump and
+# protection changes, oversized control responses and the documented
+# header-include limitation.
 # --with-hang-test additionally checks that a hung
 # Lua eval no longer wedges the control channel forever.
 #
@@ -680,6 +681,79 @@ if ! wait_for_log "${RUN_TOKEN} hidden-symbol-ok" "${LOG_TIMEOUT}"; then
 fi
 [[ -n "$(target_pid)" ]] || fail "hidden symbol resolve/call: target died"
 pass "hidden symbol resolve/call"
+
+# Memory helpers: map a private page, read/write/dump it, change and restore
+# its protection, then unmap it.
+echo "== memory helpers"
+write_script "local mmap_source = [[
+void dejavu_native_call(void) {
+    unsigned long size = (unsigned long)dejavu_native_call_argument_int(0);
+    void *(*target)(void *, unsigned long, int, int, int, long) =
+        (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)(unsigned long long)target(0, size, 3, 0x22, -1, 0));
+}
+]]
+local munmap_source = [[
+void dejavu_native_call(void) {
+    void *address = (void *)(unsigned long long)dejavu_native_call_argument_int(0);
+    unsigned long size = (unsigned long)dejavu_native_call_argument_int(1);
+    int (*target)(void *, unsigned long) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target(address, size));
+}
+]]
+local address = native.call('libc.so', 'mmap', mmap_source, 4096)
+local query = mem.query(address)
+local written = mem.write(address, 'hello')
+local content = mem.read(address, 5)
+local first = mem.read_u8(address)
+mem.write_u32(address + 8, 0x12345678)
+local word = mem.read_u32(address + 8)
+local dump = mem.dump(address, 16)
+local old = mem.protect(address, 4096, 'r--')
+local blocked = pcall(mem.write, address, 'x')
+local restored = mem.protect(address, 4096, 'rw-')
+local writable_again = pcall(mem.write, address, 'ok')
+local maps = mem.maps('rw-p')
+native.call('libc.so', 'munmap', munmap_source, address, 4096)
+local after = mem.query(address)
+if type(query) ~= 'string' or query:find('rw', 1, true) == nil then
+    error('${RUN_TOKEN} mem-query-failed')
+end
+if written ~= 5 or content ~= 'hello' or first ~= 104 or word ~= 0x12345678 then
+    error('${RUN_TOKEN} mem-read-write-failed')
+end
+if dump:find('hello', 1, true) == nil or dump:find('68 65 6c 6c 6f', 1, true) == nil then
+    error('${RUN_TOKEN} mem-dump-failed')
+end
+if old ~= 'rw-' or blocked or restored ~= 'r--' or not writable_again then
+    error('${RUN_TOKEN} mem-protect-failed')
+end
+if type(maps) ~= 'string' or maps:find('rw-p', 1, true) == nil then
+    error('${RUN_TOKEN} mem-maps-failed')
+end
+if after ~= nil then error('${RUN_TOKEN} mem-unmap-failed') end
+error('${RUN_TOKEN} mem-helpers-ok')"
+if ! wait_for_log "${RUN_TOKEN} mem-helpers-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 25 >&2 || true
+    fail "memory helpers failed"
+fi
+[[ -n "$(target_pid)" ]] || fail "memory helpers: target died"
+pass "memory helpers"
+
+echo "== memory error handling"
+write_script "local unmapped_read = pcall(mem.read, 0x1, 8)
+local unmapped_query = mem.query(0x1)
+local bad_permissions = pcall(mem.protect, 0x1, 4096, 'zzz')
+local zero_size = pcall(mem.read, 0x1, 0)
+if unmapped_read or unmapped_query ~= nil or bad_permissions or zero_size then
+    error('${RUN_TOKEN} mem-errors-unexpected-success')
+end
+error('${RUN_TOKEN} mem-errors-ok')"
+if ! wait_for_log "${RUN_TOKEN} mem-errors-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "memory error handling failed"
+fi
+pass "memory error handling"
 
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.

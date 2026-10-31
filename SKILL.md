@@ -254,6 +254,11 @@ local id = module.load('libz.so')          -- dlopen, 返回 id
 module.symbols(id, 'inflate')              -- name<TAB>TYPE<TAB>BIND<TAB>0xaddr
 module.resolve('libc.so', 'getpid')        -- 整数地址（含隐藏符号）
 module.loaded(); module.unload(id)
+
+mem.read(addr, size); mem.write(addr, data)
+mem.read_u8/u16/u32/u64(addr); mem.write_u8/u16/u32/u64(addr, value)
+mem.dump(addr, size[, width]); mem.query(addr)
+mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
 ```
 
 - `fs.*` 以目标进程 UID 访问文件（不是沙箱）；`fs.read` 拒绝非普通文件和
@@ -264,6 +269,9 @@ module.loaded(); module.unload(id)
   可解析 `LOCAL` 隐藏符号。
 - `native.call` / `native.install` 在导出符号查不到时也会回退 ELF 符号表，
   因此枚举出的隐藏符号可以直接使用（例如 `__getpid`）。
+- `mem.*` 在访问前用 `/proc/self/maps` 校验映射与读写权限；`mem.dump` 输出
+  hex+ASCII（默认 16 字节/行）；`mem.protect` 修改页权限并返回旧权限，
+  创建 W+X 或改代码页可能被 SELinux 拒绝，属于危险操作。
 - 完整说明见 `zygisk/docs/agent-helpers.md`。
 
 ### 5. hookx 高层封装（推荐）
@@ -291,7 +299,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 26 项（含 hang 为 27）
+./dejavu test -p com.android.settings               # 设备验收 28 项（含 hang 为 29）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```

@@ -357,12 +357,20 @@ local id = module.load('libz.so')
 local symbols = module.symbols(id, 'inflate')
 local address = module.resolve('libc.so', 'getpid')
 module.loaded(); module.unload(id)
+
+mem.read(addr, size); mem.write(addr, data)
+mem.read_u8/u16/u32/u64(addr); mem.write_u8/u16/u32/u64(addr, value)
+mem.dump(addr, size[, width]); mem.query(addr)
+mem.protect(addr, size, 'rw-'); mem.maps([filter])
 ```
 
 `fs.*` 以目标进程 UID 访问文件（非沙箱）；`module.symbols` 读取已加载库的
 ELF `.dynsym`+`.symtab`（`name<TAB>TYPE<TAB>BIND<TAB>0x地址`），
 `module.resolve` 支持隐藏 `LOCAL` 符号；`native.call`/`native.install` 对
-导出符号失败时也会回退 ELF 符号表。完整说明见 `docs/agent-helpers.md`。
+导出符号失败时也会回退 ELF 符号表。`mem.*` 在访问前校验 `/proc/self/maps`
+的映射与读写权限，`mem.dump` 输出 hex+ASCII，`mem.protect` 修改页权限并
+返回旧权限（W+X/代码页修改可能被 SELinux 拒绝）。完整说明见
+`docs/agent-helpers.md`。
 
 ## 8. TinyCC Hook C ABI
 

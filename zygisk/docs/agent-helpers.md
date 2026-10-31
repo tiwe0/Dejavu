@@ -37,6 +37,53 @@ local content = fs.read(path)          -- "hello"
 fs.remove(path)
 ```
 
+## Memory (`mem.*`)
+
+Memory helpers operate on the target process' address space. Addresses are
+Lua integers, typically obtained from `module.resolve`, `native.call` (for
+example via `malloc`/`mmap` wrappers) or other pointer-returning calls.
+
+```lua
+local data = mem.read(address, size)              -- string (binary safe)
+local bytes = mem.write(address, data)            -- integer bytes written
+
+mem.read_u8/u16/u32/u64(address)                  -- integer (little-endian)
+mem.write_u8/u16/u32/u64(address, value)          -- true
+
+local text = mem.dump(address, size[, width])     -- hex + ASCII dump
+local info = mem.query(address)                   -- "start-end perms path" or nil
+local old = mem.protect(address, size, perms)     -- previous perms, e.g. "rw-"
+local maps = mem.maps([filter])                   -- newline-separated maps lines
+```
+
+- Ranges are checked against `/proc/self/maps` before access: reads require
+  `r`, writes require `w`, and `mem.read`/`mem.write` are limited to 64 MiB.
+  The mapping can still change concurrently after the check, so treat these
+  as debugging tools, not a memory-safe API.
+- `mem.dump` defaults to 16 bytes per line (width 1..64) and formats each line
+  as `0x<address>  <hex bytes>  |ASCII|`; output is capped at 1 MiB and ends
+  with `# truncated` when clipped.
+- `mem.query` returns the mapping line for an address or `nil`.
+- `mem.protect` changes `mprotect` permissions for the page(s) covering the
+  range. `perms` is exactly three characters from `r`, `w`, `x`, `-` in that
+  order (for example `"rw-"`, `"r-x"`, `"rwx"`, `"--x"`); it returns the
+  previous permissions string. Changing code pages to writable, or creating
+  RWX mappings, can be blocked by SELinux and is inherently dangerous.
+- `mem.maps` optionally filters `/proc/self/maps` lines by substring (useful
+  with module names) and caps output at 1 MiB.
+
+Example: inspect a mapped page, modify it, change protection and restore it:
+
+```lua
+local address = native.call('libc.so', 'mmap', mmap_source, 4096)
+mem.query(address)                       -- "0x...-0x... rw-p ..."
+mem.write(address, 'hello')              -- 5
+mem.dump(address, 16)                    -- hex + "|hello...|"
+local old = mem.protect(address, 4096, 'r--')   -- "rw-"
+pcall(mem.write, address, 'x')           -- fails: mapping is not writable
+mem.protect(address, 4096, 'rw-')        -- restores write access
+```
+
 ## Shared libraries and symbols (`module.*`)
 
 ```lua
