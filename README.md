@@ -37,10 +37,28 @@ symbols/resolve` for loading shared libraries, enumerating ELF symbols and
 resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
 to the ELF symbol table for non-exported symbols. The `unpack` helper provides a
 hook-based DEX unpacking path (dlopen + ART RegisterDexFile/OpenCommon hooks,
-file-backed dex filtered by default; see `tools/unpack/README.md`). Memory helpers
+file-backed dex filtered by default). Memory helpers
 (`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
 `mem.protect`, `mem.maps`) provide guarded access to the target address space.
 See `zygisk/docs/agent-helpers.md`.
+
+### Hook-based unpacking and extracting shells
+
+DEX images are captured at ART registration points (`dlopen` plus
+`DexFile::OpenCommon` / `ClassLinker::RegisterDexFile` hooks). Snapshots are
+first queued **in memory** and written gradually by a background writer, so
+hook callbacks do not block app threads on file I/O; file-backed system dex is
+filtered out by default. `unpack.flush()` or `./dejavu unpack --flush` forces
+the queue to disk.
+
+For extracting shells, `unpack.hook_invoke()` installs an
+`ArtMethod::Invoke` sentinel: active calls pass `thread == nullptr`, are
+recognized and counted, and return **without executing** the original method.
+`unpack.active_invoke_async(...)` paces reflection over a background worker
+(default 40 ms/class) and discovered DexFile images are re-dumped as
+`active_revision_*.dex`. The strategy layer (manifest namespace → dumped DEX
+class list → paced invocation) is a **Lua example project** under
+`examples/unpack/`; the native layer only provides hook/dump primitives.
 
 ## Engine model
 
@@ -180,8 +198,11 @@ control channel into one command:
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>
-./dejavu unpack -p <process> --out <device-dir>   # hook-based DEX dumping
-./dejavu unpack -p <process> --active-invoke-dex <dex>  # FART-style active calls
+./dejavu unpack -p <process> --out <device-dir> [--include-file-backed]
+./dejavu unpack -p <process> --out <device-dir> --flush|--status|--disable
+./dejavu unpack -p <process> --out <device-dir> \
+    --active-invoke-manifest [--class-filter PREFIX] [--delay-ms 40]  # Lua strategy
+./dejavu unpack -p <process> --out <device-dir> --active-invoke-dex <device-dex>
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]
@@ -231,6 +252,10 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   API is available (see `zygisk/docs/hook-c-api.md`).
 - Execmem-restricted ROMs may reject generated code. DejaVu reports an error
   instead of killing the process, but hooks still need per-device acceptance.
+- Hook-based unpacking currently targets arm64/API 26-35 and depends on
+  ROM-specific ART symbols; its class enumeration comes from dumped DEX /
+  manifest namespaces. Auto-unpack properties should be cleared during normal
+  hook regression runs, and extraction is only for apps/devices you own.
 - A hung Lua control script can block that process's Agent. The companion
   channel times out instead of blocking forever, and restarting the target
   process recovers.
