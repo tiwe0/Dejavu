@@ -35,30 +35,23 @@ The control session also exposes agent helpers: `fs.read/write/exists/remove/
 list/stat` for files in the target sandbox, and `module.load/unload/loaded/
 symbols/resolve` for loading shared libraries, enumerating ELF symbols and
 resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
-to the ELF symbol table for non-exported symbols. The `unpack` helper provides a
-hook-based DEX unpacking path (dlopen + ART RegisterDexFile/OpenCommon hooks,
+to the ELF symbol table for non-exported symbols. The `unpack` primitives used by
+the `examples/unpack` demo provide a hook-based DEX unpacking path (dlopen + ART RegisterDexFile/OpenCommon hooks,
 file-backed dex filtered by default). Memory helpers
 (`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
 `mem.protect`, `mem.maps`) provide guarded access to the target address space.
 See `zygisk/docs/agent-helpers.md`.
 
-### Hook-based unpacking and extracting shells
+### Example: hook-based unpacking (use-case demo)
 
-DEX images are captured at ART registration points (`dlopen` plus
-`DexFile::OpenCommon` / `ClassLinker::RegisterDexFile` hooks). Snapshots are
-first queued **in memory** and written gradually by a background writer, so
-hook callbacks do not block app threads on file I/O; file-backed system dex is
-filtered out by default. `unpack.flush()` or `./dejavu unpack --flush` forces
-the queue to disk.
-
-For extracting shells, `unpack.hook_invoke()` installs an
-`ArtMethod::Invoke` sentinel: active calls pass `thread == nullptr`, are
-recognized and counted, and return **without executing** the original method.
-`unpack.active_invoke_async(...)` paces reflection over a background worker
-(default 40 ms/class) and discovered DexFile images are re-dumped as
-`active_revision_*.dex`. The strategy layer (manifest namespace → dumped DEX
-class list → paced invocation) is a **Lua example project** under
-`examples/unpack/`; the native layer only provides hook/dump primitives.
+`examples/unpack/` is a **use-case demonstration** built on the primitives
+above — not a separate built-in capability. It shows one possible strategy:
+capture DEX images at ART registration points (`dlopen` plus
+`DexFile::OpenCommon` / `ClassLinker::RegisterDexFile` hooks), queue snapshots
+in memory, pace class reflection in a background worker and re-dump revision
+images. The strategy (manifest namespace → dumped DEX class list → paced
+invocation) is plain Lua; the native layer only supplies hook/invoke/dump
+primitives. See `examples/unpack/README.md` and `zygisk/docs/unpack-guide.md`.
 
 ## Engine model
 
@@ -198,10 +191,11 @@ control channel into one command:
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>
+# demo wrapper for examples/unpack: capture / drive / flush
 ./dejavu unpack -p <process> --out <device-dir> [--include-file-backed]
 ./dejavu unpack -p <process> --out <device-dir> --flush|--status|--disable
 ./dejavu unpack -p <process> --out <device-dir> \
-    --active-invoke-manifest [--class-filter PREFIX] [--delay-ms 40]  # Lua strategy
+    --active-invoke-manifest [--class-filter PREFIX] [--delay-ms 40]
 ./dejavu unpack -p <process> --out <device-dir> --active-invoke-dex <device-dex>
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>

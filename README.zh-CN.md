@@ -32,26 +32,22 @@ API 与限制见 `zygisk/docs/native-hook-api.md`。
 控制会话还提供 agent helper：`fs.read/write/exists/remove/list/stat` 用于
 目标进程沙箱内的文件读写；`module.load/unload/loaded/symbols/resolve` 用于
 加载 so、枚举 ELF 符号和解析隐藏（`LOCAL`）符号；`native.call` /
-`native.install` 在导出符号查找失败时会回退 ELF 符号表。`unpack` helper 提供
-hook 型脱壳路径（dlopen + ART RegisterDexFile/OpenCommon hook，默认过滤
+`native.install` 在导出符号查找失败时会回退 ELF 符号表。`examples/unpack`
+演示所用的 `unpack` 原语提供 hook 型脱壳路径（dlopen + ART RegisterDexFile/OpenCommon hook，默认过滤
 file-backed dex）。内存 helper
 （`mem.read/write`、类型化 `read_u*/write_u*`、`mem.dump`、`mem.query`、
 `mem.protect`、`mem.maps`）提供带映射校验的目标地址空间访问。详见
 `zygisk/docs/agent-helpers.md`。
 
-### Hook 脱壳与抽取壳
+### 示例：hook 脱壳（用例示范）
 
-在 ART 注册点（`dlopen` + `DexFile::OpenCommon` / `ClassLinker::RegisterDexFile`
-hook）捕获 DEX 镜像。快照会**先复制进内存队列**，由后台 writer 逐步落盘，
-hook 回调不做文件 I/O，默认过滤 file-backed 系统 dex；用
-`unpack.flush()` 或 `./dejavu unpack --flush` 强制落盘。
-
-抽取壳场景下，`unpack.hook_invoke()` 安装 `ArtMethod::Invoke` sentinel：
-主动调用以 `thread == nullptr` 触发，被识别并计数后**直接返回、不执行原方法**。
-`unpack.active_invoke_async(...)` 在后台按默认 40ms/类细水长流，结束后把已发现
-的 DexFile 重新 dump 为 `active_revision_*.dex`。策略层（Manifest 命名空间 →
-dumped DEX 类列表 → 节流主动调用）是 **Lua 示例工程** `examples/unpack/`；
-原生层只提供 hook/dump 原语。
+`examples/unpack/` 是基于上述原语的**用例示范**，不是独立的内置能力。
+它演示了一种可行套路：在 ART 注册点（`dlopen` + `DexFile::OpenCommon` /
+`ClassLinker::RegisterDexFile` hook）捕获 DEX 镜像，先入内存队列、由后台
+worker 节流落盘，并用后台回调节奏做类反射与 revision dump。策略层
+（Manifest 命名空间 → dumped DEX 类列表 → 节流主动调用）是纯 Lua；原生层
+只提供 hook/invoke/dump 原语。详见 `examples/unpack/README.md` 与
+`zygisk/docs/unpack-guide.md`。
 
 ## 引擎模型
 
@@ -190,10 +186,11 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu java -p <进程> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <进程> release <handle>
+# examples/unpack 的演示包装：采集 / 驱动 / 落盘
 ./dejavu unpack -p <进程> --out <设备目录> [--include-file-backed]
 ./dejavu unpack -p <进程> --out <设备目录> --flush|--status|--disable
 ./dejavu unpack -p <进程> --out <设备目录> \
-    --active-invoke-manifest [--class-filter 前缀] [--delay-ms 40]  # Lua 策略
+    --active-invoke-manifest [--class-filter 前缀] [--delay-ms 40]
 ./dejavu unpack -p <进程> --out <设备目录> --active-invoke-dex <设备dex>
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
