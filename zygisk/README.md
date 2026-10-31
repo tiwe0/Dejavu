@@ -420,6 +420,25 @@ RUN_DEVICE_STRESS=1 \
 ./zygisk/scripts/build-lsplant-android-arm64.sh
 ```
 
+For automated on-device acceptance against a rooted device with a Zygisk
+provider and this module installed:
+
+```sh
+TARGET_PROCESS=bin.mt.plus ./zygisk/scripts/device-test.sh
+# or a specific target activity:
+ADB_SERIAL=<serial> TARGET_PROCESS=<package> TARGET_ACTIVITY=<pkg>/<activity> \
+  ./zygisk/scripts/device-test.sh --with-hang-test
+```
+
+`device-test.sh` writes `config/targets.txt`, restarts the target process and
+drives the file control channel (`run/<process>.lua`). It verifies the control
+plane, an instance-method hook, writable generated data (regression for the
+TinyCC data-page fix), oversized control responses and the documented
+header-include limitation. `--with-hang-test` additionally exercises the relay
+timeout (takes ~35s and restarts the target process afterwards). The script
+never reboots the device; use `su -c 'ksud soft-reboot'` when a Loader change
+needs a Zygote restart.
+
 The production MT Manager smoke path is:
 
 ```sh

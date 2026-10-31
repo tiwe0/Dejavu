@@ -134,9 +134,50 @@ it never changes allocator heap pages to executable. Device testing is still
 required to validate the target process SELinux policy and page-size
 configuration on every supported Android generation.
 
+## Versions
+
+- `dejavu_version()` / `DEJAVU_VERSION_*` in `include/dejavu.h` identify the
+  **core library ABI version** (currently `0.1.0`). Bump it when the public C
+  ABI changes.
+- `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
+  **Zygisk module package version** (currently `0.2.0`). Module packaging,
+  loader/agent behavior and documentation changes bump it independently.
+- CI publishes `v<module-version>-build.<run>` prereleases for pushes to
+  `main`; pushing a matching `v*` tag publishes the stable release.
+
+## Testing
+
+- Host: `make host-smoke` runs the engine/Lua tests plus regressions for
+  writable generated data, large callback argument lists and (on Linux)
+  simulated execmem denial; `make android-arm64` validates the Android
+  artifact.
+- Zygisk: `make -C zygisk test` runs the host-side C/C++/Lua/CLI tests.
+- Device: `TARGET_PROCESS=<package> ./zygisk/scripts/device-test.sh` automates
+  the on-device acceptance flow against a rooted device with a Zygisk provider
+  and this module installed (see `zygisk/README.md`). It uses the file control
+  channel, never reboots the device, and verifies control, instance-method
+  hooks, writable generated data, oversized responses and header-include
+  behavior; `--with-hang-test` additionally exercises the relay timeout.
+- Patched dependencies: see `patches/README.md`.
+
+## Known limitations
+
+- Not a sandbox: device hook callbacks run with the target process privileges.
+- Generated code cannot `#include` headers on device; only the fixed preamble
+  API is available (see `zygisk/docs/hook-c-api.md`).
+- Execmem-restricted ROMs may reject generated code. DejaVu reports an error
+  instead of killing the process, but hooks still need per-device acceptance.
+- A hung Lua control script can block that process's Agent. The companion
+  channel times out instead of blocking forever, and restarting the target
+  process recovers.
+- LSPlant relies on private ART symbols; each Android generation needs device
+  validation. Android 16/17 support remains pending.
+
 ## License
 
 Dejavu is released under the MIT License; see [LICENSE](LICENSE).
+Third-party components and their licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The bundled third-party components keep their own licenses: Lua 5.4 (MIT),
 TinyCC (LGPL-2.1), LSPlant and DexBuilder (LGPL-3.0), and Dobby (Apache-2.0).

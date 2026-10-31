@@ -12,6 +12,7 @@ INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 WEBROOT_DIR=${WEBROOT_DIR:-"${ROOT_DIR}/webroot"}
 LICENSE_FILE=${LICENSE_FILE:-"${PROJECT_DIR}/LICENSE"}
+NOTICES_FILE=${NOTICES_FILE:-"${PROJECT_DIR}/THIRD_PARTY_NOTICES.md"}
 STAGE_DIR="${ROOT_DIR}/out/package"
 DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
@@ -48,6 +49,10 @@ if [[ ! -f "${HOOKX_LUA}" ]]; then
 fi
 if [[ ! -f "${LICENSE_FILE}" ]]; then
     echo "error: project license file not found: ${LICENSE_FILE}" >&2
+    exit 1
+fi
+if [[ ! -f "${NOTICES_FILE}" ]]; then
+    echo "error: third-party notices file not found: ${NOTICES_FILE}" >&2
     exit 1
 fi
 if [[ ! -f "${WEBROOT_DIR}/index.html" ]]; then
@@ -108,6 +113,40 @@ cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"
 cp "${DEJAVU_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
 cp "${LICENSE_FILE}" "${STAGE_DIR}/LICENSE"
+cp "${NOTICES_FILE}" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"
+mkdir -p "${STAGE_DIR}/LICENSES"
+
+copy_license() {
+    local source=$1
+    local name=$2
+    if [[ -f "${source}" ]]; then
+        cp "${source}" "${STAGE_DIR}/LICENSES/${name}"
+    else
+        echo "warning: license text not found: ${source}" >&2
+    fi
+}
+copy_license "${PROJECT_DIR}/extern/tinycc/COPYING" "TinyCC-LGPL-2.1.txt"
+copy_license "${ROOT_DIR}/third_party/LSPlant/LICENSE" "LSPlant-LGPL-3.0.txt"
+copy_license \
+    "${ROOT_DIR}/third_party/LSPlant/lsplant/src/main/jni/external/dex_builder/LICENSE" \
+    "DexBuilder-LGPL-3.0.txt"
+copy_license \
+    "${ROOT_DIR}/third_party/LSPlant/lsplant/src/main/jni/external/dex_builder/external/parallel_hashmap/LICENSE" \
+    "parallel-hashmap-Apache-2.0.txt"
+copy_license "${ROOT_DIR}/third_party/Dobby/LICENSE" "Dobby-Apache-2.0.txt"
+if [[ -f "${PROJECT_DIR}/extern/lua/lua.h" ]]; then
+    {
+        printf 'Lua 5.4.8 - MIT License\n\n'
+        sed -n '/Copyright (C) 1994-2025 Lua.org/,$p' \
+            "${PROJECT_DIR}/extern/lua/lua.h" | sed -n '1,24p'
+    } > "${STAGE_DIR}/LICENSES/Lua-MIT.txt"
+fi
+if [[ -f "${ROOT_DIR}/include/zygisk.hpp" ]]; then
+    {
+        printf 'Zygisk API header - 0BSD License\n\n'
+        sed -n '1,13p' "${ROOT_DIR}/include/zygisk.hpp"
+    } > "${STAGE_DIR}/LICENSES/Zygisk-0BSD.txt"
+fi
 
 # Keep the unstripped build outputs in out/ for symbolized debugging. The
 # installable module contains only runtime sections.

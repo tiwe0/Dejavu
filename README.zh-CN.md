@@ -133,9 +133,43 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 每个受支持的 Android 代际仍需要真机验证目标进程的 SELinux 策略和页面
 大小配置。
 
+## 版本语义
+
+- `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
+  ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
+- `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
+  版本**（当前 `0.2.0`）；模块打包、loader/agent 行为与文档更新独立递增。
+- CI 对 `main` 的 push 发布 `v<模块版本>-build.<run>` 预发布；推送匹配的
+  `v*` tag 才发布正式版本。
+
+## 测试
+
+- 主机：`make host-smoke` 覆盖引擎/Lua 测试，以及可写数据、大参数回调、
+  （Linux 上）模拟 execmem 拒绝等回归；`make android-arm64` 校验 Android 产物。
+- Zygisk：`make -C zygisk test` 运行主机侧 C/C++/Lua/CLI 测试。
+- 真机：`TARGET_PROCESS=<包名> ./zygisk/scripts/device-test.sh` 在已 root、
+  装有 Zygisk provider 且已安装模块的设备上自动验收（见 `zygisk/README.md`）。
+  脚本走文件控制通道、**不会重启设备**，覆盖控制面、实例方法 hook、可写
+  生成数据、超大响应与头文件 include 行为；`--with-hang-test` 额外验证
+  relay 超时。
+- 依赖补丁：见 `patches/README.md`。
+
+## 已知限制
+
+- 不是安全沙箱：hook 回调以目标进程权限运行。
+- 设备端生成的代码不能 `#include` 头文件，只能使用固定 preamble 里的 API
+  （见 `zygisk/docs/hook-c-api.md`）。
+- 加固 ROM 可能拒绝 execmem；DejaVu 会返回错误而不是杀死进程，但 hook 仍需
+  按设备验收。
+- 挂死的 Lua 控制脚本会卡住该进程的 Agent；companion 通道会超时而不是永久
+  阻塞，重启目标进程可恢复。
+- LSPlant 依赖私有 ART 符号，每个 Android 代际都需要真机验证；Android
+  16/17 仍待验收。
+
 ## 许可证
 
-Dejavu 以 MIT 许可证发布，详见 [LICENSE](LICENSE)。
+Dejavu 以 MIT 许可证发布，详见 [LICENSE](LICENSE)。第三方组件及其
+许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 内置的第三方组件保留各自许可证：Lua 5.4（MIT）、TinyCC（LGPL-2.1）、
 LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附带

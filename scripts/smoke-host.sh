@@ -73,3 +73,20 @@ done
     -o "${OUT_DIR}/smoke"
 
 "${OUT_DIR}/smoke"
+
+if [[ "$(uname -s)" == "Linux" ]]; then
+    # Simulate an execmem-restricted domain: deny PROT_EXEC mprotect calls and
+    # verify the engine reports an error instead of exiting the process.
+    "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
+        -I"${ROOT_DIR}/include" \
+        "${ROOT_DIR}/tests/relocate_failure.c" \
+        "${OBJ_DIR}/dejavu.o" \
+        "${OBJ_DIR}/dejavu_engine.o" \
+        "${OBJ_DIR}/dejavu_lua.o" \
+        "${OBJ_DIR}/lua.o" \
+        "${OBJ_DIR}/tinycc.o" \
+        -Wl,--wrap=mprotect \
+        -ldl -lm -pthread \
+        -o "${OUT_DIR}/relocate_failure"
+    "${OUT_DIR}/relocate_failure"
+fi

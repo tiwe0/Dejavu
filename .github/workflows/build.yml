@@ -313,6 +313,15 @@ jobs:
           done <<< "${changed}"
           exit "${status}"
 
+      - name: Check shell script syntax
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "${script}"
+          done < <(find . -path ./extern -prune -o -path ./zygisk/third_party -prune \
+            -o -name '*.sh' -type f -print)
+          python3 -m py_compile zygisk/scripts/dejavuctl
+
       - name: Check for TODO/FIXME comments
         run: |
           if grep -rn "TODO\|FIXME" src/ zygisk/src/ zygisk/include/; then
