@@ -338,6 +338,8 @@ bool UnpackManager::register_lua(dejavu_control_session *session, std::string *e
         {"active_invoke_async", UnpackManager::lua_active_invoke_async},
         {"active_invoke_wait", UnpackManager::lua_active_invoke_wait},
         {"active_invoke_status", UnpackManager::lua_active_invoke_status},
+        {"sleep_ms", UnpackManager::lua_sleep_ms},
+        {"dump_revision", UnpackManager::lua_dump_revision},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -1780,6 +1782,48 @@ int UnpackManager::lua_active_invoke_status(dejavu_control_session *, void *cont
     if (manager == nullptr || argument_count != 0) {
         snprintf(error, error_size, "unpack.active_invoke_status takes no arguments");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    const std::string status = manager->status();
+    char *copy = static_cast<char *>(malloc(status.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, status.data(), status.size());
+    copy[status.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = status.size();
+    return DEJAVU_OK;
+}
+
+int UnpackManager::lua_sleep_ms(dejavu_control_session *, void *, const dejavu_value *arguments,
+                                size_t argument_count, dejavu_value *result, char *error,
+                                size_t error_size) {
+    if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER ||
+        arguments[0].integer_value < 0 || arguments[0].integer_value > 60000) {
+        snprintf(error, error_size, "unpack.sleep_ms expects 0..60000 milliseconds");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    usleep(static_cast<useconds_t>(arguments[0].integer_value * 1000));
+    result->type = DEJAVU_VALUE_BOOLEAN;
+    result->boolean_value = 1;
+    return DEJAVU_OK;
+}
+
+int UnpackManager::lua_dump_revision(dejavu_control_session *, void *context, const dejavu_value *,
+                                     size_t argument_count, dejavu_value *result, char *error,
+                                     size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count != 0) {
+        snprintf(error, error_size, "unpack.dump_revision takes no arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string message;
+    if (!manager->dump_discovered_revision(&message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
     }
     const std::string status = manager->status();
     char *copy = static_cast<char *>(malloc(status.size() + 1));

@@ -1,3 +1,5 @@
+The Lua strategy example now lives in [examples/unpack/](../../examples/unpack/README.md).
+
 # Hook-based DEX unpacking
 
 `./dejavu unpack` captures DEX images **when ART registers them**, instead of

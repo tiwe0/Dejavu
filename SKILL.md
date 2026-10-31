@@ -298,7 +298,7 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
   dumped DEX 提取类名并分批主动调用。
 - dump 先复制进内存队列、后台 writer 逐步落盘，避免 hook 阻塞主线程 ANR；
   用 `./dejavu unpack --flush` 或 `unpack.flush()` 强制落盘后再拉取。
-- 详见 `zygisk/docs/unpack-guide.md` 与 `tools/unpack/README.md`。
+- 详见 `zygisk/docs/unpack-guide.md` 与 `examples/unpack/README.md`。
 
 ### 5. hookx 高层封装（推荐）
 

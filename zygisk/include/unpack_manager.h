@@ -83,6 +83,10 @@ class UnpackManager {
                                       size_t, dejavu_value *, char *, size_t);
     static int lua_active_invoke_status(dejavu_control_session *, void *, const dejavu_value *,
                                         size_t, dejavu_value *, char *, size_t);
+    static int lua_sleep_ms(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
+    static int lua_dump_revision(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
 
     bool enable(const std::string &directory, std::string *error);
     bool install_dlopen_hooks(std::string *error);
