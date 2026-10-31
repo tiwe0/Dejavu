@@ -45,6 +45,10 @@ class UnpackManager {
     void enable_from_system_property();
     bool hook_invoke(std::string *error);
     bool active_invoke(const std::string &filter, std::string *stats, std::string *error);
+    bool start_active_invoke(const std::string &class_names, unsigned long long delay_ms,
+                             std::string *status, std::string *error);
+    bool wait_active_invoke(unsigned long long timeout_ms, std::string *status, std::string *error);
+    void stop_active_invoke();
     void on_active_invoke();
     void set_app_class_loader(JNIEnv *env, jobject loader);
     bool flush(unsigned long long timeout_ms, std::string *error);
@@ -73,6 +77,12 @@ class UnpackManager {
                                  dejavu_value *, char *, size_t);
     static int lua_flush(dejavu_control_session *, void *, const dejavu_value *, size_t,
                          dejavu_value *, char *, size_t);
+    static int lua_active_invoke_async(dejavu_control_session *, void *, const dejavu_value *,
+                                       size_t, dejavu_value *, char *, size_t);
+    static int lua_active_invoke_wait(dejavu_control_session *, void *, const dejavu_value *,
+                                      size_t, dejavu_value *, char *, size_t);
+    static int lua_active_invoke_status(dejavu_control_session *, void *, const dejavu_value *,
+                                        size_t, dejavu_value *, char *, size_t);
 
     bool enable(const std::string &directory, std::string *error);
     bool install_dlopen_hooks(std::string *error);
@@ -80,6 +90,7 @@ class UnpackManager {
     bool dump_dex(unsigned long long address, size_t size, const char *label);
     bool enqueue_dex(unsigned long long address, size_t size, const char *label);
     bool dump_discovered_revision(std::string *error);
+    void active_invoke_worker();
     void start_writer();
     void stop_writer();
     void writer_loop();
@@ -117,6 +128,17 @@ class UnpackManager {
     size_t max_pending_bytes_ = 128 * 1024 * 1024;
     unsigned long long dropped_budget_ = 0;
     unsigned long long written_files_ = 0;
+    std::thread active_thread_;
+    mutable std::mutex active_mutex_;
+    std::condition_variable active_cv_;
+    std::atomic<bool> active_running_{false};
+    std::atomic<bool> active_stop_{false};
+    std::vector<std::string> active_names_;
+    std::string active_error_;
+    unsigned long long active_delay_ms_ = 40;
+    unsigned long long active_total_ = 0;
+    unsigned long long active_done_ = 0;
+    std::atomic<unsigned long long> active_errors_{0};
     std::string directory_;
     std::atomic<bool> enabled_{false};
     std::atomic<bool> include_file_backed_{false};

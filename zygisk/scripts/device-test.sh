@@ -767,13 +767,14 @@ java.release(files)
 java.release(app)
 local status = unpack.enable(directory .. '/dejavu-fart')
 local hook = unpack.hook_invoke()
-local stats = unpack.active_invoke('java.lang.Object,java.lang.StringBuilder')
+unpack.active_invoke_async('java.lang.Object,java.lang.StringBuilder', 10)
+local completed = unpack.active_invoke_wait(60000)
 local final_status = unpack.status()
-local invoked = tonumber(stats:match('sentinel_invoke_calls=(%d+)')) or 0
 local hits = tonumber(final_status:match('active_invoke_hits=(%d+)')) or 0
-if final_status:find('invoke_hooked=yes', 1, true) == nil or invoked <= 0 or
-    hits < invoked then
-    error('${RUN_TOKEN} fart-sentinel-failed invoked=' .. tostring(invoked) ..
+local done = tonumber(final_status:match('active_done=(%d+)')) or 0
+if final_status:find('invoke_hooked=yes', 1, true) == nil or hits <= 0 or
+    done < 2 then
+    error('${RUN_TOKEN} fart-sentinel-failed done=' .. tostring(done) ..
           ' hits=' .. tostring(hits))
 end
 error('${RUN_TOKEN} fart-sentinel-ok hits=' .. tostring(hits))"

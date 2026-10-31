@@ -589,6 +589,27 @@ def command_java(args: argparse.Namespace) -> int:
 
 def command_unpack(args: argparse.Namespace) -> int:
     process = args.process
+    if args.active_invoke_manifest:
+        if not args.out:
+            fail("unpack --active-invoke-manifest requires --out <device-dir>")
+        helper = REPO_ROOT / "tools" / "unpack" / "active-invoke-manifest.lua"
+        if not helper.is_file():
+            fail(f"manifest active invoke helper not found: {helper}")
+        script = helper.read_text(encoding="utf-8")
+        filter_literal = lua_quote(args.class_filter) if args.class_filter else "nil"
+        script += (
+            "\nreturn active_invoke_manifest("
+            f"{lua_quote(args.out)}, {filter_literal})\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
+            handle.write(script)
+            path = Path(handle.name)
+        try:
+            return delegate_dejavuctl(
+                args, ["-p", process, "--timeout", "180", str(path)]
+            )
+        finally:
+            path.unlink(missing_ok=True)
     if args.active_invoke_dex:
         helper = REPO_ROOT / "tools" / "unpack" / "active-invoke.lua"
         if not helper.is_file():
@@ -620,6 +641,7 @@ def command_unpack(args: argparse.Namespace) -> int:
         exec_inline(args, process, code)
         try:
             root_shell(args, "setprop debug.dejavu.unpack.dir ''")
+            root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 0")
         except CliError:
             pass
         print("unpack hooks disabled; system property cleared")
@@ -629,6 +651,10 @@ def command_unpack(args: argparse.Namespace) -> int:
     if not re.fullmatch(r"[A-Za-z0-9_./-]+", args.out):
         fail("--out may only contain letters, digits, '_', '.', '/' and '-'")
     root_shell(args, f"setprop debug.dejavu.unpack.dir {shlex.quote(args.out)}")
+    if args.include_file_backed:
+        root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 1")
+    else:
+        root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 0")
     if args.no_restart:
         code = f"return unpack.enable({lua_quote(args.out)})"
         result = exec_inline(args, process, code)
@@ -847,6 +873,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--flush",
         action="store_true",
         help="wait for deferred in-memory dumps to be written to disk",
+    )
+    sub.add_argument(
+        "--active-invoke-manifest",
+        action="store_true",
+        help="invoke classes in the Manifest main-activity namespace from dumped dex",
+    )
+    sub.add_argument(
+        "--include-file-backed",
+        action="store_true",
+        help="also capture file-backed system/app dex (default: memory-only dex)",
     )
     sub.add_argument("--disable", action="store_true", help="disable unpacking and clear the property")
     sub.add_argument(

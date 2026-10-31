@@ -111,10 +111,33 @@ bool read_mappings(std::vector<MemoryMapping> *mappings, std::string *error) {
     return true;
 }
 
+const std::vector<MemoryMapping> &cached_mappings(std::string *error) {
+    static thread_local std::vector<MemoryMapping> cache;
+    static thread_local std::chrono::steady_clock::time_point stamp;
+    static thread_local bool initialized = false;
+    const auto now = std::chrono::steady_clock::now();
+    if (!initialized ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - stamp).count() > 100) {
+        std::vector<MemoryMapping> fresh;
+        std::string read_error;
+        if (read_mappings(&fresh, &read_error)) {
+            cache = std::move(fresh);
+        } else if (cache.empty()) {
+            *error = read_error;
+        }
+        stamp = now;
+        initialized = true;
+    }
+    return cache;
+}
+
 bool find_mapping(uintptr_t address, MemoryMapping *mapping, std::string *error) {
     address = normalize_address(address);
-    std::vector<MemoryMapping> mappings;
-    if (!read_mappings(&mappings, error)) {
+    const std::vector<MemoryMapping> &mappings = cached_mappings(error);
+    if (mappings.empty()) {
+        if (error->empty()) {
+            *error = "unable to read process mappings";
+        }
         return false;
     }
     for (const MemoryMapping &candidate : mappings) {
@@ -312,6 +335,9 @@ bool UnpackManager::register_lua(dejavu_control_session *session, std::string *e
         {"hook_invoke", UnpackManager::lua_hook_invoke},
         {"active_invoke", UnpackManager::lua_active_invoke},
         {"flush", UnpackManager::lua_flush},
+        {"active_invoke_async", UnpackManager::lua_active_invoke_async},
+        {"active_invoke_wait", UnpackManager::lua_active_invoke_wait},
+        {"active_invoke_status", UnpackManager::lua_active_invoke_status},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -357,6 +383,11 @@ void UnpackManager::enable_from_system_property() {
     const int length = __system_property_get("debug.dejavu.unpack.dir", value);
     if (length <= 0 || value[0] == '\0') {
         return;
+    }
+    char include_value[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.dejavu.unpack.include_file_backed", include_value) > 0 &&
+        (strcmp(include_value, "1") == 0 || strcmp(include_value, "true") == 0)) {
+        include_file_backed_.store(true);
     }
     std::string error;
     if (!enable(value, &error)) {
@@ -702,6 +733,13 @@ std::string UnpackManager::status() const {
     }
     output += " written_files=" + std::to_string(written_files_);
     output += " dropped_budget=" + std::to_string(dropped_budget_);
+    output += " active_running=" + std::string(active_running_.load() ? "yes" : "no");
+    {
+        std::lock_guard<std::mutex> active_lock(active_mutex_);
+        output += " active_done=" + std::to_string(active_done_);
+        output += " active_total=" + std::to_string(active_total_);
+        output += " active_errors=" + std::to_string(active_errors_.load());
+    }
     return output;
 }
 
@@ -1496,5 +1534,264 @@ int UnpackManager::lua_flush(dejavu_control_session *, void *context, const deja
     result->owned = 1;
     result->string_value = copy;
     result->string_size = text.size();
+    return DEJAVU_OK;
+}
+
+bool UnpackManager::start_active_invoke(const std::string &class_names, unsigned long long delay_ms,
+                                        std::string *status, std::string *error) {
+    if (active_running_.load()) {
+        *error = "active invocation is already running";
+        return false;
+    }
+    if (!invoke_hooked_ || g_art_method_invoke_target == nullptr) {
+        *error = "call unpack.hook_invoke() before active invocation";
+        return false;
+    }
+    std::vector<std::string> names;
+    std::string current;
+    for (char character : class_names) {
+        if (character == ',' || character == ';' || character == '\n' || character == ' ') {
+            if (!current.empty()) {
+                names.push_back(current);
+                current.clear();
+            }
+        } else {
+            current.push_back(character);
+        }
+    }
+    if (!current.empty()) {
+        names.push_back(current);
+    }
+    if (names.empty()) {
+        *error = "active invocation needs a comma-separated class list";
+        return false;
+    }
+    if (active_thread_.joinable()) {
+        active_thread_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(active_mutex_);
+        active_names_ = std::move(names);
+        active_total_ = active_names_.size();
+        active_done_ = 0;
+        active_errors_.store(0);
+        active_error_.clear();
+    }
+    active_delay_ms_ = delay_ms == 0 ? 40 : delay_ms;
+    active_stop_.store(false);
+    active_running_.store(true);
+    active_thread_ = std::thread([this]() { active_invoke_worker(); });
+    *status = this->status();
+    return true;
+}
+
+void UnpackManager::active_invoke_worker() {
+    JNIEnv *env = nullptr;
+    if (vm_ == nullptr || vm_->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) {
+        {
+            std::lock_guard<std::mutex> lock(active_mutex_);
+            active_error_ = "unable to attach the active invocation thread";
+        }
+        active_running_.store(false);
+        active_cv_.notify_all();
+        return;
+    }
+    jclass class_class = env->FindClass("java/lang/Class");
+    jclass method_class = env->FindClass("java/lang/reflect/Method");
+    jmethodID class_for_name = nullptr;
+    jmethodID class_get_methods = nullptr;
+    if (class_class != nullptr && method_class != nullptr) {
+        class_for_name =
+            env->GetStaticMethodID(class_class, "forName",
+                                   "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+        class_get_methods =
+            env->GetMethodID(class_class, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    }
+    if (class_for_name == nullptr || class_get_methods == nullptr) {
+        env->ExceptionClear();
+        {
+            std::lock_guard<std::mutex> lock(active_mutex_);
+            active_error_ = "unable to resolve reflection methods";
+        }
+        active_running_.store(false);
+        active_cv_.notify_all();
+        return;
+    }
+    using InvokeFunction = void (*)(void *, void *, uint32_t *, uint32_t, void *, const char *);
+    auto invoke = reinterpret_cast<InvokeFunction>(g_art_method_invoke_target);
+    for (;;) {
+        std::string name;
+        {
+            std::lock_guard<std::mutex> lock(active_mutex_);
+            if (active_stop_.load() || active_done_ >= active_names_.size()) {
+                break;
+            }
+            name = active_names_[active_done_];
+        }
+        jstring class_name = env->NewStringUTF(name.c_str());
+        if (class_name == nullptr) {
+            env->ExceptionClear();
+        } else {
+            jclass clazz = static_cast<jclass>(env->CallStaticObjectMethod(
+                class_class, class_for_name, class_name, JNI_FALSE, app_class_loader_));
+            env->DeleteLocalRef(class_name);
+            if (env->ExceptionCheck() || clazz == nullptr) {
+                env->ExceptionClear();
+                active_errors_.fetch_add(1);
+            } else {
+                jobjectArray methods =
+                    static_cast<jobjectArray>(env->CallObjectMethod(clazz, class_get_methods));
+                if (env->ExceptionCheck() || methods == nullptr) {
+                    env->ExceptionClear();
+                    active_errors_.fetch_add(1);
+                } else {
+                    const jsize method_count = env->GetArrayLength(methods);
+                    for (jsize method_index = 0; method_index < method_count; ++method_index) {
+                        jobject method = env->GetObjectArrayElement(methods, method_index);
+                        if (method == nullptr) {
+                            continue;
+                        }
+                        jmethodID method_id = env->FromReflectedMethod(method);
+                        if (method_id != nullptr) {
+                            jvalue result = {};
+                            invoke(method_id, nullptr, nullptr, 0, &result, nullptr);
+                        }
+                        env->DeleteLocalRef(method);
+                    }
+                    env->DeleteLocalRef(methods);
+                }
+                env->DeleteLocalRef(clazz);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(active_mutex_);
+            ++active_done_;
+        }
+        active_cv_.notify_all();
+        if (active_delay_ms_ > 0) {
+            usleep(static_cast<useconds_t>(active_delay_ms_ * 1000));
+        }
+    }
+    std::string revision_error;
+    dump_discovered_revision(&revision_error);
+    {
+        std::lock_guard<std::mutex> lock(active_mutex_);
+        active_error_ = active_stop_.load() ? "stopped" : "completed";
+    }
+    active_running_.store(false);
+    active_cv_.notify_all();
+}
+
+bool UnpackManager::wait_active_invoke(unsigned long long timeout_ms, std::string *status,
+                                       std::string *error) {
+    std::unique_lock<std::mutex> lock(active_mutex_);
+    const bool done = active_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                          [this]() { return !active_running_.load(); });
+    lock.unlock();
+    if (!done) {
+        *error = "timed out waiting for active invocation";
+        return false;
+    }
+    if (active_thread_.joinable()) {
+        active_thread_.join();
+    }
+    *status = this->status();
+    return true;
+}
+
+void UnpackManager::stop_active_invoke() {
+    active_stop_.store(true);
+    active_cv_.notify_all();
+}
+
+int UnpackManager::lua_active_invoke_async(dejavu_control_session *, void *context,
+                                           const dejavu_value *arguments, size_t argument_count,
+                                           dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count < 1 || argument_count > 2 ||
+        arguments[0].type != DEJAVU_VALUE_STRING ||
+        (argument_count == 2 && arguments[1].type != DEJAVU_VALUE_INTEGER)) {
+        snprintf(error, error_size,
+                 "unpack.active_invoke_async expects classes and optional delay_ms");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string names(arguments[0].string_value, arguments[0].string_size);
+    const unsigned long long delay =
+        argument_count == 2 && arguments[1].integer_value > 0
+            ? static_cast<unsigned long long>(arguments[1].integer_value)
+            : 40;
+    std::string status;
+    std::string message;
+    if (!manager->start_active_invoke(names, delay, &status, &message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    char *copy = static_cast<char *>(malloc(status.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, status.data(), status.size());
+    copy[status.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = status.size();
+    return DEJAVU_OK;
+}
+
+int UnpackManager::lua_active_invoke_wait(dejavu_control_session *, void *context,
+                                          const dejavu_value *arguments, size_t argument_count,
+                                          dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count > 1 ||
+        (argument_count == 1 && arguments[0].type != DEJAVU_VALUE_INTEGER)) {
+        snprintf(error, error_size, "unpack.active_invoke_wait expects an optional timeout");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    unsigned long long timeout = 300000;
+    if (argument_count == 1 && arguments[0].integer_value > 0) {
+        timeout = static_cast<unsigned long long>(arguments[0].integer_value);
+    }
+    std::string status;
+    std::string message;
+    if (!manager->wait_active_invoke(timeout, &status, &message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    char *copy = static_cast<char *>(malloc(status.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, status.data(), status.size());
+    copy[status.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = status.size();
+    return DEJAVU_OK;
+}
+
+int UnpackManager::lua_active_invoke_status(dejavu_control_session *, void *context,
+                                            const dejavu_value *, size_t argument_count,
+                                            dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count != 0) {
+        snprintf(error, error_size, "unpack.active_invoke_status takes no arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    const std::string status = manager->status();
+    char *copy = static_cast<char *>(malloc(status.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, status.data(), status.size());
+    copy[status.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = status.size();
     return DEJAVU_OK;
 }

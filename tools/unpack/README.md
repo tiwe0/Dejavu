@@ -57,6 +57,11 @@ unpack.hook_invoke()                       -- hook ArtMethod::Invoke
 unpack.active_invoke('com.app.A,com.app.B')  -- reflection + null-thread sentinel calls
 ```
 
+The CLI/helper path uses `unpack.active_invoke_async(names, 40)` so classes
+are processed slowly in the background (control session stays responsive);
+`active_invoke_wait()`/`status()` track progress. The synchronous
+`active_invoke()` remains available for tiny lists.
+
 `active_invoke` resolves each class via the target ClassLoader, enumerates
 declared methods with reflection, obtains the ART method pointer with
 `FromReflectedMethod`, and calls `ArtMethod::Invoke(art_method, nullptr, ...)`.
@@ -65,6 +70,14 @@ result and returns **without executing the method**, so classes with broken
 code items do not crash the process. After the calls, discovered DexFile images
 are dumped again as `active_revision_*.dex` (code items that were restored in
 memory are captured).
+
+Class source from the Manifest main activity namespace (launcher activity class
+package), collecting matching classes from dumped dex files:
+
+```sh
+./dejavu unpack -p <process> --out <device-dir> --active-invoke-manifest \
+    [--class-filter <substring>]
+```
 
 From a dumped DEX file:
 

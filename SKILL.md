@@ -291,7 +291,8 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
 - 已验证：手工 `DexClassLoader` 加载 30MB DEX，dump 与源文件逐字节一致；
   Settings 自动捕获启动流程，默认过滤下稳定。
 - FART 抽取壳：`unpack.hook_invoke()` hook `ArtMethod::Invoke`；
-  `unpack.active_invoke('类名1,类名2')` 用反射枚举方法并直接以 `thread=nullptr`
+  `unpack.active_invoke_async('类名1,类名2'[, delay_ms])` 后台细水长流
+  （默认 40ms/类，`active_invoke_wait()` 等待），用反射枚举方法并直接以 `thread=nullptr`
   调用 `ArtMethod::Invoke`，hook 命中后不执行原方法、只做 revision dump
   （`active_revision_*.dex`）。`./dejavu unpack --active-invoke-dex <dex>` 可从
   dumped DEX 提取类名并分批主动调用。

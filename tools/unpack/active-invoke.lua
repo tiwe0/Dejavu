@@ -69,30 +69,9 @@ function active_invoke_dex(dex_path, filter)
     end
     if #names == 0 then return 'no matching classes in ' .. dex_path end
     if not unpack.hook_invoke() then error('unpack.hook_invoke failed') end
-    local totals = {
-        requested_classes = #names,
-        sentinel_calls = 0,
-        sentinel_hits = 0,
-        revision_dumps = 0,
-    }
-    local chunk_size = 64
-    for index = 1, #names, chunk_size do
-        local chunk = {}
-        for position = index, math.min(index + chunk_size - 1, #names) do
-            chunk[#chunk + 1] = names[position]
-        end
-        local stats = unpack.active_invoke(table.concat(chunk, ','))
-        local calls = tonumber(stats:match('sentinel_invoke_calls=(%d+)')) or 0
-        local hits = tonumber(stats:match('sentinel_hits=(%d+)')) or 0
-        local revisions = tonumber(stats:match('revision_dumps=(%d+)')) or 0
-        totals.sentinel_calls = totals.sentinel_calls + calls
-        totals.sentinel_hits = hits
-        totals.revision_dumps = revisions
-    end
+    unpack.active_invoke_async(table.concat(names, ','), 40)
+    local completed = unpack.active_invoke_wait(300000)
     unpack.flush()
-    return string.format(
-        'classes=%d sentinel_calls=%d sentinel_hits=%d revision_dumps=%d\n%s',
-        totals.requested_classes, totals.sentinel_calls, totals.sentinel_hits,
-        totals.revision_dumps, unpack.status())
+    return string.format('classes=%d\n%s', #names, completed)
 end
 

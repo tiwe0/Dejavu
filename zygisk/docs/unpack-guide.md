@@ -61,6 +61,14 @@
 - 设备验证：`java.lang.Object,java.lang.StringBuilder` 共 104 次 null-thread
   调用全部命中、0 错误、目标进程存活、普通 JNI 调用不受影响；第二次主动调用
   在已有 DexFile 镜像时生成 3 个 `active_revision_*.dex`。
+- **Manifest 命名空间来源**：`--active-invoke-manifest` 通过
+  `getLaunchIntentForPackage` → ComponentName 取主 Activity 类名，其包名作为
+  命名空间；从输出目录的 dumped dex（按大小排序，最多 4 个/64MB）解析类名，
+  只挑该命名空间下的类（上限 600）。
+- **细水长流**：`unpack.active_invoke_async(names[, delay_ms])` 在后台线程
+  按默认 40ms/类的节奏逐个类调用；控制会话立即返回，可用
+  `unpack.active_invoke_wait(timeout)` 等待、`unpack.status()` 查看
+  `active_done/active_total`。helper/CLI 已默认走异步路径。
 - 从 dumped dex 批量触发：
 
 ```sh
@@ -76,6 +84,8 @@
   逐步落盘。
 - CodeItem revision 同理：主动调用结束后把发现到的 DexFile 快照入队，
   由 writer 异步写 `active_revision_*.dex`。
+- maps 校验使用线程本地 100ms 缓存，避免启动时每个 dex 重复解析
+  `/proc/self/maps` 造成主线程 ANR。
 - 内存预算默认 128 MiB（`pending_bytes`）；超预算丢弃并计入
   `dropped_budget`，避免 OOM。
 - 需要立即看到文件时：
