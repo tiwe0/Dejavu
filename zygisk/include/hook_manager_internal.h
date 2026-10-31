@@ -14,7 +14,7 @@ namespace dejavu_hook_manager_internal {
 extern HookManager *g_manager;
 extern thread_local bool g_inside_native_hook;
 
-}  // namespace dejavu_hook_manager_internal
+} // namespace dejavu_hook_manager_internal
 
 struct HookManager::Impl {
     struct Record {
@@ -89,50 +89,32 @@ struct HookManager::Impl {
     JNIEnv *current_env();
     bool load_bridge(JNIEnv *env, std::string *error);
     jobject load_class(JNIEnv *env, const std::string &name, jobject loader);
-    Record *install(
-        JNIEnv *env,
-        const std::string &class_name,
-        const std::string &method_name,
-        const std::string &signature,
-        dejavu_module *module,
-        DejavuNativeHookCallback before,
-        DejavuNativeHookCallback after,
-        jobject loader,
-        HookManager::BootstrapCallback bootstrap_callback,
-        void *bootstrap_context,
-        bool *hook_attempted,
-        std::string *error);
+    Record *install(JNIEnv *env, const std::string &class_name, const std::string &method_name,
+                    const std::string &signature, dejavu_module *module,
+                    DejavuNativeHookCallback before, DejavuNativeHookCallback after, jobject loader,
+                    HookManager::BootstrapCallback bootstrap_callback, void *bootstrap_context,
+                    bool *hook_attempted, std::string *error);
 
-    static int lua_install(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_list(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_remove(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_uninstall(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_clear(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
+    static int lua_install(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                           dejavu_value *, char *, size_t);
+    static int lua_list(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                        dejavu_value *, char *, size_t);
+    static int lua_remove(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                          dejavu_value *, char *, size_t);
+    static int lua_uninstall(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                             dejavu_value *, char *, size_t);
+    static int lua_clear(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                         dejavu_value *, char *, size_t);
 #if DEJAVU_RUN_DEVICE_STRESS
-    static int lua_protocol_test(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_helper_test(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_exception_test(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
-    static int lua_stress(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
+    static int lua_protocol_test(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_helper_test(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                               dejavu_value *, char *, size_t);
+    static int lua_exception_test(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                  dejavu_value *, char *, size_t);
+    static int lua_stress(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                          dejavu_value *, char *, size_t);
 #endif
-    static int lua_log(
-        dejavu_control_session *, void *, const dejavu_value *, size_t,
-        dejavu_value *, char *, size_t);
+    static int lua_log(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                       dejavu_value *, char *, size_t);
 };

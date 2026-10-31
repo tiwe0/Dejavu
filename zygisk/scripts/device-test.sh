@@ -281,6 +281,101 @@ fi
 [[ -n "$(target_pid)" ]] || fail "native function hook: target died"
 pass "native function hook"
 
+# Native hook error handling: a missing module/symbol must produce Lua errors.
+echo "== native hook error handling"
+write_script "local source = [[
+int dejavu_native_target(void) { return 0; }
+]]
+local module_ok = pcall(native.install, 'libdejavu-not-loaded.so', 'foo', source)
+local symbol_ok = pcall(native.install, 'libc.so', 'dejavu_missing_symbol_xyz', source)
+if module_ok then error('${RUN_TOKEN} native-unexpected-module-success') end
+if symbol_ok then error('${RUN_TOKEN} native-unexpected-symbol-success') end
+error('${RUN_TOKEN} native-errors-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-errors-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native hook error handling: expected errors not observed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native hook error handling: target died"
+pass "native hook error handling"
+
+# Repeated install/uninstall cycles exercise trampoline creation and cleanup.
+echo "== native hook install/uninstall cycles"
+write_script "local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(fd, buffer, count);
+}
+]]
+for index = 1, 3 do
+    local ok, value = pcall(native.install, 'libc.so', 'read', source)
+    if not ok then error('${RUN_TOKEN} native-cycle-install ' .. index .. ': ' .. tostring(value)) end
+    if native.uninstall(value) ~= true then
+        error('${RUN_TOKEN} native-cycle-uninstall ' .. index)
+    end
+end
+error('${RUN_TOKEN} native-cycles-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-cycles-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 25 >&2 || true
+    fail "native hook install/uninstall cycles failed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native hook cycles: target died"
+pass "native hook install/uninstall cycles"
+
+# Two simultaneous hooks plus native.clear().
+echo "== native hook multiple + clear"
+write_script "local read_source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(fd, buffer, count);
+}
+]]
+local write_source = [[
+long dejavu_native_target(int fd, const void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, const void *, unsigned long))dejavu_native_original())(fd, buffer, count);
+}
+]]
+local read_ok = pcall(native.install, 'libc.so', 'read', read_source)
+local write_ok = pcall(native.install, 'libc.so', 'write', write_source)
+if not read_ok or not write_ok then error('${RUN_TOKEN} native-multi-install') end
+local list = native.list()
+if not string.find(list, 'libc.so#read', 1, true) or
+    not string.find(list, 'libc.so#write', 1, true) then
+    error('${RUN_TOKEN} native-multi-list')
+end
+local removed = native.clear()
+if type(removed) ~= 'number' or removed < 2 then
+    error('${RUN_TOKEN} native-multi-clear ' .. tostring(removed))
+end
+error('${RUN_TOKEN} native-multi-ok removed=' .. tostring(removed))"
+if ! wait_for_log "${RUN_TOKEN} native-multi-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 25 >&2 || true
+    fail "native hook multiple/clear failed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native hook multiple: target died"
+pass "native hook multiple + clear"
+
+# Double uninstall must report an error instead of corrupting state.
+echo "== native hook double uninstall"
+write_script "local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(fd, buffer, count);
+}
+]]
+local ok, value = pcall(native.install, 'libc.so', 'read', source)
+if not ok then error('${RUN_TOKEN} native-double-install') end
+if native.uninstall(value) ~= true then error('${RUN_TOKEN} native-double-first-uninstall') end
+local second_ok = pcall(native.uninstall, value)
+if second_ok then error('${RUN_TOKEN} native-double-unexpected-success') end
+error('${RUN_TOKEN} native-double-ok')"
+if ! wait_for_log "${RUN_TOKEN} native-double-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native hook double uninstall: expected error not observed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native hook double uninstall: target died"
+pass "native hook double uninstall"
+
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.
 echo "== oversized control response (M1 regression)"

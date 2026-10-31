@@ -150,6 +150,8 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 ./dejavu deploy-agent -p <进程>                 # 热部署 agent + init.lua
 ./dejavu exec -p <进程> -e 'return hook.list()'
 ./dejavu exec -p <进程> hooks/demo.lua
+./dejavu native -p <进程> list|stats|uninstall|clear
+./dejavu native -p <进程> install libc.so read replacement.c
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
 ./dejavu log [-p <进程>] [--dump] [--clear]

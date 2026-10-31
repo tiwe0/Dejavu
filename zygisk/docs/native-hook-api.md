@@ -91,6 +91,22 @@ Installed hooks stay active until uninstalled or the process dies. All calls
 return normal Lua errors (visible through the CLI / companion log) instead of
 crashing the host on validation failures.
 
+## CLI shortcuts
+
+The unified `./dejavu` CLI wraps the common operations (it still executes Lua
+in the target process, so the API rules above apply):
+
+```sh
+./dejavu native -p com.android.settings list
+./dejavu native -p com.android.settings install libc.so read replacement.c
+./dejavu native -p com.android.settings stats <id>
+./dejavu native -p com.android.settings uninstall <id>
+./dejavu native -p com.android.settings clear
+```
+
+`install` expects a C file that defines `dejavu_native_target`; the CLI wraps
+it into the Lua chunk and prints the returned hook id.
+
 ## Limitations (ABI 1)
 
 - **Exported symbols only.** Hidden/static symbols need a resolver/offset API,

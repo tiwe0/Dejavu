@@ -152,6 +152,8 @@ control channel into one command:
 ./dejavu deploy-agent -p <process>              # hot-deploy agent + init.lua
 ./dejavu exec -p <process> -e 'return hook.list()'
 ./dejavu exec -p <process> hooks/demo.lua
+./dejavu native -p <process> list|stats|uninstall|clear
+./dejavu native -p <process> install libc.so read replacement.c
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]

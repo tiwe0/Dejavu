@@ -155,6 +155,17 @@ native.uninstall(id)
 - `native.list()` 查看、`native.clear()` 全部卸载；详见
   `zygisk/docs/native-hook-api.md`。
 
+CLI 快捷方式（等价于在目标进程执行对应 Lua）：
+
+```sh
+./dejavu native -p com.android.settings list
+./dejavu native -p com.android.settings install libc.so read replacement.c
+./dejavu native -p com.android.settings stats <id>
+./dejavu native -p com.android.settings uninstall <id>
+./dejavu native -p com.android.settings clear
+```
+
+
 ### 5. hookx 高层封装（推荐）
 
 ```lua

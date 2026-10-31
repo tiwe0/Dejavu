@@ -438,6 +438,69 @@ def command_watch(args: argparse.Namespace) -> int:
     )
 
 
+
+def lua_quote(text: str) -> str:
+    escaped = (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+def lua_long_string(text: str) -> str:
+    """Wrap text in a Lua long bracket that does not occur inside it."""
+    for level in range(0, 8):
+        delimiter = "=" * level
+        if f"]{delimiter}]" not in text:
+            return f"[{delimiter}[\n{text}\n]{delimiter}]"
+    fail("native hook source contains too many long-bracket delimiters")
+
+
+def exec_inline(args: argparse.Namespace, process: str, code: str) -> int:
+    return delegate_dejavuctl(args, ["-p", process, "-e", code])
+
+
+def exec_lua_file(args: argparse.Namespace, process: str, script: str) -> int:
+    with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
+        handle.write(script)
+        path = Path(handle.name)
+    try:
+        return delegate_dejavuctl(args, ["-p", process, str(path)])
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def command_native(args: argparse.Namespace) -> int:
+    process = args.process
+    action = args.native_action
+    if action == "list":
+        return exec_inline(args, process, "return native.list()")
+    if action == "stats":
+        return exec_inline(args, process, f"return native.stats({args.id})")
+    if action == "uninstall":
+        return exec_inline(args, process, f"return native.uninstall({args.id})")
+    if action == "clear":
+        return exec_inline(args, process, "return native.clear()")
+    if action == "install":
+        source_path = Path(args.source).expanduser()
+        if not source_path.is_file():
+            fail(f"C source file not found: {source_path}")
+        source = source_path.read_text(encoding="utf-8")
+        script = "\n".join(
+            [
+                f"local source = {lua_long_string(source)}",
+                "local id = native.install("
+                + f"{lua_quote(args.module)}, {lua_quote(args.symbol)}, source)",
+                "return id",
+            ]
+        ) + "\n"
+        return exec_lua_file(args, process, script)
+    fail(f"unsupported native action: {action}")
+
+
 def command_log(args: argparse.Namespace) -> int:
     require_device(args)
     if args.clear:
@@ -484,6 +547,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu exec -p com.android.settings hooks/demo.lua\n"
             "  ./dejavu repl -p com.android.settings\n"
             "  ./dejavu watch hooks/demo.lua -p com.android.settings\n"
+            "  ./dejavu native -p com.android.settings list\n"
+            "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),
@@ -544,6 +609,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("file")
     sub.add_argument("-p", "--process", default="bin.mt.plus")
     sub.set_defaults(func=command_watch)
+
+    sub = subparsers.add_parser("native", help="manage native function hooks")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    native_actions = sub.add_subparsers(dest="native_action", required=True)
+    native_actions.add_parser("list", help="list native hooks").set_defaults(
+        func=command_native
+    )
+    install_parser = native_actions.add_parser(
+        "install", help="install a native hook from a C replacement source file"
+    )
+    install_parser.add_argument("module", help="loaded module, e.g. libc.so")
+    install_parser.add_argument("symbol", help="exported symbol, e.g. read")
+    install_parser.add_argument("source", help="C file defining dejavu_native_target")
+    install_parser.set_defaults(func=command_native)
+    stats_parser = native_actions.add_parser("stats", help="show a hook's hit count")
+    stats_parser.add_argument("id", type=int)
+    stats_parser.set_defaults(func=command_native)
+    uninstall_parser = native_actions.add_parser("uninstall", help="uninstall a native hook")
+    uninstall_parser.add_argument("id", type=int)
+    uninstall_parser.set_defaults(func=command_native)
+    native_actions.add_parser("clear", help="uninstall all native hooks").set_defaults(
+        func=command_native
+    )
 
     sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
     sub.add_argument("-p", "--process", help="only show lines mentioning this process")

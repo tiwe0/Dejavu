@@ -26,12 +26,12 @@ void set_error(std::string *error, const char *message) {
     }
 }
 
-}  // namespace
+} // namespace
 
 namespace dejavu_hook_manager_internal {
 HookManager *g_manager = nullptr;
 thread_local bool g_inside_native_hook = false;
-}
+} // namespace dejavu_hook_manager_internal
 
 using namespace dejavu_hook_manager_internal;
 
@@ -47,11 +47,10 @@ jobject native_dispatch(JNIEnv *env, jobject bridge, jobjectArray arguments) {
     return g_manager->dispatch(env, static_cast<unsigned long long>(token), arguments);
 }
 
-}  // namespace
+} // namespace
 
 HookManager::Impl::Record *HookManager::Impl::find(unsigned long long id) {
-    const auto snapshot = std::atomic_load_explicit(
-        &hook_table, std::memory_order_acquire);
+    const auto snapshot = std::atomic_load_explicit(&hook_table, std::memory_order_acquire);
     for (Record *record : *snapshot) {
         if (record->id == id) {
             return record;
@@ -62,8 +61,7 @@ HookManager::Impl::Record *HookManager::Impl::find(unsigned long long id) {
 
 void HookManager::Impl::remove_from_table(Record *target) {
     std::lock_guard<std::mutex> lock(writer_mutex);
-    const auto current = std::atomic_load_explicit(
-        &hook_table, std::memory_order_acquire);
+    const auto current = std::atomic_load_explicit(&hook_table, std::memory_order_acquire);
     auto next = std::make_shared<HookTable>();
     next->reserve(current->size());
     for (Record *record : *current) {
@@ -71,10 +69,8 @@ void HookManager::Impl::remove_from_table(Record *target) {
             next->push_back(record);
         }
     }
-    std::atomic_store_explicit(
-        &hook_table,
-        std::shared_ptr<const HookTable>(std::move(next)),
-        std::memory_order_release);
+    std::atomic_store_explicit(&hook_table, std::shared_ptr<const HookTable>(std::move(next)),
+                               std::memory_order_release);
 }
 
 bool HookManager::Impl::uninstall_record(Record *record, std::string *error) {
@@ -91,15 +87,14 @@ bool HookManager::Impl::uninstall_record(Record *record, std::string *error) {
         return false;
     }
     bool expected = false;
-    if (!record->retiring.compare_exchange_strong(
-            expected, true, std::memory_order_acq_rel)) {
+    if (!record->retiring.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         set_error(error, "hook uninstall is already in progress");
         return false;
     }
     record->active.store(false, std::memory_order_release);
     JNIEnv *env = current_env();
-    if (env == nullptr || record->target == nullptr ||
-        !backend->unhook(env, record->target) || env->ExceptionCheck()) {
+    if (env == nullptr || record->target == nullptr || !backend->unhook(env, record->target) ||
+        env->ExceptionCheck()) {
         if (env != nullptr && env->ExceptionCheck()) {
             env->ExceptionClear();
         }
@@ -160,16 +155,14 @@ bool HookManager::Impl::load_bridge(JNIEnv *env, std::string *error) {
         set_error(error, "required bridge loader classes are unavailable");
         return false;
     }
-    const jmethodID wrap = env->GetStaticMethodID(
-        byte_buffer_class, "wrap", "([B)Ljava/nio/ByteBuffer;");
-    const jmethodID get_system = env->GetStaticMethodID(
-        class_loader_class, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+    const jmethodID wrap =
+        env->GetStaticMethodID(byte_buffer_class, "wrap", "([B)Ljava/nio/ByteBuffer;");
+    const jmethodID get_system = env->GetStaticMethodID(class_loader_class, "getSystemClassLoader",
+                                                        "()Ljava/lang/ClassLoader;");
     const jmethodID loader_constructor = env->GetMethodID(
-        dex_loader_class,
-        "<init>",
-        "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-    const jmethodID load_class = env->GetMethodID(
-        class_loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        dex_loader_class, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+    const jmethodID load_class =
+        env->GetMethodID(class_loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     if (wrap == nullptr || get_system == nullptr || loader_constructor == nullptr ||
         load_class == nullptr) {
         env->ExceptionClear();
@@ -182,18 +175,14 @@ bool HookManager::Impl::load_bridge(JNIEnv *env, std::string *error) {
         set_error(error, "unable to allocate bridge DEX array");
         return false;
     }
-    env->SetByteArrayRegion(
-        bytes,
-        0,
-        static_cast<jsize>(dejavu_hook_bridge_dex_len),
-        reinterpret_cast<const jbyte *>(dejavu_hook_bridge_dex));
+    env->SetByteArrayRegion(bytes, 0, static_cast<jsize>(dejavu_hook_bridge_dex_len),
+                            reinterpret_cast<const jbyte *>(dejavu_hook_bridge_dex));
     jobject buffer = env->CallStaticObjectMethod(byte_buffer_class, wrap, bytes);
     jobject parent = env->CallStaticObjectMethod(class_loader_class, get_system);
     jobject loader = env->NewObject(dex_loader_class, loader_constructor, buffer, parent);
     jstring bridge_name = env->NewStringUTF(kBridgeClassName);
-    jobject loaded_class = loader == nullptr
-        ? nullptr
-        : env->CallObjectMethod(loader, load_class, bridge_name);
+    jobject loaded_class =
+        loader == nullptr ? nullptr : env->CallObjectMethod(loader, load_class, bridge_name);
     if (env->ExceptionCheck() || loaded_class == nullptr) {
         env->ExceptionClear();
         set_error(error, "unable to load HookBridge DEX");
@@ -218,8 +207,8 @@ bool HookManager::Impl::load_bridge(JNIEnv *env, std::string *error) {
     bridge_class_loader = env->NewGlobalRef(loader);
     bridge_class = static_cast<jclass>(env->NewGlobalRef(loaded_class));
     bridge_constructor = env->GetMethodID(bridge_class, "<init>", "(J)V");
-    const jmethodID callback = env->GetMethodID(
-        bridge_class, "dispatch", "([Ljava/lang/Object;)Ljava/lang/Object;");
+    const jmethodID callback =
+        env->GetMethodID(bridge_class, "dispatch", "([Ljava/lang/Object;)Ljava/lang/Object;");
     if (bridge_class_loader == nullptr || bridge_class == nullptr ||
         bridge_constructor == nullptr || callback == nullptr) {
         env->ExceptionClear();
@@ -245,25 +234,17 @@ jobject HookManager::Impl::load_class(JNIEnv *env, const std::string &name, jobj
         return env->FindClass(path.c_str());
     }
     jclass loader_class = env->FindClass("java/lang/ClassLoader");
-    jmethodID load = env->GetMethodID(
-        loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jmethodID load =
+        env->GetMethodID(loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     jstring class_name = env->NewStringUTF(name.c_str());
     return env->CallObjectMethod(loader, load, class_name);
 }
 
 HookManager::Impl::Record *HookManager::Impl::install(
-    JNIEnv *env,
-    const std::string &class_name,
-    const std::string &method_name,
-    const std::string &signature,
-    dejavu_module *module,
-    DejavuNativeHookCallback before,
-    DejavuNativeHookCallback after,
-    jobject loader,
-    BootstrapCallback bootstrap_callback,
-    void *bootstrap_context,
-    bool *hook_attempted,
-    std::string *error) {
+    JNIEnv *env, const std::string &class_name, const std::string &method_name,
+    const std::string &signature, dejavu_module *module, DejavuNativeHookCallback before,
+    DejavuNativeHookCallback after, jobject loader, BootstrapCallback bootstrap_callback,
+    void *bootstrap_context, bool *hook_attempted, std::string *error) {
     *hook_attempted = false;
     if (env == nullptr) {
         set_error(error, "hook thread is not attached to ART");
@@ -289,12 +270,10 @@ HookManager::Impl::Record *HookManager::Impl::install(
     }
     jclass target_class = static_cast<jclass>(loaded_class);
     bool is_static = false;
-    jmethodID target_id = env->GetMethodID(
-        target_class, method_name.c_str(), signature.c_str());
+    jmethodID target_id = env->GetMethodID(target_class, method_name.c_str(), signature.c_str());
     if (target_id == nullptr) {
         env->ExceptionClear();
-        target_id = env->GetStaticMethodID(
-            target_class, method_name.c_str(), signature.c_str());
+        target_id = env->GetStaticMethodID(target_class, method_name.c_str(), signature.c_str());
         is_static = true;
     }
     if (target_id == nullptr) {
@@ -319,19 +298,15 @@ HookManager::Impl::Record *HookManager::Impl::install(
         context_loader = bridge_class_loader;
     }
 #endif
-    record->class_loader = context_loader == nullptr
-        ? nullptr
-        : env->NewGlobalRef(context_loader);
+    record->class_loader = context_loader == nullptr ? nullptr : env->NewGlobalRef(context_loader);
     record->is_static = is_static;
     record->bootstrap = bootstrap_callback != nullptr;
     record->bootstrap_callback = bootstrap_callback;
     record->bootstrap_context = bootstrap_context;
-    jobject target = env->ToReflectedMethod(
-        target_class, target_id, is_static ? JNI_TRUE : JNI_FALSE);
-    jobject bridge = env->NewObject(
-        bridge_class,
-        bridge_constructor,
-        static_cast<jlong>(reinterpret_cast<uintptr_t>(record.get())));
+    jobject target =
+        env->ToReflectedMethod(target_class, target_id, is_static ? JNI_TRUE : JNI_FALSE);
+    jobject bridge = env->NewObject(bridge_class, bridge_constructor,
+                                    static_cast<jlong>(reinterpret_cast<uintptr_t>(record.get())));
     record->target = env->NewGlobalRef(target);
     record->bridge = env->NewGlobalRef(bridge);
     if (record->target == nullptr || record->bridge == nullptr ||
@@ -361,21 +336,16 @@ HookManager::Impl::Record *HookManager::Impl::install(
     record->ready.store(true, std::memory_order_release);
     Record *installed = record.get();
     std::lock_guard<std::mutex> lock(writer_mutex);
-    const auto current = std::atomic_load_explicit(
-        &hook_table, std::memory_order_acquire);
+    const auto current = std::atomic_load_explicit(&hook_table, std::memory_order_acquire);
     auto next = std::make_shared<HookTable>(*current);
     next->push_back(installed);
     owned_records.push_back(std::move(record));
-    std::atomic_store_explicit(
-        &hook_table,
-        std::shared_ptr<const HookTable>(std::move(next)),
-        std::memory_order_release);
+    std::atomic_store_explicit(&hook_table, std::shared_ptr<const HookTable>(std::move(next)),
+                               std::memory_order_release);
     return installed;
 }
 
-
-
-HookManager::HookManager() : impl_(new (std::nothrow) Impl()) {
+HookManager::HookManager() : impl_(new(std::nothrow) Impl()) {
     if (impl_ != nullptr) {
         impl_->owner = this;
     }
@@ -385,12 +355,8 @@ HookManager::~HookManager() {
     delete impl_;
 }
 
-bool HookManager::initialize(
-    JNIEnv *env,
-    JavaVM *vm,
-    const DejavuLsplantBackend *backend,
-    DejavuRuntime *runtime,
-    std::string *error) {
+bool HookManager::initialize(JNIEnv *env, JavaVM *vm, const DejavuLsplantBackend *backend,
+                             DejavuRuntime *runtime, std::string *error) {
     if (impl_ == nullptr || env == nullptr || vm == nullptr || backend == nullptr ||
         backend->abi_version != 1 || runtime == nullptr) {
         set_error(error, "invalid HookManager initialization argument");
@@ -415,9 +381,7 @@ bool HookManager::initialize(
     jclass local_method_class = env->FindClass("java/lang/reflect/Method");
     impl_->method_class = static_cast<jclass>(env->NewGlobalRef(local_method_class));
     impl_->method_invoke = env->GetMethodID(
-        impl_->method_class,
-        "invoke",
-        "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
+        impl_->method_class, "invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
     if (impl_->method_class == nullptr || impl_->method_invoke == nullptr) {
         set_error(error, "unable to resolve java.lang.reflect.Method.invoke");
         return false;
@@ -429,40 +393,25 @@ bool HookManager::initialize(
     return true;
 }
 
-bool HookManager::install_app_bootstrap(
-    JNIEnv *env,
-    BootstrapCallback callback,
-    void *context,
-    std::string *error) {
+bool HookManager::install_app_bootstrap(JNIEnv *env, BootstrapCallback callback, void *context,
+                                        std::string *error) {
     if (impl_ == nullptr || callback == nullptr) {
         set_error(error, "invalid app bootstrap callback");
         return false;
     }
     bool hook_attempted = false;
-    Impl::Record *record = impl_->install(
-        env,
-        "android.app.ActivityThread",
-        "handleBindApplication",
-        "(Landroid/app/ActivityThread$AppBindData;)V",
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        callback,
-        context,
-        &hook_attempted,
-        error);
+    Impl::Record *record =
+        impl_->install(env, "android.app.ActivityThread", "handleBindApplication",
+                       "(Landroid/app/ActivityThread$AppBindData;)V", nullptr, nullptr, nullptr,
+                       nullptr, callback, context, &hook_attempted, error);
     if (record == nullptr) {
         return false;
     }
     return true;
 }
 
-bool HookManager::start_control(
-    JNIEnv *env,
-    jobject app_class_loader,
-    const std::string &script,
-    std::string *error) {
+bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std::string &script,
+                                std::string *error) {
     if (impl_ == nullptr || env == nullptr || app_class_loader == nullptr ||
         impl_->session != nullptr) {
         set_error(error, "invalid or repeated Lua control initialization");
@@ -474,15 +423,14 @@ bool HookManager::start_control(
         set_error(error, "unable to create Dejavu engine");
         return false;
     }
-    if (!dejavu_hook_api_register_symbols(
-            impl_->runtime, impl_->engine, error)) {
+    if (!dejavu_hook_api_register_symbols(impl_->runtime, impl_->engine, error)) {
         return false;
     }
     int status = DEJAVU_OK;
 
     char runtime_error[512];
-    status = impl_->runtime->control_session_create(
-        impl_->engine, &impl_->session, runtime_error, sizeof(runtime_error));
+    status = impl_->runtime->control_session_create(impl_->engine, &impl_->session, runtime_error,
+                                                    sizeof(runtime_error));
     if (status != DEJAVU_OK) {
         set_error(error, runtime_error);
         return false;
@@ -506,14 +454,9 @@ bool HookManager::start_control(
 #endif
     };
     for (const Registration &registration : registrations) {
-        status = impl_->runtime->control_session_register(
-            impl_->session,
-            "hook",
-            registration.name,
-            registration.function,
-            impl_,
-            runtime_error,
-            sizeof(runtime_error));
+        status = impl_->runtime->control_session_register(impl_->session, "hook", registration.name,
+                                                          registration.function, impl_,
+                                                          runtime_error, sizeof(runtime_error));
         if (status != DEJAVU_OK) {
             set_error(error, runtime_error);
             return false;
@@ -527,8 +470,8 @@ bool HookManager::start_control(
         return false;
     }
     dejavu_value result = {};
-    status = impl_->runtime->control_session_eval(
-        impl_->session, script.c_str(), &result, runtime_error, sizeof(runtime_error));
+    status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &result,
+                                                  runtime_error, sizeof(runtime_error));
     impl_->runtime->value_release(&result);
     if (status != DEJAVU_OK) {
         set_error(error, runtime_error);
@@ -537,18 +480,15 @@ bool HookManager::start_control(
     return true;
 }
 
-bool HookManager::eval_control(
-    const std::string &script,
-    std::string *result,
-    std::string *error) {
+bool HookManager::eval_control(const std::string &script, std::string *result, std::string *error) {
     if (impl_ == nullptr || impl_->session == nullptr) {
         set_error(error, "Lua control is not initialized");
         return false;
     }
     char runtime_error[512];
     dejavu_value value = {};
-    const int status = impl_->runtime->control_session_eval(
-        impl_->session, script.c_str(), &value, runtime_error, sizeof(runtime_error));
+    const int status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &value,
+                                                            runtime_error, sizeof(runtime_error));
     if (status != DEJAVU_OK) {
         impl_->runtime->value_release(&value);
         set_error(error, runtime_error);
@@ -556,32 +496,32 @@ bool HookManager::eval_control(
     }
     std::ostringstream output;
     switch (value.type) {
-        case DEJAVU_VALUE_NIL:
-            output << "nil";
-            break;
-        case DEJAVU_VALUE_BOOLEAN:
-            output << (value.boolean_value ? "true" : "false");
-            break;
-        case DEJAVU_VALUE_INTEGER:
-            output << value.integer_value;
-            break;
-        case DEJAVU_VALUE_NUMBER:
-            output << std::setprecision(17) << value.number_value;
-            break;
-        case DEJAVU_VALUE_STRING:
-            if (value.string_size != 0 && value.string_value == nullptr) {
-                impl_->runtime->value_release(&value);
-                set_error(error, "invalid Lua string result");
-                return false;
-            }
-            if (value.string_size != 0) {
-                output.write(value.string_value, static_cast<std::streamsize>(value.string_size));
-            }
-            break;
-        default:
+    case DEJAVU_VALUE_NIL:
+        output << "nil";
+        break;
+    case DEJAVU_VALUE_BOOLEAN:
+        output << (value.boolean_value ? "true" : "false");
+        break;
+    case DEJAVU_VALUE_INTEGER:
+        output << value.integer_value;
+        break;
+    case DEJAVU_VALUE_NUMBER:
+        output << std::setprecision(17) << value.number_value;
+        break;
+    case DEJAVU_VALUE_STRING:
+        if (value.string_size != 0 && value.string_value == nullptr) {
             impl_->runtime->value_release(&value);
-            set_error(error, "unsupported Lua RPC result type");
+            set_error(error, "invalid Lua string result");
             return false;
+        }
+        if (value.string_size != 0) {
+            output.write(value.string_value, static_cast<std::streamsize>(value.string_size));
+        }
+        break;
+    default:
+        impl_->runtime->value_release(&value);
+        set_error(error, "unsupported Lua RPC result type");
+        return false;
     }
     impl_->runtime->value_release(&value);
     if (result != nullptr) {
