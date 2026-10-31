@@ -8,7 +8,7 @@ process. Only use them on devices and processes you control.
 ## Filesystem (`fs.*`)
 
 ```lua
-local text  = fs.read(path)              -- string (binary safe)
+local text  = fs.read(path[, offset[, size]])  -- string (binary safe)
 local bytes = fs.write(path, data[, append])  -- integer bytes written
 local exists = fs.exists(path)           -- boolean
 fs.remove(path)                          -- true, or a Lua error
@@ -18,7 +18,8 @@ local info  = fs.stat(path)              -- "size=... mode=... mtime=... type=..
 
 - `fs.write` creates files with mode `0644`; pass `true` as the third argument
   to append instead of truncating.
-- `fs.read` refuses non-regular files and files larger than 64 MiB.
+- `fs.read` refuses non-regular files; whole-file reads are capped at 64 MiB,
+  use `fs.read(path, offset, size)` for larger files or chunked access.
 - Paths are resolved by the target process, so app-private directories work
   only when the target app can access them. A common pattern is to ask the app
   for its own directory first:

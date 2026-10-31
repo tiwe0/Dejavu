@@ -1,0 +1,60 @@
+# Hook-based DEX unpacking
+
+`./dejavu unpack` captures DEX images **when ART registers them**, instead of
+scanning memory blindly:
+
+1. The agent installs a `dlopen` / `android_dlopen_ext` hook and logs library
+   load events (late `libart.so` loads re-trigger ART hook installation).
+2. It installs ART hooks on `ClassLinker::RegisterDexFile` (and
+   `RegisterDexFileLocked` when present; `DexFile::OpenCommon` when the ROM
+   exposes it) and reconstructs the DEX image from the `DexFile` object.
+3. Images mapped to **file-backed** system/app dex are skipped by default
+   (they can be extracted offline and would slow startup); only anonymous
+   in-memory DEX data is dumped. Set `unpack.include_file_backed(true)` in Lua
+   to include them, at the cost of startup latency / ANR risk.
+
+## Usage
+
+```sh
+# Persist the output directory in a system property and restart the target so
+# the agent enables capture during process startup (before app code runs).
+./dejavu unpack -p com.android.settings \
+    --out /data/user_de/0/com.android.settings/files/dejavu-unpack
+
+./dejavu unpack -p com.android.settings --status
+./dejavu unpack -p com.android.settings --disable   # also clears the property
+```
+
+Dumped files land in the device directory together with `manifest`/status
+information; pull them as root:
+
+```sh
+adb shell su -c 'cp -r /data/user_de/0/com.android.settings/files/dejavu-unpack /sdcard/Download/'
+adb pull /sdcard/Download/dejavu-unpack ./dejavu-unpack
+```
+
+Advanced Lua control (same process):
+
+```lua
+unpack.enable('/data/user_de/0/com.android.settings/files/dejavu-unpack')
+unpack.include_file_backed(true)   -- include file-backed dex too
+unpack.status()
+unpack.dump_memory(address, size, 'label')  -- raw dump for manual captures
+unpack.disable()
+```
+
+## Notes / limits
+
+- Hook installation happens in the Agent's early initialization phase
+  (`debug.dejavu.unpack.dir` property), i.e. before the app's own dex files are
+  registered. This is what makes early packer loads observable.
+- Android 15: `DexFile::OpenCommon` may be absent from the stripped `libart.so`;
+  `RegisterDexFile`/`RegisterDexFileLocked` are used instead. ART passes tagged
+  pointers (top byte `0xb4`), so the agent clears the top byte before reading
+  `DexFile` fields.
+- Only supported on arm64, API 26-35, same trust model as hooks: a wrong
+  symbol/signature or dumping while the app is highly loaded can crash or ANR
+  the target. Use on your own apps / research devices.
+- VMP-style or lazy/decrypt-on-demand packers still need class-loading
+  traversal and per-load triggers; this tool is the observable DEX-registration
+  capture layer, not a universal unpacker.

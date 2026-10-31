@@ -65,6 +65,7 @@ add_library(dejavu_agent SHARED
     src/native_hook_manager.cpp
     src/java_invoker.cpp
     src/agent_helpers.cpp
+    src/unpack_manager.cpp
 )
 
 add_library(dejavu_zygisk SHARED

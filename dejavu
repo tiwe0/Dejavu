@@ -587,6 +587,46 @@ def command_java(args: argparse.Namespace) -> int:
     fail(f"unsupported java action: {action}")
 
 
+def command_unpack(args: argparse.Namespace) -> int:
+    process = args.process
+    if args.status:
+        return exec_inline(args, process, "return unpack.status()")
+    if args.disable:
+        code = (
+            "local ok = pcall(unpack.disable); "
+            "return tostring(ok) .. ' ' .. tostring(unpack.status())"
+        )
+        exec_inline(args, process, code)
+        try:
+            root_shell(args, "setprop debug.dejavu.unpack.dir ''")
+        except CliError:
+            pass
+        print("unpack hooks disabled; system property cleared")
+        return 0
+    if not args.out:
+        fail("unpack requires --out <device-directory> (or use --status/--disable)")
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", args.out):
+        fail("--out may only contain letters, digits, '_', '.', '/' and '-'")
+    root_shell(args, f"setprop debug.dejavu.unpack.dir {shlex.quote(args.out)}")
+    if args.no_restart:
+        code = f"return unpack.enable({lua_quote(args.out)})"
+        result = exec_inline(args, process, code)
+    else:
+        print(f"enabling hook unpacking for {process} -> {args.out}")
+        restart_target(args, process, None)
+        time.sleep(3)
+        code = "return unpack.status()"
+        result = exec_inline(args, process, code)
+        if result != 0:
+            time.sleep(3)
+            result = exec_inline(args, process, code)
+    if result == 0:
+        print(f"dump directory: {args.out}")
+        print("pull results after the target loads its dex files, e.g.:")
+        print(f"  adb shell su -c 'cp -r {args.out} /sdcard/Download/'")
+    return result
+
+
 def command_log(args: argparse.Namespace) -> int:
     require_device(args)
     if args.clear:
@@ -637,6 +677,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
+            "  ./dejavu unpack -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-unpack\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),
@@ -771,6 +812,18 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser = java_actions.add_parser("release", help="release a Java object handle")
     release_parser.add_argument("handle", type=int)
     release_parser.set_defaults(func=command_java)
+
+    sub = subparsers.add_parser("unpack", help="hook-based DEX unpacking")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument("--out", help="device-writable output directory (persisted via property)")
+    sub.add_argument("--status", action="store_true", help="show current unpack status")
+    sub.add_argument("--disable", action="store_true", help="disable unpacking and clear the property")
+    sub.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="enable hooks in the running process instead of restarting it",
+    )
+    sub.set_defaults(func=command_unpack)
 
     sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
     sub.add_argument("-p", "--process", help="only show lines mentioning this process")

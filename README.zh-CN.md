@@ -32,7 +32,9 @@ API 与限制见 `zygisk/docs/native-hook-api.md`。
 控制会话还提供 agent helper：`fs.read/write/exists/remove/list/stat` 用于
 目标进程沙箱内的文件读写；`module.load/unload/loaded/symbols/resolve` 用于
 加载 so、枚举 ELF 符号和解析隐藏（`LOCAL`）符号；`native.call` /
-`native.install` 在导出符号查找失败时会回退 ELF 符号表。内存 helper
+`native.install` 在导出符号查找失败时会回退 ELF 符号表。`unpack` helper 提供
+hook 型脱壳路径（dlopen + ART RegisterDexFile/OpenCommon hook，默认过滤
+file-backed dex；见 `tools/unpack/README.md`）。内存 helper
 （`mem.read/write`、类型化 `read_u*/write_u*`、`mem.dump`、`mem.query`、
 `mem.protect`、`mem.maps`）提供带映射校验的目标地址空间访问。详见
 `zygisk/docs/agent-helpers.md`。
@@ -174,6 +176,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu java -p <进程> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <进程> release <handle>
+./dejavu unpack -p <进程> --out <设备目录>   # hook 型 DEX dump
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
 ./dejavu log [-p <进程>] [--dump] [--clear]

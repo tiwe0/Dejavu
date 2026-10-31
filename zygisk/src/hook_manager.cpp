@@ -389,6 +389,11 @@ bool HookManager::initialize(JNIEnv *env, JavaVM *vm, const DejavuLsplantBackend
     if (!dejavu_hook_api_initialize(env, &impl_->hook_jni_api, error)) {
         return false;
     }
+    impl_->unpack = std::make_unique<UnpackManager>();
+    if (!impl_->unpack->initialize(impl_->runtime, error)) {
+        return false;
+    }
+    impl_->unpack->enable_from_system_property();
     g_manager = this;
     return true;
 }
@@ -482,6 +487,9 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
         return false;
     }
     if (!impl_->helpers->register_lua(impl_->session, error)) {
+        return false;
+    }
+    if (impl_->unpack != nullptr && !impl_->unpack->register_lua(impl_->session, error)) {
         return false;
     }
     dejavu_value result = {};

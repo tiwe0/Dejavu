@@ -35,7 +35,9 @@ The control session also exposes agent helpers: `fs.read/write/exists/remove/
 list/stat` for files in the target sandbox, and `module.load/unload/loaded/
 symbols/resolve` for loading shared libraries, enumerating ELF symbols and
 resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
-to the ELF symbol table for non-exported symbols. Memory helpers
+to the ELF symbol table for non-exported symbols. The `unpack` helper provides a
+hook-based DEX unpacking path (dlopen + ART RegisterDexFile/OpenCommon hooks,
+file-backed dex filtered by default; see `tools/unpack/README.md`). Memory helpers
 (`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
 `mem.protect`, `mem.maps`) provide guarded access to the target address space.
 See `zygisk/docs/agent-helpers.md`.
@@ -178,6 +180,7 @@ control channel into one command:
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>
+./dejavu unpack -p <process> --out <device-dir>   # hook-based DEX dumping
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]

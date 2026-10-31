@@ -247,7 +247,7 @@ int64 可传给后续 `native.call`/`java.invoke`。注意 handle 释放后失�
 ### 4.4 Agent helper（文件 / 模块符号）
 
 ```lua
-fs.read(path); fs.write(path, data[, append]); fs.exists(path)
+fs.read(path[, offset, size]); fs.write(path, data[, append]); fs.exists(path)
 fs.remove(path); fs.list(dir); fs.stat(path)
 
 local id = module.load('libz.so')          -- dlopen, 返回 id
@@ -273,6 +273,24 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
   hex+ASCII（默认 16 字节/行）；`mem.protect` 修改页权限并返回旧权限，
   创建 W+X 或改代码页可能被 SELinux 拒绝，属于危险操作。
 - 完整说明见 `zygisk/docs/agent-helpers.md`。
+
+### 4.5 Hook 脱壳（dlopen → RegisterDexFile/OpenCommon）
+
+```sh
+./dejavu unpack -p <进程> --out /data/user_de/0/<pkg>/files/dejavu-unpack
+./dejavu unpack -p <进程> --status
+./dejavu unpack -p <进程> --disable
+```
+
+- CLI 通过 root 设置 `debug.dejavu.unpack.dir` 并重启目标，Agent 在早期初始化
+  读取属性后自动 `unpack.enable(dir)`：先装 `dlopen`/`android_dlopen_ext`
+  hook，再装 ART `ClassLinker::RegisterDexFile`（及 Locked / OpenCommon）。
+- hook 从 `DexFile` 对象重建内存 DEX 并写文件；ART 指针带 top-byte tag，访问
+  前统一清除。默认跳过 file-backed 系统 dex（避免启动 ANR），只 dump 匿名内存
+  中的解密 DEX；`unpack.include_file_backed(true)` 可放开过滤。
+- 已验证：手工 `DexClassLoader` 加载 30MB DEX，dump 与源文件逐字节一致；
+  Settings 自动捕获启动流程，默认过滤下稳定。
+- 详见 `zygisk/docs/unpack-guide.md` 与 `tools/unpack/README.md`。
 
 ### 5. hookx 高层封装（推荐）
 
@@ -327,6 +345,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 - `zygisk/docs/native-hook-api.md` — native 函数 hook/call API 与限制
 - `zygisk/docs/java-invoke-api.md` — Java 主动调用与类型转换协议
 - `zygisk/docs/agent-helpers.md` — 文件读写、加载 SO、符号枚举/解析
+- `zygisk/docs/unpack-guide.md` — hook 脱壳方案（dlopen/RegisterDexFile）
 - `zygisk/docs/cookbook.md` — hookx 常见任务
 - `zygisk/scripts/device-test.sh` — 自动化真机验收
 - `patches/README.md` — TinyCC 维护补丁说明

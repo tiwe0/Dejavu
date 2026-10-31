@@ -337,11 +337,30 @@ bool AgentHelpers::library_path(long long id, std::string *path, std::string *er
 int AgentHelpers::lua_fs_read(dejavu_control_session *, void *, const dejavu_value *arguments,
                               size_t argument_count, dejavu_value *result, char *error,
                               size_t error_size) {
-    if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_STRING) {
-        copy_error(error, error_size, "fs.read expects a path");
+    if (argument_count < 1 || argument_count > 3 || arguments[0].type != DEJAVU_VALUE_STRING ||
+        (argument_count >= 2 && arguments[1].type != DEJAVU_VALUE_INTEGER) ||
+        (argument_count == 3 && arguments[2].type != DEJAVU_VALUE_INTEGER)) {
+        copy_error(error, error_size, "fs.read expects path and optional offset/size integers");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const std::string path = value_string(arguments[0]);
+    unsigned long long file_offset = 0;
+    unsigned long long read_size = 0;
+    if (argument_count >= 2) {
+        if (arguments[1].integer_value < 0) {
+            copy_error(error, error_size, "fs.read offset must not be negative");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        file_offset = static_cast<unsigned long long>(arguments[1].integer_value);
+    }
+    if (argument_count == 3) {
+        if (arguments[2].integer_value <= 0 ||
+            static_cast<unsigned long long>(arguments[2].integer_value) > kMaximumReadSize) {
+            copy_error(error, error_size, "fs.read size must be between 1 and 64 MiB");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        read_size = static_cast<unsigned long long>(arguments[2].integer_value);
+    }
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         copy_error(error, error_size, errno_message("open", path));
@@ -353,12 +372,25 @@ int AgentHelpers::lua_fs_read(dejavu_control_session *, void *, const dejavu_val
         copy_error(error, error_size, "not a regular file: " + path);
         return DEJAVU_ERROR_LUA_EXECUTE;
     }
-    if (static_cast<unsigned long long>(status.st_size) > kMaximumReadSize) {
+    const unsigned long long file_size = static_cast<unsigned long long>(status.st_size);
+    if (argument_count == 1) {
+        if (file_size > kMaximumReadSize) {
+            close(fd);
+            copy_error(error, error_size, "file exceeds 64 MiB; pass offset and size to fs.read");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        read_size = file_size;
+    } else if (file_offset > file_size || read_size > file_size - file_offset) {
         close(fd);
-        copy_error(error, error_size, "file is too large to read: " + path);
+        copy_error(error, error_size, "fs.read range is outside the file");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (lseek(fd, static_cast<off_t>(file_offset), SEEK_SET) < 0) {
+        close(fd);
+        copy_error(error, error_size, errno_message("lseek", path));
         return DEJAVU_ERROR_LUA_EXECUTE;
     }
-    std::string content(static_cast<size_t>(status.st_size), '\0');
+    std::string content(static_cast<size_t>(read_size), '\0');
     size_t offset = 0;
     while (offset < content.size()) {
         const ssize_t count = read(fd, content.data() + offset, content.size() - offset);
