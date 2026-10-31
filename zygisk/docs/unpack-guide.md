@@ -42,6 +42,33 @@
 - 输出目录示例：
   `/data/user_de/0/com.android.settings/files/dejavu-unpack`。
 
+## FART 抽取壳（ArtMethod::Invoke sentinel）
+
+`unpack.hook_invoke()` 通过 Dobby hook `art::ArtMethod::Invoke`：
+
+```text
+签名: _ZN3art9ArtMethod6InvokeEPNS_6ThreadEPjjPNS_6JValueEPKc
+      (Thread* self, uint32_t* args, uint32_t args_size, JValue* result, const char* shorty)
+```
+
+- 主动调用：反射拿到 `Method`，`JNIEnv::FromReflectedMethod()` 得到 `jmethodID`
+  （即 `ArtMethod*`），然后直接以 `thread = nullptr` 调用被 hook 的
+  `ArtMethod::Invoke`。
+- hook 命中 `thread == nullptr`：记录 sentinel 命中、把结果清零并**直接返回**，
+  不执行原方法；因此抽取壳中 CodeItem 未恢复的方法不会真正触发崩溃。
+- 每批主动调用结束后，对已发现的 DexFile 镜像重新 dump 为
+  `active_revision_*.dex`，捕获被还原到内存的 CodeItem。
+- 设备验证：`java.lang.Object,java.lang.StringBuilder` 共 104 次 null-thread
+  调用全部命中、0 错误、目标进程存活、普通 JNI 调用不受影响；第二次主动调用
+  在已有 DexFile 镜像时生成 3 个 `active_revision_*.dex`。
+- 从 dumped dex 批量触发：
+
+```sh
+./dejavu unpack -p <进程> --active-invoke-dex <设备dex路径> [--class-filter 前缀]
+```
+
+当前类枚举来自调用方提供的类名列表/dumped DEX；后续可接 DexFile 类列表自动枚举。
+
 ## 限制与后续
 
 - 仅 arm64、API 26-35；符号/ABI 随 ROM 变化，需要真机验证。

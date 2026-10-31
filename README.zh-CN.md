@@ -177,6 +177,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <进程> release <handle>
 ./dejavu unpack -p <进程> --out <设备目录>   # hook 型 DEX dump
+./dejavu unpack -p <进程> --active-invoke-dex <dex>  # FART 主动调用
 ./dejavu repl -p <进程>
 ./dejavu watch hooks/demo.lua -p <进程>
 ./dejavu log [-p <进程>] [--dump] [--clear]

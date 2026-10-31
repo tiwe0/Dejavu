@@ -20,6 +20,16 @@
 
 #include "art_elf_resolver.h"
 
+extern "C" void dejavu_unpack_invoke_with_arg_array(void *soa, void *method, void *argument_array,
+                                                    void *result, const char *error_message);
+extern "C" jvalue dejavu_unpack_invoke_with_jvalues(void *soa, jobject receiver, void *method,
+                                                    const jvalue *arguments);
+extern "C" void dejavu_unpack_art_method_invoke(void *method, void *thread, uint32_t *args,
+                                                uint32_t args_size, void *result,
+                                                const char *shorty);
+extern "C" jvalue dejavu_unpack_invoke_with_varargs(void *soa, jobject receiver, void *method,
+                                                    const void *arguments);
+
 namespace {
 
 constexpr char kLogTag[] = "DejavuUnpack";
@@ -40,7 +50,13 @@ void *g_android_dlopen_ext_original = nullptr;
 void *g_register_dexfile_original = nullptr;
 void *g_register_dexfile_locked_original = nullptr;
 void *g_opencommon_original = nullptr;
+void *g_invoke_with_arg_array_original = nullptr;
+void *g_invoke_with_jvalues_original = nullptr;
+void *g_art_method_invoke_target = nullptr;
+void *g_art_method_invoke_original = nullptr;
+void *g_invoke_with_varargs_original = nullptr;
 thread_local bool g_inside_dlopen_hook = false;
+thread_local bool g_active_invoke = false;
 
 struct MemoryMapping {
     uintptr_t start = 0;
@@ -252,12 +268,13 @@ UnpackManager *UnpackManager::instance() {
     return instance_;
 }
 
-bool UnpackManager::initialize(DejavuRuntime *runtime, std::string *error) {
-    if (runtime == nullptr) {
+bool UnpackManager::initialize(DejavuRuntime *runtime, JavaVM *vm, std::string *error) {
+    if (runtime == nullptr || vm == nullptr) {
         *error = "invalid unpack manager initialization argument";
         return false;
     }
     runtime_ = runtime;
+    vm_ = vm;
     instance_ = this;
     g_unpack = this;
     return true;
@@ -290,6 +307,8 @@ bool UnpackManager::register_lua(dejavu_control_session *session, std::string *e
         {"install_art_hooks", UnpackManager::lua_install_art_hooks},
         {"dump_memory", UnpackManager::lua_dump_memory},
         {"include_file_backed", UnpackManager::lua_include_file_backed},
+        {"hook_invoke", UnpackManager::lua_hook_invoke},
+        {"active_invoke", UnpackManager::lua_active_invoke},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -506,6 +525,19 @@ void UnpackManager::on_register_dex_file(void *dex_file) {
         if (!looks_like_dex(header, sizeof(header), &image_size)) {
             continue;
         }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            bool known = false;
+            for (const Image &image : images_) {
+                if (image.begin == begin) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                images_.push_back(Image{begin, image_size});
+            }
+        }
         if (!include_file_backed_.load() && is_file_backed(begin)) {
             ++skipped_file_backed_;
             continue;
@@ -652,6 +684,13 @@ std::string UnpackManager::status() const {
     output += " dumped=" + std::to_string(dumped_count_);
     output += " skipped_file_backed=" + std::to_string(skipped_file_backed_);
     output += " include_file_backed=" + std::string(include_file_backed_.load() ? "yes" : "no");
+    output += " invoke_hooked=" + std::string(invoke_hooked_ ? "yes" : "no");
+    char invoke_buffer[96];
+    snprintf(invoke_buffer, sizeof(invoke_buffer), " invoke=0x%lx",
+             static_cast<unsigned long>(invoke_address_));
+    output += invoke_buffer;
+    output += " active_invoke_hits=" + std::to_string(active_invoke_hits_.load());
+    output += " revision_dumps=" + std::to_string(revision_dumps_);
     return output;
 }
 
@@ -861,5 +900,405 @@ int UnpackManager::lua_include_file_backed(dejavu_control_session *, void *conte
     manager->include_file_backed_.store(arguments[0].boolean_value != 0);
     result->type = DEJAVU_VALUE_BOOLEAN;
     result->boolean_value = 1;
+    return DEJAVU_OK;
+}
+
+JNIEnv *UnpackManager::current_env() {
+    if (vm_ == nullptr) {
+        return nullptr;
+    }
+    JNIEnv *env = nullptr;
+    const jint status = vm_->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    if (status == JNI_OK) {
+        return env;
+    }
+    if (status == JNI_EDETACHED && vm_->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+        return env;
+    }
+    return nullptr;
+}
+
+void UnpackManager::on_active_invoke() {
+    active_invoke_hits_.fetch_add(1);
+}
+
+void UnpackManager::set_app_class_loader(JNIEnv *env, jobject loader) {
+    if (env == nullptr || loader == nullptr) {
+        return;
+    }
+    if (app_class_loader_ != nullptr) {
+        env->DeleteGlobalRef(app_class_loader_);
+    }
+    app_class_loader_ = env->NewGlobalRef(loader);
+}
+
+bool UnpackManager::hook_invoke(std::string *error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (invoke_hooked_) {
+        return true;
+    }
+    ArtElfResolver resolver;
+    std::string resolver_error;
+    if (!resolver.open_loaded("libart.so", &resolver_error)) {
+        *error = "unable to inspect libart.so: " + resolver_error;
+        return false;
+    }
+    std::vector<ArtElfSymbol> symbols;
+    if (!resolver.enumerate_symbols(&symbols, &resolver_error)) {
+        *error = "unable to enumerate libart symbols: " + resolver_error;
+        return false;
+    }
+    unsigned long long art_method_address = 0;
+    std::string art_method_name;
+    for (const ArtElfSymbol &symbol : symbols) {
+        if (symbol.name.find("ArtMethod6Invoke") != std::string::npos) {
+            art_method_address = symbol.address;
+            art_method_name = symbol.name;
+            break;
+        }
+    }
+    std::string hook_error;
+    bool installed = false;
+    if (art_method_address != 0) {
+        if (hook_function(reinterpret_cast<void *>(art_method_address),
+                          reinterpret_cast<void *>(dejavu_unpack_art_method_invoke),
+                          &g_art_method_invoke_original, &hook_error)) {
+            g_art_method_invoke_target = reinterpret_cast<void *>(art_method_address);
+            invoke_address_ = static_cast<unsigned long>(art_method_address);
+            invoke_hooked_ = true;
+            LOGD("ArtMethod::Invoke hook installed: %s @0x%llx", art_method_name.c_str(),
+                 art_method_address);
+            return true;
+        }
+        LOGE("ArtMethod::Invoke hook failed: %s", hook_error.c_str());
+    }
+    unsigned long long jvalues_address = 0;
+    unsigned long long varargs_address = 0;
+    unsigned long long argarray_address = 0;
+    std::string varargs_name;
+    std::string jvalues_name;
+    std::string argarray_name;
+    for (const ArtElfSymbol &symbol : symbols) {
+        if (jvalues_address == 0 && symbol.name.find("InvokeWithJValues") != std::string::npos) {
+            jvalues_address = symbol.address;
+            jvalues_name = symbol.name;
+        }
+        if (varargs_address == 0 && symbol.name.find("InvokeWithVarArgs") != std::string::npos) {
+            varargs_address = symbol.address;
+            varargs_name = symbol.name;
+        }
+        if (argarray_address == 0 && symbol.name.find("InvokeWithArgArray") != std::string::npos) {
+            argarray_address = symbol.address;
+            argarray_name = symbol.name;
+        }
+    }
+    if (jvalues_address != 0) {
+        if (hook_function(reinterpret_cast<void *>(jvalues_address),
+                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_jvalues),
+                          &g_invoke_with_jvalues_original, &hook_error)) {
+            invoke_address_ = static_cast<unsigned long>(jvalues_address);
+            installed = true;
+            LOGD("InvokeWithJValues hook installed: %s @0x%llx", jvalues_name.c_str(),
+                 jvalues_address);
+        } else {
+            LOGE("InvokeWithJValues hook failed: %s", hook_error.c_str());
+        }
+    }
+    if (varargs_address != 0) {
+        if (hook_function(reinterpret_cast<void *>(varargs_address),
+                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_varargs),
+                          &g_invoke_with_varargs_original, &hook_error)) {
+            if (!installed) {
+                invoke_address_ = static_cast<unsigned long>(varargs_address);
+                installed = true;
+            }
+            LOGD("InvokeWithVarArgs hook installed: %s @0x%llx", varargs_name.c_str(),
+                 varargs_address);
+        } else {
+            LOGE("InvokeWithVarArgs hook failed: %s", hook_error.c_str());
+        }
+    }
+    if (argarray_address != 0) {
+        if (hook_function(reinterpret_cast<void *>(argarray_address),
+                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_arg_array),
+                          &g_invoke_with_arg_array_original, &hook_error)) {
+            if (!installed) {
+                invoke_address_ = static_cast<unsigned long>(argarray_address);
+                installed = true;
+            }
+            LOGD("InvokeWithArgArray hook installed: %s @0x%llx", argarray_name.c_str(),
+                 argarray_address);
+        } else {
+            LOGE("InvokeWithArgArray hook failed: %s", hook_error.c_str());
+        }
+    }
+    if (!installed) {
+        *error = "no InvokeWithJValues/InvokeWithArgArray symbol found in libart.so";
+        return false;
+    }
+    invoke_hooked_ = true;
+    return true;
+}
+
+bool UnpackManager::dump_discovered_revision(std::string *error) {
+    std::vector<Image> images;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        images = images_;
+    }
+    if (images.empty()) {
+        *error = "no DexFile images were observed yet";
+        return false;
+    }
+    bool dumped_any = false;
+    for (const Image &image : images) {
+        if (!include_file_backed_.load() && is_file_backed(image.begin)) {
+            continue;
+        }
+        if (dump_dex(image.begin, image.size, "active_revision")) {
+            ++revision_dumps_;
+            dumped_any = true;
+        }
+    }
+    if (!dumped_any) {
+        *error = "no new revision was produced";
+        return false;
+    }
+    return true;
+}
+
+bool UnpackManager::active_invoke(const std::string &class_names, std::string *stats,
+                                  std::string *error) {
+    if (!invoke_hooked_ || g_art_method_invoke_target == nullptr) {
+        *error = "call unpack.hook_invoke() (ArtMethod::Invoke) before active_invoke()";
+        return false;
+    }
+    std::vector<std::string> names;
+    std::string current;
+    for (char character : class_names) {
+        if (character == ',' || character == ';' || character == '\n' || character == ' ') {
+            if (!current.empty()) {
+                names.push_back(current);
+                current.clear();
+            }
+        } else {
+            current.push_back(character);
+        }
+    }
+    if (!current.empty()) {
+        names.push_back(current);
+    }
+    if (names.empty()) {
+        *error = "unpack.active_invoke expects a comma-separated class name list";
+        return false;
+    }
+    JNIEnv *env = current_env();
+    if (env == nullptr) {
+        *error = "Java thread is not attached";
+        return false;
+    }
+    jclass class_class = env->FindClass("java/lang/Class");
+    jclass method_class = env->FindClass("java/lang/reflect/Method");
+    if (class_class == nullptr || method_class == nullptr) {
+        env->ExceptionClear();
+        *error = "unable to resolve reflection classes";
+        return false;
+    }
+    const jmethodID class_for_name = env->GetStaticMethodID(
+        class_class, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+    const jmethodID class_get_methods =
+        env->GetMethodID(class_class, "getDeclaredMethods", "()[Ljava/lang/reflect/Method;");
+    if (class_for_name == nullptr || class_get_methods == nullptr) {
+        env->ExceptionClear();
+        *error = "unable to resolve reflection methods";
+        return false;
+    }
+    using InvokeFunction = void (*)(void *, void *, uint32_t *, uint32_t, void *, const char *);
+    auto invoke = reinterpret_cast<InvokeFunction>(g_art_method_invoke_target);
+    unsigned long long found_classes = 0;
+    unsigned long long invoked = 0;
+    unsigned long long skipped_methods = 0;
+    unsigned long long errors = 0;
+    for (const std::string &name : names) {
+        jstring class_name = env->NewStringUTF(name.c_str());
+        if (class_name == nullptr) {
+            env->ExceptionClear();
+            continue;
+        }
+        jclass clazz = static_cast<jclass>(env->CallStaticObjectMethod(
+            class_class, class_for_name, class_name, JNI_FALSE, app_class_loader_));
+        env->DeleteLocalRef(class_name);
+        if (env->ExceptionCheck() || clazz == nullptr) {
+            env->ExceptionClear();
+            continue;
+        }
+        ++found_classes;
+        jobjectArray methods =
+            static_cast<jobjectArray>(env->CallObjectMethod(clazz, class_get_methods));
+        if (env->ExceptionCheck() || methods == nullptr) {
+            env->ExceptionClear();
+            env->DeleteLocalRef(clazz);
+            continue;
+        }
+        const jsize method_count = env->GetArrayLength(methods);
+        for (jsize method_index = 0; method_index < method_count; ++method_index) {
+            jobject method = env->GetObjectArrayElement(methods, method_index);
+            if (method == nullptr) {
+                continue;
+            }
+            jmethodID method_id = env->FromReflectedMethod(method);
+            if (method_id == nullptr) {
+                ++skipped_methods;
+                env->DeleteLocalRef(method);
+                continue;
+            }
+            // Sentinel call: thread == nullptr is intercepted by the ArtMethod::Invoke hook.
+            jvalue result_value = {};
+            invoke(method_id, nullptr, nullptr, 0, &result_value, nullptr);
+            ++invoked;
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                ++errors;
+            }
+            env->DeleteLocalRef(method);
+        }
+        env->DeleteLocalRef(methods);
+        env->DeleteLocalRef(clazz);
+    }
+    std::string revision_error;
+    const bool dumped = dump_discovered_revision(&revision_error);
+    env->DeleteLocalRef(method_class);
+    env->DeleteLocalRef(class_class);
+    char summary[512];
+    snprintf(summary, sizeof(summary),
+             "requested_classes=%zu found_classes=%llu sentinel_invoke_calls=%llu "
+             "skipped_methods=%llu errors=%llu sentinel_hits=%llu revision_dumps=%llu "
+             "revision_dump_ok=%d",
+             names.size(), found_classes, invoked, skipped_methods, errors,
+             active_invoke_hits_.load(), revision_dumps_, dumped ? 1 : 0);
+    *stats = summary;
+    return true;
+}
+
+extern "C" void dejavu_unpack_art_method_invoke(void *method, void *thread, uint32_t *args,
+                                                uint32_t args_size, void *result,
+                                                const char *shorty) {
+    if (thread == nullptr) {
+        if (g_unpack != nullptr) {
+            g_unpack->on_active_invoke();
+        }
+        if (result != nullptr) {
+            memset(result, 0, sizeof(jvalue));
+        }
+        return;
+    }
+    using Function = void (*)(void *, void *, uint32_t *, uint32_t, void *, const char *);
+    reinterpret_cast<Function>(g_art_method_invoke_original)(method, thread, args, args_size,
+                                                             result, shorty);
+}
+
+extern "C" jvalue dejavu_unpack_invoke_with_jvalues(void *soa, jobject receiver, void *method,
+                                                    const jvalue *arguments) {
+    if (g_active_invoke) {
+        if (g_unpack != nullptr) {
+            g_unpack->on_active_invoke();
+        }
+        jvalue zero = {};
+        return zero;
+    }
+    using Function = jvalue (*)(void *, jobject, void *, const jvalue *);
+    return reinterpret_cast<Function>(g_invoke_with_jvalues_original)(soa, receiver, method,
+                                                                      arguments);
+}
+
+extern "C" jvalue dejavu_unpack_invoke_with_varargs(void *soa, jobject receiver, void *method,
+                                                    const void *arguments) {
+    if (g_active_invoke) {
+        if (g_unpack != nullptr) {
+            g_unpack->on_active_invoke();
+        }
+        jvalue zero = {};
+        return zero;
+    }
+    using Function = jvalue (*)(void *, jobject, void *, const void *);
+    return reinterpret_cast<Function>(g_invoke_with_varargs_original)(soa, receiver, method,
+                                                                      arguments);
+}
+
+extern "C" void dejavu_unpack_invoke_with_arg_array(void *soa, void *method, void *argument_array,
+                                                    void *result, const char *error_message) {
+    if (g_active_invoke) {
+        if (g_unpack != nullptr) {
+            g_unpack->on_active_invoke();
+        }
+        if (result != nullptr) {
+            memset(result, 0, sizeof(jvalue));
+        }
+        return;
+    }
+    using Function = void (*)(void *, void *, void *, void *, const char *);
+    reinterpret_cast<Function>(g_invoke_with_arg_array_original)(soa, method, argument_array,
+                                                                 result, error_message);
+}
+
+int UnpackManager::lua_hook_invoke(dejavu_control_session *, void *context, const dejavu_value *,
+                                   size_t argument_count, dejavu_value *result, char *error,
+                                   size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count != 0) {
+        snprintf(error, error_size, "unpack.hook_invoke takes no arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string message;
+    if (!manager->hook_invoke(&message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    const std::string text = manager->status();
+    char *copy = static_cast<char *>(malloc(text.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, text.data(), text.size());
+    copy[text.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = text.size();
+    return DEJAVU_OK;
+}
+
+int UnpackManager::lua_active_invoke(dejavu_control_session *, void *context,
+                                     const dejavu_value *arguments, size_t argument_count,
+                                     dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count > 1 ||
+        (argument_count == 1 && arguments[0].type != DEJAVU_VALUE_STRING)) {
+        snprintf(error, error_size, "unpack.active_invoke expects an optional class filter");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string filter;
+    if (argument_count == 1 && arguments[0].string_value != nullptr) {
+        filter.assign(arguments[0].string_value, arguments[0].string_size);
+    }
+    std::string stats;
+    std::string message;
+    if (!manager->active_invoke(filter, &stats, &message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    const std::string text = manager->status() + "\n" + stats;
+    char *copy = static_cast<char *>(malloc(text.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate active invoke status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, text.data(), text.size());
+    copy[text.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = text.size();
     return DEJAVU_OK;
 }

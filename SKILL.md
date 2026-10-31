@@ -290,6 +290,11 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
   中的解密 DEX；`unpack.include_file_backed(true)` 可放开过滤。
 - 已验证：手工 `DexClassLoader` 加载 30MB DEX，dump 与源文件逐字节一致；
   Settings 自动捕获启动流程，默认过滤下稳定。
+- FART 抽取壳：`unpack.hook_invoke()` hook `ArtMethod::Invoke`；
+  `unpack.active_invoke('类名1,类名2')` 用反射枚举方法并直接以 `thread=nullptr`
+  调用 `ArtMethod::Invoke`，hook 命中后不执行原方法、只做 revision dump
+  （`active_revision_*.dex`）。`./dejavu unpack --active-invoke-dex <dex>` 可从
+  dumped DEX 提取类名并分批主动调用。
 - 详见 `zygisk/docs/unpack-guide.md` 与 `tools/unpack/README.md`。
 
 ### 5. hookx 高层封装（推荐）
@@ -317,7 +322,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 28 项（含 hang 为 29）
+./dejavu test -p com.android.settings               # 设备验收 29 项（含 hang 为 30）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```

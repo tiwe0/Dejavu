@@ -43,6 +43,33 @@ unpack.dump_memory(address, size, 'label')  -- raw dump for manual captures
 unpack.disable()
 ```
 
+## FART-style extraction (extracting shells)
+
+```lua
+unpack.enable(dir)
+unpack.hook_invoke()                       -- hook ArtMethod::Invoke
+unpack.active_invoke('com.app.A,com.app.B')  -- reflection + null-thread sentinel calls
+```
+
+`active_invoke` resolves each class via the target ClassLoader, enumerates
+declared methods with reflection, obtains the ART method pointer with
+`FromReflectedMethod`, and calls `ArtMethod::Invoke(art_method, nullptr, ...)`.
+The hook detects `thread == nullptr`, records the sentinel hit, zeroes the
+result and returns **without executing the method**, so classes with broken
+code items do not crash the process. After the calls, discovered DexFile images
+are dumped again as `active_revision_*.dex` (code items that were restored in
+memory are captured).
+
+From a dumped DEX file:
+
+```sh
+./dejavu unpack -p <process> --active-invoke-dex <device-dex-path> \
+    --class-filter <optional-name-filter>
+```
+
+The agent-side sentinel was validated on Android 15: 104/104 null-thread calls
+intercepted, no target method executed, and normal JNI reflection still worked.
+
 ## Notes / limits
 
 - Hook installation happens in the Agent's early initialization phase

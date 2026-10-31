@@ -589,6 +589,25 @@ def command_java(args: argparse.Namespace) -> int:
 
 def command_unpack(args: argparse.Namespace) -> int:
     process = args.process
+    if args.active_invoke_dex:
+        helper = REPO_ROOT / "tools" / "unpack" / "active-invoke.lua"
+        if not helper.is_file():
+            fail(f"active invoke helper not found: {helper}")
+        script = helper.read_text(encoding="utf-8")
+        filter_literal = lua_quote(args.class_filter) if args.class_filter else "nil"
+        script += (
+            "\nreturn active_invoke_dex("
+            f"{lua_quote(args.active_invoke_dex)}, {filter_literal})\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
+            handle.write(script)
+            path = Path(handle.name)
+        try:
+            return delegate_dejavuctl(
+                args, ["-p", process, "--timeout", "120", str(path)]
+            )
+        finally:
+            path.unlink(missing_ok=True)
     if args.status:
         return exec_inline(args, process, "return unpack.status()")
     if args.disable:
@@ -817,6 +836,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("-p", "--process", default="bin.mt.plus")
     sub.add_argument("--out", help="device-writable output directory (persisted via property)")
     sub.add_argument("--status", action="store_true", help="show current unpack status")
+    sub.add_argument(
+        "--active-invoke-dex",
+        help="trigger FART-style active invocation for classes in this device dex file",
+    )
+    sub.add_argument("--class-filter", help="only invoke classes whose name contains this text")
     sub.add_argument("--disable", action="store_true", help="disable unpacking and clear the property")
     sub.add_argument(
         "--no-restart",

@@ -181,6 +181,7 @@ control channel into one command:
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>
 ./dejavu unpack -p <process> --out <device-dir>   # hook-based DEX dumping
+./dejavu unpack -p <process> --active-invoke-dex <dex>  # FART-style active calls
 ./dejavu repl -p <process>
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]
