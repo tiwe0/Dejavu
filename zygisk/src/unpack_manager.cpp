@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -282,6 +283,7 @@ bool UnpackManager::initialize(DejavuRuntime *runtime, JavaVM *vm, std::string *
 
 void UnpackManager::shutdown() {
     enabled_.store(false);
+    stop_writer();
     if (g_unpack == this) {
         g_unpack = nullptr;
     }
@@ -309,6 +311,7 @@ bool UnpackManager::register_lua(dejavu_control_session *session, std::string *e
         {"include_file_backed", UnpackManager::lua_include_file_backed},
         {"hook_invoke", UnpackManager::lua_hook_invoke},
         {"active_invoke", UnpackManager::lua_active_invoke},
+        {"flush", UnpackManager::lua_flush},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -337,6 +340,7 @@ bool UnpackManager::enable(const std::string &directory, std::string *error) {
         directory_ = directory;
     }
     enabled_.store(true);
+    start_writer();
     std::string hook_error;
     if (!install_dlopen_hooks(&hook_error)) {
         LOGE("dlopen hook installation failed: %s", hook_error.c_str());
@@ -542,7 +546,7 @@ void UnpackManager::on_register_dex_file(void *dex_file) {
             ++skipped_file_backed_;
             continue;
         }
-        if (dump_dex(begin, image_size, "register_dexfile")) {
+        if (enqueue_dex(begin, image_size, "register_dexfile")) {
             return;
         }
     }
@@ -565,7 +569,7 @@ void UnpackManager::try_dump_pointer(unsigned long long value, const char *label
         ++skipped_file_backed_;
         return;
     }
-    dump_dex(pointer, image_size, label);
+    enqueue_dex(pointer, image_size, label);
 }
 
 bool UnpackManager::dump_dex(unsigned long long address, size_t size, const char *label) {
@@ -681,7 +685,7 @@ std::string UnpackManager::status() const {
     snprintf(buffer, sizeof(buffer), " opencommon=0x%llx",
              static_cast<unsigned long long>(opencommon_address_));
     output += buffer;
-    output += " dumped=" + std::to_string(dumped_count_);
+    output += " dumped=" + std::to_string(dumped_count_ + written_files_);
     output += " skipped_file_backed=" + std::to_string(skipped_file_backed_);
     output += " include_file_backed=" + std::string(include_file_backed_.load() ? "yes" : "no");
     output += " invoke_hooked=" + std::string(invoke_hooked_ ? "yes" : "no");
@@ -691,6 +695,13 @@ std::string UnpackManager::status() const {
     output += invoke_buffer;
     output += " active_invoke_hits=" + std::to_string(active_invoke_hits_.load());
     output += " revision_dumps=" + std::to_string(revision_dumps_);
+    {
+        std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+        output += " pending_files=" + std::to_string(queue_.size());
+        output += " pending_bytes=" + std::to_string(pending_bytes_);
+    }
+    output += " written_files=" + std::to_string(written_files_);
+    output += " dropped_budget=" + std::to_string(dropped_budget_);
     return output;
 }
 
@@ -1055,7 +1066,7 @@ bool UnpackManager::dump_discovered_revision(std::string *error) {
         if (!include_file_backed_.load() && is_file_backed(image.begin)) {
             continue;
         }
-        if (dump_dex(image.begin, image.size, "active_revision")) {
+        if (enqueue_dex(image.begin, image.size, "active_revision")) {
             ++revision_dumps_;
             dumped_any = true;
         }
@@ -1292,6 +1303,191 @@ int UnpackManager::lua_active_invoke(dejavu_control_session *, void *context,
     char *copy = static_cast<char *>(malloc(text.size() + 1));
     if (copy == nullptr) {
         snprintf(error, error_size, "unable to allocate active invoke status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, text.data(), text.size());
+    copy[text.size()] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = text.size();
+    return DEJAVU_OK;
+}
+
+void UnpackManager::start_writer() {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (writer_.joinable()) {
+        return;
+    }
+    writer_stop_ = false;
+    writer_ = std::thread([this]() { writer_loop(); });
+}
+
+void UnpackManager::stop_writer() {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        writer_stop_ = true;
+    }
+    queue_cv_.notify_all();
+    if (writer_.joinable()) {
+        writer_.join();
+    }
+}
+
+void UnpackManager::writer_loop() {
+    for (;;) {
+        PendingDump pending;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this]() { return writer_stop_ || !queue_.empty(); });
+            if (queue_.empty() && writer_stop_) {
+                break;
+            }
+            if (queue_.empty()) {
+                continue;
+            }
+            pending = std::move(queue_.front());
+            queue_.pop_front();
+            pending_bytes_ -= pending.data.size();
+            writer_writing_ = true;
+        }
+        std::string directory;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            directory = directory_;
+        }
+        bool ok = false;
+        if (!directory.empty()) {
+            const unsigned long long sequence = sequence_++;
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s/%s_%03llu.%s", directory.c_str(),
+                     pending.label.c_str(), sequence, pending.extension.c_str());
+            const int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            if (fd >= 0) {
+                size_t offset = 0;
+                ok = true;
+                while (offset < pending.data.size()) {
+                    const ssize_t written =
+                        write(fd, pending.data.data() + offset, pending.data.size() - offset);
+                    if (written < 0 && errno == EINTR) {
+                        continue;
+                    }
+                    if (written <= 0) {
+                        ok = false;
+                        break;
+                    }
+                    offset += static_cast<size_t>(written);
+                }
+                close(fd);
+                if (!ok) {
+                    LOGE("deferred dump write failed for %s", filename);
+                }
+            } else {
+                LOGE("unable to create deferred dump %s: %s", filename, strerror(errno));
+            }
+        }
+        if (ok) {
+            ++written_files_;
+        }
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            writer_writing_ = false;
+        }
+        queue_cv_.notify_all();
+        if (!pending.data.empty()) {
+            usleep(20 * 1000);
+        }
+    }
+}
+
+bool UnpackManager::enqueue_dex(unsigned long long address, size_t size, const char *label) {
+    if (address == 0 || size < 0x70 || size > kMaximumDumpSize) {
+        return false;
+    }
+    const uintptr_t pointer = normalize_address(static_cast<uintptr_t>(address));
+    unsigned char header[0x40] = {};
+    if (!safe_read(pointer, header, sizeof(header))) {
+        return false;
+    }
+    size_t image_size = 0;
+    if (!looks_like_dex(header, sizeof(header), &image_size)) {
+        return false;
+    }
+    if (size < image_size) {
+        image_size = size;
+    }
+    std::vector<unsigned char> buffer(image_size);
+    if (!safe_read(pointer, buffer.data(), buffer.size())) {
+        return false;
+    }
+    if (!looks_like_dex(buffer.data(), buffer.size(), &image_size)) {
+        return false;
+    }
+    char key[96];
+    snprintf(key, sizeof(key), "%s:%zu:%02x%02x%02x%02x%02x%02x%02x%02x",
+             label != nullptr ? label : "memory", buffer.size(),
+             buffer.size() > 12 ? buffer[12] : 0, buffer.size() > 13 ? buffer[13] : 0,
+             buffer.size() > 14 ? buffer[14] : 0, buffer.size() > 15 ? buffer[15] : 0,
+             buffer.size() > 16 ? buffer[16] : 0, buffer.size() > 17 ? buffer[17] : 0,
+             buffer.size() > 18 ? buffer[18] : 0, buffer.size() > 19 ? buffer[19] : 0);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!dumped_keys_.insert(key).second || directory_.empty()) {
+            return false;
+        }
+    }
+    PendingDump pending;
+    pending.label = label != nullptr ? label : "memory";
+    pending.extension =
+        buffer.size() >= 7 && memcmp(buffer.data(), kCdexMagic, 7) == 0 ? "cdex" : "dex";
+    pending.data = std::move(buffer);
+    const size_t pending_size = pending.data.size();
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (pending_bytes_ + pending_size > max_pending_bytes_) {
+            ++dropped_budget_;
+            return false;
+        }
+        pending_bytes_ += pending_size;
+        queue_.push_back(std::move(pending));
+    }
+    queue_cv_.notify_one();
+    return true;
+}
+
+bool UnpackManager::flush(unsigned long long timeout_ms, std::string *error) {
+    std::unique_lock<std::mutex> lock(queue_mutex_);
+    const bool done = queue_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                         [this]() { return queue_.empty() && !writer_writing_; });
+    if (!done) {
+        *error = "timed out waiting for deferred dumps to be written";
+        return false;
+    }
+    return true;
+}
+
+int UnpackManager::lua_flush(dejavu_control_session *, void *context, const dejavu_value *arguments,
+                             size_t argument_count, dejavu_value *result, char *error,
+                             size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (manager == nullptr || argument_count > 1 ||
+        (argument_count == 1 && arguments[0].type != DEJAVU_VALUE_INTEGER)) {
+        snprintf(error, error_size, "unpack.flush expects an optional timeout in milliseconds");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    unsigned long long timeout = 120000;
+    if (argument_count == 1 && arguments[0].integer_value > 0) {
+        timeout = static_cast<unsigned long long>(arguments[0].integer_value);
+    }
+    std::string message;
+    if (!manager->flush(timeout, &message)) {
+        snprintf(error, error_size, "%s", message.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    const std::string text = manager->status();
+    char *copy = static_cast<char *>(malloc(text.size() + 1));
+    if (copy == nullptr) {
+        snprintf(error, error_size, "unable to allocate flush status");
         return DEJAVU_ERROR_OUT_OF_MEMORY;
     }
     memcpy(copy, text.data(), text.size());

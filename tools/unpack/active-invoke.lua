@@ -89,6 +89,7 @@ function active_invoke_dex(dex_path, filter)
         totals.sentinel_hits = hits
         totals.revision_dumps = revisions
     end
+    unpack.flush()
     return string.format(
         'classes=%d sentinel_calls=%d sentinel_hits=%d revision_dumps=%d\n%s',
         totals.requested_classes, totals.sentinel_calls, totals.sentinel_hits,

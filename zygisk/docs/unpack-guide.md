@@ -69,6 +69,22 @@
 
 当前类枚举来自调用方提供的类名列表/dumped DEX；后续可接 DexFile 类列表自动枚举。
 
+## 防 ANR：内存快照 + 后台逐步落盘
+
+- hook 命中时只把 DEX 镜像**复制进内存队列**（`std::vector<uint8_t>`），
+  立即返回，不做文件 I/O；后台 writer 线程每写一个文件后 sleep 20ms，
+  逐步落盘。
+- CodeItem revision 同理：主动调用结束后把发现到的 DexFile 快照入队，
+  由 writer 异步写 `active_revision_*.dex`。
+- 内存预算默认 128 MiB（`pending_bytes`）；超预算丢弃并计入
+  `dropped_budget`，避免 OOM。
+- 需要立即看到文件时：
+  ```sh
+  ./dejavu unpack -p <进程> --flush
+  ```
+  或 Lua `unpack.flush(120000)`。
+- status 字段：`pending_files/pending_bytes/written_files/dropped_budget`。
+
 ## 限制与后续
 
 - 仅 arm64、API 26-35；符号/ABI 随 ROM 变化，需要真机验证。

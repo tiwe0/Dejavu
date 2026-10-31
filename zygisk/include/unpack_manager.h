@@ -3,9 +3,12 @@
 #include <jni.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "dejavu.h"
@@ -44,6 +47,7 @@ class UnpackManager {
     bool active_invoke(const std::string &filter, std::string *stats, std::string *error);
     void on_active_invoke();
     void set_app_class_loader(JNIEnv *env, jobject loader);
+    bool flush(unsigned long long timeout_ms, std::string *error);
 
     static UnpackManager *instance();
     void on_library_loaded(const char *filename);
@@ -67,16 +71,27 @@ class UnpackManager {
                                dejavu_value *, char *, size_t);
     static int lua_active_invoke(dejavu_control_session *, void *, const dejavu_value *, size_t,
                                  dejavu_value *, char *, size_t);
+    static int lua_flush(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                         dejavu_value *, char *, size_t);
 
     bool enable(const std::string &directory, std::string *error);
     bool install_dlopen_hooks(std::string *error);
     bool install_art_hooks(std::string *error);
     bool dump_dex(unsigned long long address, size_t size, const char *label);
+    bool enqueue_dex(unsigned long long address, size_t size, const char *label);
     bool dump_discovered_revision(std::string *error);
+    void start_writer();
+    void stop_writer();
+    void writer_loop();
     JNIEnv *current_env();
     struct Image {
         uintptr_t begin = 0;
         size_t size = 0;
+    };
+    struct PendingDump {
+        std::string label;
+        std::string extension;
+        std::vector<unsigned char> data;
     };
     bool dump_bytes(unsigned long long address, size_t size, const char *label, bool require_dex,
                     std::string *path, std::string *error);
@@ -92,6 +107,16 @@ class UnpackManager {
     unsigned long invoke_address_ = 0;
     std::atomic<unsigned long long> active_invoke_hits_{0};
     jobject app_class_loader_ = nullptr;
+    std::thread writer_;
+    mutable std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<PendingDump> queue_;
+    bool writer_stop_ = false;
+    bool writer_writing_ = false;
+    size_t pending_bytes_ = 0;
+    size_t max_pending_bytes_ = 128 * 1024 * 1024;
+    unsigned long long dropped_budget_ = 0;
+    unsigned long long written_files_ = 0;
     std::string directory_;
     std::atomic<bool> enabled_{false};
     std::atomic<bool> include_file_backed_{false};

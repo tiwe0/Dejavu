@@ -295,6 +295,8 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
   调用 `ArtMethod::Invoke`，hook 命中后不执行原方法、只做 revision dump
   （`active_revision_*.dex`）。`./dejavu unpack --active-invoke-dex <dex>` 可从
   dumped DEX 提取类名并分批主动调用。
+- dump 先复制进内存队列、后台 writer 逐步落盘，避免 hook 阻塞主线程 ANR；
+  用 `./dejavu unpack --flush` 或 `unpack.flush()` 强制落盘后再拉取。
 - 详见 `zygisk/docs/unpack-guide.md` 与 `tools/unpack/README.md`。
 
 ### 5. hookx 高层封装（推荐）

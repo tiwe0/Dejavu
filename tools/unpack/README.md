@@ -25,6 +25,12 @@ scanning memory blindly:
 ./dejavu unpack -p com.android.settings --disable   # also clears the property
 ```
 
+DEX buffers are queued **in memory** when hooks fire and a background writer
+flushes them gradually, so the app threads only pay for a snapshot copy. Use
+`./dejavu unpack --flush` (or `unpack.flush()`) to wait until everything is
+written before pulling. The status shows `pending_files`, `pending_bytes`,
+`written_files` and `dropped_budget` (a 128 MiB in-memory budget avoids OOM).
+
 Dumped files land in the device directory together with `manifest`/status
 information; pull them as root:
 
