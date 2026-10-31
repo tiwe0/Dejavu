@@ -320,7 +320,7 @@ jobs:
             bash -n "${script}"
           done < <(find . -path ./extern -prune -o -path ./zygisk/third_party -prune \
             -o -name '*.sh' -type f -print)
-          python3 -m py_compile zygisk/scripts/dejavuctl
+          python3 -m py_compile dejavu zygisk/scripts/dejavuctl
 
       - name: Check for TODO/FIXME comments
         run: |

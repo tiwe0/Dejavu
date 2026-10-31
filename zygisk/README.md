@@ -412,6 +412,10 @@ make -C zygisk test
 git diff --check
 ```
 
+The repository root also ships a unified helper, `./dejavu`
+(`status`, `build`, `package`, `install`, `targets`, `deploy-agent`,
+`exec`, `repl`, `watch`, `log`, `test`). See the root README.
+
 For an Android build with optional device smoke/stress bridge code:
 
 ```sh

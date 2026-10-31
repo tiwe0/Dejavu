@@ -133,6 +133,29 @@ Request 和 `develop` 构建不会创建 Release。推送与模块版本一致�
 每个受支持的 Android 代际仍需要真机验证目标进程的 SELinux 策略和页面
 大小配置。
 
+## 统一 CLI
+
+`./dejavu` 把构建脚本、模块打包和 `dejavuctl` 控制通道收进一个命令：
+
+```sh
+./dejavu status                                 # 主机/设备/模块状态
+./dejavu build [--api 26]                       # 构建 libdejavu.so
+./dejavu package [--api 26]                     # 构建并打包模块 zip
+./dejavu install [--zip PATH] [--soft-reboot]   # 推送并通过 ksud/magisk 安装
+./dejavu targets list|add|remove|set|clear      # 编辑设备 targets.txt
+./dejavu deploy-agent -p <进程>                 # 热部署 agent + init.lua
+./dejavu exec -p <进程> -e 'return hook.list()'
+./dejavu exec -p <进程> hooks/demo.lua
+./dejavu repl -p <进程>
+./dejavu watch hooks/demo.lua -p <进程>
+./dejavu log [-p <进程>] [--dump] [--clear]
+./dejavu test -p <进程> [--with-hang-test]
+```
+
+支持 `ADB`、`ADB_SERIAL` 与 `-s/--serial`；当 adb 二进制无法读取主机路径
+（例如从 WSL 调用 Windows 的 `adb.exe`）时会自动改用 adb shell 流式传输
+文件。`./dejavu --help` 或 `./dejavu <命令> --help` 查看完整选项。
+
 ## 版本语义
 
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库

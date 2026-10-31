@@ -134,6 +134,31 @@ it never changes allocator heap pages to executable. Device testing is still
 required to validate the target process SELinux policy and page-size
 configuration on every supported Android generation.
 
+## Unified CLI
+
+`./dejavu` wraps the build scripts, module packaging and the `dejavuctl`
+control channel into one command:
+
+```sh
+./dejavu status                                 # host/device/module state
+./dejavu build [--api 26]                       # build libdejavu.so
+./dejavu package [--api 26]                     # build and package the module zip
+./dejavu install [--zip PATH] [--soft-reboot]   # push + install via ksud/magisk
+./dejavu targets list|add|remove|set|clear      # edit device targets.txt
+./dejavu deploy-agent -p <process>              # hot-deploy agent + init.lua
+./dejavu exec -p <process> -e 'return hook.list()'
+./dejavu exec -p <process> hooks/demo.lua
+./dejavu repl -p <process>
+./dejavu watch hooks/demo.lua -p <process>
+./dejavu log [-p <process>] [--dump] [--clear]
+./dejavu test -p <process> [--with-hang-test]
+```
+
+It honors `ADB`, `ADB_SERIAL` and `-s/--serial`, and falls back to streaming
+files over the adb shell when the adb binary cannot read host paths (for
+example the Windows `adb.exe` invoked from WSL). Run `./dejavu --help` or
+`./dejavu <command> --help` for the full option list.
+
 ## Versions
 
 - `dejavu_version()` / `DEJAVU_VERSION_*` in `include/dejavu.h` identify the

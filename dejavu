@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""Dejavu unified command line interface.
+
+A thin, discoverable wrapper around the existing build/test scripts,
+`zygisk/scripts/dejavuctl` and the module file-control channel.
+
+Examples:
+    ./dejavu status
+    ./dejavu exec -p com.android.settings -e 'return hook.list()'
+    ./dejavu test -p com.android.settings
+    ./dejavu install --soft-reboot
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+
+REPO_ROOT = Path(__file__).resolve().parent
+MODULE_ID = "dejavu_zygisk"
+MODULE_DIR = f"/data/adb/modules/{MODULE_ID}"
+RUN_DIR = f"{MODULE_DIR}/run"
+TARGETS_PATH = f"{MODULE_DIR}/config/targets.txt"
+DEJAVUCTL = REPO_ROOT / "zygisk" / "scripts" / "dejavuctl"
+DEVICE_TEST = REPO_ROOT / "zygisk" / "scripts" / "device-test.sh"
+DEFAULT_ZIP_GLOB = "zygisk/dist/dejavu-zygisk-v*-arm64.zip"
+LOG_TAGS = ["DejavuZygisk", "DejavuAgent", "DejavuHook", "DejavuLSPlant"]
+PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+
+
+class CliError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> "NoReturn":
+    raise CliError(message)
+
+
+def toolchain_env() -> dict[str, str]:
+    """Return the environment with the repository toolchain helper applied."""
+    env = dict(os.environ)
+    helper = REPO_ROOT / "out" / "tooling" / "env.sh"
+    if helper.is_file():
+        script = f'set -a; . {shlex.quote(str(helper))}; env -0'
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, check=False
+        )
+        if result.returncode == 0:
+            for entry in result.stdout.split(b"\0"):
+                if b"=" not in entry:
+                    continue
+                key, value = entry.split(b"=", 1)
+                env[key.decode(errors="replace")] = value.decode(errors="replace")
+    return env
+
+
+def adb_base(args: argparse.Namespace) -> list[str]:
+    adb = os.environ.get("ADB") or args.adb or "adb"
+    command = [adb]
+    serial = args.serial or os.environ.get("ADB_SERIAL")
+    if serial:
+        command.extend(["-s", serial])
+    return command
+
+
+def run(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    input_bytes: bytes | None = None,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(
+            command,
+            env=env,
+            input=input_bytes,
+            capture_output=capture,
+            text=False,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        fail(f"command not found: {command[0]} ({error})")
+    if check and result.returncode != 0:
+        detail = ""
+        if capture:
+            detail = (result.stderr or result.stdout or b"").decode(
+                errors="replace"
+            ).strip()
+        fail(f"command failed ({result.returncode}): {shlex.join(command)}" + (f"\n{detail}" if detail else ""))
+    return result
+
+
+def text_of(result: subprocess.CompletedProcess) -> str:
+    return (result.stdout or b"").decode(errors="replace").strip()
+
+
+def adb(args: argparse.Namespace, *command: str, **kwargs) -> subprocess.CompletedProcess:
+    return run([*adb_base(args), *command], **kwargs)
+
+
+def adb_text(args: argparse.Namespace, *command: str) -> str:
+    return text_of(adb(args, *command, capture=True))
+
+
+def root_shell(args: argparse.Namespace, command: str, **kwargs) -> subprocess.CompletedProcess:
+    encoded = base64.b64encode(command.encode()).decode()
+    kwargs.setdefault("capture", True)
+    return adb(
+        args,
+        "shell",
+        f"su -c 'echo {encoded} | base64 -d | sh'",
+        **kwargs,
+    )
+
+
+def root_text(args: argparse.Namespace, command: str) -> str:
+    return text_of(root_shell(args, command))
+
+
+def device_state(args: argparse.Namespace) -> str:
+    result = adb(args, "get-state", capture=True, check=False)
+    return text_of(result) or "unknown"
+
+
+def require_device(args: argparse.Namespace) -> None:
+    adb(args, "wait-for-device")
+    state = device_state(args)
+    if state != "device":
+        fail(
+            f"no adb device in 'device' state (got '{state}'); "
+            "set --serial / ADB_SERIAL or check `adb devices`"
+        )
+
+
+def require_root(args: argparse.Namespace, *, need_module: bool = True) -> None:
+    require_device(args)
+    if "uid=0" not in root_text(args, "id"):
+        fail("root is required: `adb shell su -c id` did not return uid=0")
+    if need_module:
+        result = root_shell(args, f"test -d {MODULE_DIR}", capture=True, check=False)
+        if result.returncode != 0:
+            fail(
+                f"module {MODULE_ID} is not installed at {MODULE_DIR}; "
+                "run `./dejavu install` first"
+            )
+
+
+def read_targets(args: argparse.Namespace) -> list[str]:
+    content = root_text(args, f"cat {TARGETS_PATH} 2>/dev/null")
+    targets = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        targets.append(line)
+    return targets
+
+
+def write_targets(args: argparse.Namespace, targets: list[str]) -> None:
+    for target in targets:
+        if not PROCESS_PATTERN.fullmatch(target):
+            fail(f"invalid process name: {target!r}")
+    payload = "".join(f"{target}\n" for target in targets)
+    encoded = base64.b64encode(payload.encode()).decode()
+    command = (
+        f"printf '%s' '{encoded}' | base64 -d > {TARGETS_PATH}.tmp && "
+        f"mv -f {TARGETS_PATH}.tmp {TARGETS_PATH}"
+    )
+    root_shell(args, command)
+
+
+def push_file(args: argparse.Namespace, local: Path, remote: str) -> None:
+    result = adb(args, "push", str(local), remote, capture=True, check=False)
+    if result.returncode == 0:
+        return
+    # Fallback for setups where the adb binary is on Windows and cannot read
+    # WSL paths: stream base64 through the shell instead.
+    payload = base64.b64encode(local.read_bytes()).decode()
+    result = adb(
+        args,
+        "shell",
+        f"base64 -d > {shlex.quote(remote)}",
+        input_bytes=payload.encode(),
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or b"").decode(errors="replace").strip()
+        fail(f"unable to push {local}: {detail or 'adb push failed'}")
+
+
+def install_file_into_module(args: argparse.Namespace, local: Path, remote: str, mode: str) -> None:
+    temporary = f"/data/local/tmp/dejavu-{os.getpid()}-{local.name}"
+    push_file(args, local, temporary)
+    root_shell(
+        args,
+        f"cp {temporary} {remote}.new && "
+        f"chmod {mode} {remote}.new && "
+        f"chcon u:object_r:system_file:s0 {remote}.new && "
+        f"mv -f {remote}.new {remote} && rm -f {temporary}",
+    )
+
+
+def latest_package() -> Path:
+    candidates = sorted(
+        (REPO_ROOT).glob(DEFAULT_ZIP_GLOB),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        fail("no module zip found; run `./dejavu package` first")
+    return candidates[0]
+
+
+def command_status(args: argparse.Namespace) -> int:
+    print(f"repository: {REPO_ROOT}")
+    helper = REPO_ROOT / "out" / "tooling" / "env.sh"
+    print(f"toolchain helper: {helper if helper.is_file() else 'not installed (run make after installing NDK/CMake)'}")
+    env = toolchain_env()
+    print(f"ANDROID_NDK_HOME: {env.get('ANDROID_NDK_HOME', '<unset>')}")
+    zip_path = None
+    try:
+        zip_path = latest_package()
+    except CliError:
+        pass
+    print(f"module package: {zip_path if zip_path else '<not built>'}")
+
+    require_device(args)
+    print(f"device: {device_state(args)}")
+    root = "uid=0" in root_text(args, "id")
+    print(f"root: {'ok' if root else 'unavailable'}")
+    if zip_path is not None:
+        print(f"package file: {zip_path.name}")
+    if not root:
+        return 0
+
+    result = root_shell(args, f"test -d {MODULE_DIR}", capture=True, check=False)
+    installed = result.returncode == 0
+    print(f"module installed: {'yes' if installed else 'no'}")
+    providers = root_text(
+        args,
+        "ls /data/adb/modules 2>/dev/null | grep -E 'zygisksu|magisk|apatch|zygisk_lsposed|zygisknext' || true",
+    )
+    providers = providers.replace("\r", "").replace("\n", ", ")
+    print(f"zygisk providers: {providers if providers else '<none detected>'}")
+    if not installed:
+        return 0
+
+    prop = root_text(args, f"cat {MODULE_DIR}/module.prop 2>/dev/null")
+    version = next((line.split("=", 1)[1] for line in prop.splitlines() if line.startswith("version=")), "?")
+    targets = read_targets(args)
+    print(f"module version: {version}")
+    print(f"targets: {', '.join(targets) if targets else '<empty>'}")
+    for target in targets:
+        try:
+            pid = adb_text(args, "shell", f"pidof {target}").splitlines()
+        except CliError:
+            pid = []
+        pids = " ".join(item.strip() for item in pid if item.strip())
+        print(f"  {target}: {'running pid ' + pids if pids else 'not running'}")
+    return 0
+
+
+def command_build(args: argparse.Namespace) -> int:
+    env = toolchain_env()
+    env["ANDROID_API"] = str(args.api)
+    command = f"cd {shlex.quote(str(REPO_ROOT))} && make android-arm64"
+    print(f"building core library (API {args.api})")
+    run(["bash", "-c", f". {shlex.quote(str(REPO_ROOT / 'out' / 'tooling' / 'env.sh'))} 2>/dev/null || true; {command}"], env=env)
+    print(f"OK: {REPO_ROOT}/out/android-arm64-v8a-api{args.api}/libdejavu.so")
+    return 0
+
+
+def command_package(args: argparse.Namespace) -> int:
+    env = toolchain_env()
+    env["ANDROID_API"] = str(args.api)
+    helper = REPO_ROOT / "out" / "tooling" / "env.sh"
+    print(f"packaging module (API {args.api})")
+    prefix = f". {shlex.quote(str(helper))} 2>/dev/null || true; " if helper.is_file() else ""
+    run(
+        [
+            "bash",
+            "-c",
+            f"cd {shlex.quote(str(REPO_ROOT))} && {prefix}make -C zygisk package",
+        ],
+        env=env,
+    )
+    print(f"OK: {latest_package()}")
+    return 0
+
+
+def command_install(args: argparse.Namespace) -> int:
+    require_device(args)
+    zip_path = Path(args.zip).expanduser() if args.zip else latest_package()
+    if not zip_path.is_file():
+        fail(f"module zip not found: {zip_path}")
+    if "uid=0" not in root_text(args, "id"):
+        fail("root is required to install a Zygisk module")
+    remote = f"/data/local/tmp/{zip_path.name}"
+    push_file(args, zip_path, remote)
+    method = args.method
+    if method == "auto":
+        if root_shell(args, "command -v ksud", capture=True, check=False).returncode == 0:
+            method = "ksud"
+        elif root_shell(args, "command -v magisk", capture=True, check=False).returncode == 0:
+            method = "magisk"
+        else:
+            fail("neither ksud nor magisk found on the device; install manually")
+    print(f"installing {zip_path.name} via {method}")
+    if method == "ksud":
+        result = root_shell(args, f"ksud module install {remote}")
+    else:
+        result = root_shell(args, f"magisk --install-module {remote}")
+    if result.returncode != 0:
+        detail = (result.stdout or b"").decode(errors="replace").strip()
+        fail(f"module installation failed: {detail or 'see device output'}")
+    print((result.stdout or b"").decode(errors="replace").strip())
+    print("NOTE: install finishes after a reboot or soft reboot.")
+    if args.soft_reboot:
+        print("requesting soft reboot (ksud soft-reboot)")
+        root_shell(args, "ksud soft-reboot", check=False)
+    else:
+        print("run `su -c 'ksud soft-reboot'` (or reboot) to load the module")
+    return 0
+
+
+def command_targets(args: argparse.Namespace) -> int:
+    require_root(args)
+    action = args.action
+    targets = read_targets(args)
+    if action == "list":
+        for target in targets:
+            print(target)
+        if not targets:
+            print("<empty>")
+        return 0
+    if action == "add":
+        for target in args.processes:
+            if target not in targets:
+                targets.append(target)
+    elif action == "remove":
+        targets = [target for target in targets if target not in set(args.processes)]
+    elif action == "set":
+        targets = list(dict.fromkeys(args.processes))
+    elif action == "clear":
+        targets = []
+    else:
+        fail(f"unsupported targets action: {action}")
+    write_targets(args, targets)
+    print(f"targets: {', '.join(targets) if targets else '<empty>'}")
+    print("restart the target app (and any already-running process) for changes to take effect")
+    return 0
+
+
+def restart_target(args: argparse.Namespace, process: str, activity: str | None) -> None:
+    adb(args, "shell", f"am force-stop {process}", check=False)
+    if activity:
+        adb(args, "shell", f"am start -W -n {activity}", check=False)
+    else:
+        adb(
+            args,
+            "shell",
+            f"monkey -p {process} -c android.intent.category.LAUNCHER 1",
+            check=False,
+        )
+
+
+def command_deploy_agent(args: argparse.Namespace) -> int:
+    require_root(args)
+    agent = (
+        REPO_ROOT
+        / "zygisk"
+        / "out"
+        / f"lsplant-android-arm64-v8a-api{args.api}"
+        / "libdejavu_agent.so"
+    )
+    if not agent.is_file():
+        fail(f"agent library not found: {agent}; run `./dejavu build` and `./dejavu package` first")
+    render = (
+        (REPO_ROOT / "zygisk" / "config" / "hookx.lua").read_text()
+        + "\n"
+        + (REPO_ROOT / "zygisk" / "config" / "init.lua").read_text()
+    )
+    print(f"deploying agent for {args.process}")
+    install_file_into_module(args, agent, f"{MODULE_DIR}/lib/arm64-v8a/libdejavu_agent.so", "0755")
+    with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
+        handle.write(render)
+        init_path = Path(handle.name)
+    try:
+        install_file_into_module(args, init_path, f"{MODULE_DIR}/config/init.lua", "0644")
+    finally:
+        init_path.unlink(missing_ok=True)
+    print("agent and init.lua replaced")
+    if not args.no_restart:
+        restart_target(args, args.process, args.activity)
+        print(f"restarted {args.process}")
+    else:
+        print(f"restart {args.process} manually to load the new agent")
+    return 0
+
+
+def delegate_dejavuctl(args: argparse.Namespace, extra: list[str]) -> int:
+    if not DEJAVUCTL.is_file():
+        fail(f"dejavuctl not found: {DEJAVUCTL}")
+    env = toolchain_env()
+    env["ADB"] = os.environ.get("ADB") or args.adb or "adb"
+    if args.serial or os.environ.get("ADB_SERIAL"):
+        env["ADB_SERIAL"] = args.serial or os.environ["ADB_SERIAL"]
+    result = subprocess.run([sys.executable, str(DEJAVUCTL), *extra], env=env)
+    return result.returncode
+
+
+def command_exec(args: argparse.Namespace) -> int:
+    extra = ["-p", args.process]
+    if args.code is not None:
+        extra.extend(["-e", args.code])
+    else:
+        extra.append(str(Path(args.file).expanduser()))
+    return delegate_dejavuctl(args, extra)
+
+
+def command_repl(args: argparse.Namespace) -> int:
+    return delegate_dejavuctl(args, ["-p", args.process, "-i"])
+
+
+def command_watch(args: argparse.Namespace) -> int:
+    return delegate_dejavuctl(
+        args, ["-p", args.process, "--watch", str(Path(args.file).expanduser())]
+    )
+
+
+def command_log(args: argparse.Namespace) -> int:
+    require_device(args)
+    if args.clear:
+        adb(args, "logcat", "-c", check=False)
+        print("logcat cleared")
+        if args.dump:
+            return 0
+    filters = ",".join(LOG_TAGS)
+    command = [*adb_base(args), "logcat"]
+    if args.dump:
+        command.append("-d")
+    command.extend(["-s", filters])
+    if args.process:
+        # adb logcat -s cannot filter by process, so keep a small shell pipeline.
+        pipeline = f"{shlex.join(command)} | grep -E {shlex.quote(args.process)}"
+        return subprocess.run(["bash", "-c", pipeline]).returncode
+    return subprocess.run(command).returncode
+
+
+def command_test(args: argparse.Namespace) -> int:
+    if not DEVICE_TEST.is_file():
+        fail(f"device test script not found: {DEVICE_TEST}")
+    env = dict(os.environ)
+    env["ADB"] = os.environ.get("ADB") or args.adb or "adb"
+    if args.serial or os.environ.get("ADB_SERIAL"):
+        env["ADB_SERIAL"] = args.serial or os.environ["ADB_SERIAL"]
+    env["TARGET_PROCESS"] = args.process
+    command = ["bash", str(DEVICE_TEST)]
+    if args.with_hang_test:
+        command.append("--with-hang-test")
+    return subprocess.run(command, env=env).returncode
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dejavu",
+        description="Unified CLI for building, installing and controlling Dejavu.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  ./dejavu status\n"
+            "  ./dejavu targets add com.android.settings\n"
+            "  ./dejavu exec -p com.android.settings -e 'return hook.list()'\n"
+            "  ./dejavu exec -p com.android.settings hooks/demo.lua\n"
+            "  ./dejavu repl -p com.android.settings\n"
+            "  ./dejavu watch hooks/demo.lua -p com.android.settings\n"
+            "  ./dejavu log -p com.android.settings\n"
+            "  ./dejavu test -p com.android.settings\n"
+        ),
+    )
+    parser.add_argument("-s", "--serial", help="adb serial (default: ADB_SERIAL)")
+    parser.add_argument("--adb", help="adb binary path (default: ADB or 'adb')")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    sub = subparsers.add_parser("status", help="show host, device and module state")
+    sub.set_defaults(func=command_status)
+
+    sub = subparsers.add_parser("build", help="build the core libdejavu.so")
+    sub.add_argument("--api", type=int, default=26)
+    sub.set_defaults(func=command_build)
+
+    sub = subparsers.add_parser("package", help="build and package the Zygisk module zip")
+    sub.add_argument("--api", type=int, default=26)
+    sub.set_defaults(func=command_package)
+
+    sub = subparsers.add_parser("install", help="install the packaged module on the device")
+    sub.add_argument("--zip", help="module zip path (default: newest in zygisk/dist)")
+    sub.add_argument("--method", choices=["auto", "ksud", "magisk"], default="auto")
+    sub.add_argument("--soft-reboot", action="store_true", help="request ksud soft-reboot after install")
+    sub.set_defaults(func=command_install)
+
+    sub = subparsers.add_parser("targets", help="manage config/targets.txt on the device")
+    targets_actions = sub.add_subparsers(dest="action", required=True)
+    targets_actions.add_parser("list", help="list configured target processes").set_defaults(func=command_targets)
+    for action, help_text in (
+        ("add", "add target process names"),
+        ("remove", "remove target process names"),
+        ("set", "replace the target list"),
+    ):
+        action_parser = targets_actions.add_parser(action, help=help_text)
+        action_parser.add_argument("processes", nargs="+")
+        action_parser.set_defaults(func=command_targets)
+    targets_actions.add_parser("clear", help="clear the target list").set_defaults(func=command_targets)
+
+    sub = subparsers.add_parser("deploy-agent", help="hot-deploy agent + init.lua and restart one app")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument("--activity", help="explicit launcher activity (pkg/activity)")
+    sub.add_argument("--api", type=int, default=26)
+    sub.add_argument("--no-restart", action="store_true")
+    sub.set_defaults(func=command_deploy_agent)
+
+    sub = subparsers.add_parser("exec", help="run Lua in the target process")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    source = sub.add_mutually_exclusive_group(required=True)
+    source.add_argument("-e", "--code", help="inline Lua code")
+    source.add_argument("file", nargs="?", help="Lua file to execute")
+    sub.set_defaults(func=command_exec)
+
+    sub = subparsers.add_parser("repl", help="interactive Lua REPL in the target process")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.set_defaults(func=command_repl)
+
+    sub = subparsers.add_parser("watch", help="re-execute a Lua file whenever it changes")
+    sub.add_argument("file")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.set_defaults(func=command_watch)
+
+    sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
+    sub.add_argument("-p", "--process", help="only show lines mentioning this process")
+    sub.add_argument("--dump", action="store_true", help="dump and exit instead of following")
+    sub.add_argument("--clear", action="store_true", help="clear logcat before showing")
+    sub.set_defaults(func=command_log)
+
+    sub = subparsers.add_parser("test", help="run the automated on-device acceptance suite")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument("--with-hang-test", action="store_true")
+    sub.set_defaults(func=command_test)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except CliError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

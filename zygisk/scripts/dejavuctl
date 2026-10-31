@@ -55,7 +55,7 @@ def exclusive_cli_session():
 
 
 def adb_command(serial, *arguments, check=True):
-    command = ["adb"]
+    command = [os.environ.get("ADB", "adb")]
     if serial:
         command.extend(["-s", serial])
     command.extend(arguments)
