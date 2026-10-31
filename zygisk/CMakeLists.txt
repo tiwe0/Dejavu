@@ -64,6 +64,7 @@ add_library(dejavu_agent SHARED
     src/lsplant_runtime.cpp
     src/native_hook_manager.cpp
     src/java_invoker.cpp
+    src/agent_helpers.cpp
 )
 
 add_library(dejavu_zygisk SHARED

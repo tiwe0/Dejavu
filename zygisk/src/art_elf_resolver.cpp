@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <limits>
+#include <unordered_set>
 
 namespace {
 
@@ -50,7 +51,7 @@ void set_error(std::string *error, const char *message) {
     }
 }
 
-}  // namespace
+} // namespace
 
 ArtElfResolver::~ArtElfResolver() {
     reset();
@@ -62,6 +63,7 @@ void ArtElfResolver::reset() {
     }
     mapping_ = nullptr;
     mapping_size_ = 0;
+    path_.clear();
     load_bias_ = 0;
     dynamic_ = {};
     full_ = {};
@@ -102,6 +104,7 @@ bool ArtElfResolver::open_loaded(std::string_view soname, std::string *error) {
         set_error(error, "unable to map loaded library image");
         return false;
     }
+    path_ = library.path;
     load_bias_ = library.load_bias;
     if (!initialize_tables(error)) {
         reset();
@@ -116,10 +119,9 @@ bool ArtElfResolver::initialize_tables(std::string *error) {
         return false;
     }
     const auto *header = static_cast<const Elf64_Ehdr *>(mapping_);
-    if (memcmp(header->e_ident, ELFMAG, SELFMAG) != 0 ||
-        header->e_ident[EI_CLASS] != ELFCLASS64 ||
-        header->e_ident[EI_DATA] != ELFDATA2LSB ||
-        header->e_shentsize != sizeof(Elf64_Shdr) || header->e_shnum == 0) {
+    if (memcmp(header->e_ident, ELFMAG, SELFMAG) != 0 || header->e_ident[EI_CLASS] != ELFCLASS64 ||
+        header->e_ident[EI_DATA] != ELFDATA2LSB || header->e_shentsize != sizeof(Elf64_Shdr) ||
+        header->e_shnum == 0) {
         set_error(error, "unsupported ELF image");
         return false;
     }
@@ -168,17 +170,14 @@ bool ArtElfResolver::initialize_tables(std::string *error) {
     return true;
 }
 
-void *ArtElfResolver::find_in(
-    const SymbolTable &table,
-    std::string_view name,
-    bool prefix) const {
+void *ArtElfResolver::find_in(const SymbolTable &table, std::string_view name, bool prefix) const {
     if (table.symbols == nullptr || name.empty()) {
         return nullptr;
     }
     const auto *bytes = static_cast<const unsigned char *>(table.symbols);
     for (size_t index = 0; index < table.symbol_count; ++index) {
-        const auto *symbol = reinterpret_cast<const Elf64_Sym *>(
-            bytes + index * table.symbol_entry_size);
+        const auto *symbol =
+            reinterpret_cast<const Elf64_Sym *>(bytes + index * table.symbol_entry_size);
         if (symbol->st_name >= table.strings_size || symbol->st_shndx == SHN_UNDEF ||
             symbol->st_value == 0) {
             continue;
@@ -189,11 +188,11 @@ void *ArtElfResolver::find_in(
         if (terminator == nullptr) {
             continue;
         }
-        const size_t candidate_size =
-            static_cast<const char *>(terminator) - candidate;
-        const bool matches = prefix
-            ? candidate_size >= name.size() && memcmp(candidate, name.data(), name.size()) == 0
-            : candidate_size == name.size() && memcmp(candidate, name.data(), name.size()) == 0;
+        const size_t candidate_size = static_cast<const char *>(terminator) - candidate;
+        const bool matches =
+            prefix
+                ? candidate_size >= name.size() && memcmp(candidate, name.data(), name.size()) == 0
+                : candidate_size == name.size() && memcmp(candidate, name.data(), name.size()) == 0;
         if (matches) {
             return reinterpret_cast<void *>(load_bias_ + symbol->st_value);
         }
@@ -213,4 +212,55 @@ void *ArtElfResolver::find_prefix(std::string_view prefix) const {
         return address;
     }
     return find_in(full_, prefix, true);
+}
+
+bool ArtElfResolver::enumerate_symbols(std::vector<ArtElfSymbol> *symbols,
+                                       std::string *error) const {
+    if (symbols == nullptr) {
+        set_error(error, "invalid symbol output");
+        return false;
+    }
+    symbols->clear();
+    if (dynamic_.symbols == nullptr && full_.symbols == nullptr) {
+        set_error(error, "ELF image has no usable symbol table");
+        return false;
+    }
+    std::unordered_set<std::string> seen;
+    const auto append = [&](const SymbolTable &table, bool dynamic) {
+        if (table.symbols == nullptr) {
+            return;
+        }
+        const auto *bytes = static_cast<const unsigned char *>(table.symbols);
+        for (size_t index = 0; index < table.symbol_count; ++index) {
+            const auto *symbol =
+                reinterpret_cast<const Elf64_Sym *>(bytes + index * table.symbol_entry_size);
+            if (symbol->st_name >= table.strings_size || symbol->st_shndx == SHN_UNDEF ||
+                symbol->st_value == 0) {
+                continue;
+            }
+            const char *candidate = table.strings + symbol->st_name;
+            const size_t available = table.strings_size - symbol->st_name;
+            const void *terminator = memchr(candidate, '\0', available);
+            if (terminator == nullptr) {
+                continue;
+            }
+            std::string name(candidate, static_cast<const char *>(terminator) - candidate);
+            if (name.empty()) {
+                continue;
+            }
+            if (!seen.insert(name).second) {
+                continue;
+            }
+            ArtElfSymbol entry;
+            entry.name = std::move(name);
+            entry.type = ELF64_ST_TYPE(symbol->st_info);
+            entry.bind = ELF64_ST_BIND(symbol->st_info);
+            entry.address = load_bias_ + symbol->st_value;
+            entry.dynamic = dynamic;
+            symbols->push_back(std::move(entry));
+        }
+    };
+    append(dynamic_, true);
+    append(full_, false);
+    return true;
 }

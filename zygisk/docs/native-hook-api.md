@@ -211,8 +211,11 @@ it into the Lua chunk and prints the returned hook id.
 
 ## Limitations (ABI 1)
 
-- **Exported symbols only.** Hidden/static symbols need a resolver/offset API,
-  which this ABI version does not provide yet.
+- **Exported symbols first, ELF fallback second.** `dlsym` is tried first; if
+  that fails, the loaded image's ELF symbol table is searched (this can reach
+  `LOCAL`/non-exported symbols when the image still has `.symtab`). Use
+  `module.symbols`/`module.resolve` to discover them; fully stripped images
+  without a full symbol table still only expose dynamic symbols.
 - **arm64 Android.** The agent/module only supports `arm64-v8a`.
 - **Executable mappings only.** The target address must be in a mapping with
   the execute permission; page protection is saved/widened to patch and then

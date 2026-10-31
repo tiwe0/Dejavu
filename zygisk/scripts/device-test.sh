@@ -10,8 +10,9 @@ set -euo pipefail
 # Cases assert on the companion's logcat lines using a unique per-run token:
 # control channel, writable generated data (SIGSEGV regression), an
 # instance-method hook, native function hooks and active calls (including typed
-# arguments), Java active invocation (static/constructor/instance), oversized
-# control responses and the documented header-include limitation.
+# arguments), Java active invocation (static/constructor/instance), chained
+# results, filesystem and module/symbol helpers, oversized control responses and
+# the documented header-include limitation.
 # --with-hang-test additionally checks that a hung
 # Lua eval no longer wedges the control channel forever.
 #
@@ -601,6 +602,84 @@ if ! wait_for_log "${RUN_TOKEN} cross-api-chain-ok" "${LOG_TIMEOUT}"; then
     fail "cross-API chained invocation results failed"
 fi
 pass "cross-API chained invocation results"
+
+# Agent helpers: file IO in the target app sandbox and library/symbol tools.
+echo "== fs helpers"
+write_script "local app = java.invoke('android.app.ActivityThread', 'currentApplication',
+    '()Landroid/app/Application;')
+local files = java.invoke(app, 'getFilesDir', '()Ljava/io/File;')
+local dir = java.invoke(files, 'getAbsolutePath', '()Ljava/lang/String;')
+java.release(files)
+java.release(app)
+local path = dir .. '/dejavu-helper-test.txt'
+local written = fs.write(path, 'hello')
+local content = fs.read(path)
+local exists = fs.exists(path)
+local stat = fs.stat(path)
+local listing = fs.list(dir)
+local removed = fs.remove(path)
+local gone = fs.exists(path)
+if written ~= 5 or content ~= 'hello' or exists ~= true or
+    removed ~= true or gone ~= false or
+    stat:find('size=5', 1, true) == nil or
+    listing:find('dejavu-helper-test.txt', 1, true) == nil then
+    error('${RUN_TOKEN} fs-helpers-failed')
+end
+error('${RUN_TOKEN} fs-helpers-ok')"
+if ! wait_for_log "${RUN_TOKEN} fs-helpers-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "fs helpers failed"
+fi
+pass "fs helpers"
+
+echo "== module helpers"
+write_script "local id = module.load('libz.so')
+if type(id) ~= 'number' or id <= 0 then error('${RUN_TOKEN} module-load-failed') end
+local symbols = module.symbols(id, 'inflate')
+local version = module.resolve(id, 'zlibVersion')
+local loaded = module.loaded()
+local unloaded = module.unload(id)
+local loaded_after = module.loaded()
+if symbols:find('inflate', 1, true) == nil or
+    type(version) ~= 'number' or version <= 0 or
+    loaded:find('libz.so', 1, true) == nil or
+    unloaded ~= true or
+    loaded_after:find(tostring(id) .. '\\t', 1, true) ~= nil then
+    error('${RUN_TOKEN} module-helpers-failed')
+end
+error('${RUN_TOKEN} module-helpers-ok')"
+if ! wait_for_log "${RUN_TOKEN} module-helpers-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "module helpers failed"
+fi
+pass "module helpers"
+
+echo "== hidden symbol resolve/call"
+write_script "local address = module.resolve('libc.so', '__getpid')
+if type(address) ~= 'number' or address <= 0 then
+    error('${RUN_TOKEN} hidden-resolve-failed')
+end
+local source = [[
+void dejavu_native_call(void) {
+    int (*target)(void) = (void *)(unsigned long long)DEJAVU_NATIVE_CALL_ADDRESS;
+    dejavu_native_call_return((long long)target());
+}
+]]
+local pid = native.call('libc.so', '__getpid', source)
+if type(pid) ~= 'number' or pid <= 0 then error('${RUN_TOKEN} hidden-call-failed') end
+local load_error = pcall(module.load, 'libdejavu-not-exist.so')
+local symbols_error = pcall(module.symbols, 'libdejavu-not-loaded.so')
+local id_error = pcall(module.resolve, 9999, 'x')
+if load_error or symbols_error or id_error then
+    error('${RUN_TOKEN} helper-errors-unexpected-success')
+end
+error('${RUN_TOKEN} hidden-symbol-ok')"
+if ! wait_for_log "${RUN_TOKEN} hidden-symbol-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "hidden symbol resolve/call failed"
+fi
+[[ -n "$(target_pid)" ]] || fail "hidden symbol resolve/call: target died"
+pass "hidden symbol resolve/call"
 
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.

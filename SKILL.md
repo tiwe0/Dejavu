@@ -244,6 +244,28 @@ int64 可传给后续 `native.call`/`java.invoke`。注意 handle 释放后失�
 目标进程重启后失效；对象 handle 不能当作 jobject 传给 `native.call`。
 详见 `zygisk/docs/java-invoke-api.md` 的 "Chaining invocation results"。
 
+### 4.4 Agent helper（文件 / 模块符号）
+
+```lua
+fs.read(path); fs.write(path, data[, append]); fs.exists(path)
+fs.remove(path); fs.list(dir); fs.stat(path)
+
+local id = module.load('libz.so')          -- dlopen, 返回 id
+module.symbols(id, 'inflate')              -- name<TAB>TYPE<TAB>BIND<TAB>0xaddr
+module.resolve('libc.so', 'getpid')        -- 整数地址（含隐藏符号）
+module.loaded(); module.unload(id)
+```
+
+- `fs.*` 以目标进程 UID 访问文件（不是沙箱）；`fs.read` 拒绝非普通文件和
+  >64MiB 文件，`fs.write` 默认 0644，第三个参数 `true` 表示追加。
+- `module.load` 用 `RTLD_NOW`，scope 可传 `'local'`（默认）或 `'global'`；
+  `module.symbols` 读取已加载库的 ELF `.dynsym`+`.symtab`，支持子串过滤，
+  输出上限 50k/1MiB；`module.resolve` 先 dlsym、失败后回退 ELF 符号表，
+  可解析 `LOCAL` 隐藏符号。
+- `native.call` / `native.install` 在导出符号查不到时也会回退 ELF 符号表，
+  因此枚举出的隐藏符号可以直接使用（例如 `__getpid`）。
+- 完整说明见 `zygisk/docs/agent-helpers.md`。
+
 ### 5. hookx 高层封装（推荐）
 
 ```lua
@@ -269,7 +291,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 ### 7. 验证与排障
 
 ```sh
-./dejavu test -p com.android.settings               # 设备验收 23 项（含 hang 为 24）
+./dejavu test -p com.android.settings               # 设备验收 26 项（含 hang 为 27）
 ./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
 ./dejavu log [-p 进程] [--dump] [--clear]
 ```
@@ -296,6 +318,7 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 - `zygisk/docs/hook-c-api.md` — Java hook 回调 ABI、结果通道、限制
 - `zygisk/docs/native-hook-api.md` — native 函数 hook/call API 与限制
 - `zygisk/docs/java-invoke-api.md` — Java 主动调用与类型转换协议
+- `zygisk/docs/agent-helpers.md` — 文件读写、加载 SO、符号枚举/解析
 - `zygisk/docs/cookbook.md` — hookx 常见任务
 - `zygisk/scripts/device-test.sh` — 自动化真机验收
 - `patches/README.md` — TinyCC 维护补丁说明

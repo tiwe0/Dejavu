@@ -392,6 +392,20 @@ The control session can also call into the target without installing a hook:
 Both are synchronous on the Lua control thread, and both enforce Lua-side type
 checks before entering the target code.
 
+## Agent helpers
+
+The Lua control session also exposes:
+
+- `fs.read/write/exists/remove/list/stat` for files in the target process'
+  sandbox (run with the target UID, not a sandbox).
+- `module.load/unload/loaded/symbols/resolve` for `dlopen`, ELF symbol
+  enumeration (`.dynsym` + `.symtab`, optional substring filter), address
+  resolution and access to `LOCAL` symbols. `native.call` and `native.install`
+  fall back to the ELF symbol table when the exported-symbol lookup fails.
+
+See [docs/agent-helpers.md](docs/agent-helpers.md) for the contracts, output
+format and safety notes.
+
 ## Native Hook C contract (Java method callbacks)
 
 This section describes the native C side of *Java method* hooks; arbitrary

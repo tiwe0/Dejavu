@@ -1,5 +1,7 @@
 #include "native_hook_manager.h"
 
+#include "art_elf_resolver.h"
+
 #include <android/log.h>
 #include <dlfcn.h>
 #include <sys/mman.h>
@@ -124,11 +126,29 @@ bool set_page_protection(void *address, int protection, std::string *error) {
     return true;
 }
 
+std::string library_basename(const std::string &path) {
+    const size_t slash = path.rfind('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+void *resolve_hidden_symbol(const std::string &module_name, const std::string &symbol_name) {
+    ArtElfResolver resolver;
+    std::string resolver_error;
+    if (!resolver.open_loaded(library_basename(module_name), &resolver_error)) {
+        return nullptr;
+    }
+    return resolver.find(symbol_name);
+}
+
 void *resolve_target(const std::string &module_name, const std::string &symbol_name,
                      void **handle_out, std::string *error) {
     void *handle = dlopen(module_name.c_str(), RTLD_NOW | RTLD_NOLOAD);
     if (handle == nullptr) {
         const char *detail = dlerror();
+        if (void *hidden = resolve_hidden_symbol(module_name, symbol_name)) {
+            *handle_out = nullptr;
+            return hidden;
+        }
         *error = "module is not loaded: " + module_name;
         if (detail != nullptr) {
             *error += std::string(" (") + detail + ")";
@@ -139,6 +159,11 @@ void *resolve_target(const std::string &module_name, const std::string &symbol_n
     void *symbol = dlsym(handle, symbol_name.c_str());
     const char *detail = dlerror();
     if (detail != nullptr || symbol == nullptr) {
+        if (void *hidden = resolve_hidden_symbol(module_name, symbol_name)) {
+            dlclose(handle);
+            *handle_out = nullptr;
+            return hidden;
+        }
         *error = "symbol not found: " + module_name + "!" + symbol_name;
         if (detail != nullptr) {
             *error += std::string(" (") + detail + ")";

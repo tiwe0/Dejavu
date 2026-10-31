@@ -347,6 +347,23 @@ primitive/string 直接传入下一次调用，对象/数组 handle 可作 recei
 参数（用完 `java.release`）；`native.call` 的 int64 返回值也可传给
 `native.call`/`java.invoke`。完整协议见 `docs/java-invoke-api.md`。
 
+### 7.6 Agent helper（文件 / 模块符号）
+
+```lua
+fs.read(path); fs.write(path, data[, append]); fs.exists(path)
+fs.remove(path); fs.list(dir); fs.stat(path)
+
+local id = module.load('libz.so')
+local symbols = module.symbols(id, 'inflate')
+local address = module.resolve('libc.so', 'getpid')
+module.loaded(); module.unload(id)
+```
+
+`fs.*` 以目标进程 UID 访问文件（非沙箱）；`module.symbols` 读取已加载库的
+ELF `.dynsym`+`.symtab`（`name<TAB>TYPE<TAB>BIND<TAB>0x地址`），
+`module.resolve` 支持隐藏 `LOCAL` 符号；`native.call`/`native.install` 对
+导出符号失败时也会回退 ELF 符号表。完整说明见 `docs/agent-helpers.md`。
+
 ## 8. TinyCC Hook C ABI
 
 每个 C source 都会自动注入 ABI 头。入口固定为：

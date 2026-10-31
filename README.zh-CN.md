@@ -29,6 +29,12 @@ API 与限制见 `zygisk/docs/native-hook-api.md`。
 对象/数组 handle）可以继续参与后续调用（见 `zygisk/docs/java-invoke-api.md`
 和 `zygisk/docs/native-hook-api.md`）。
 
+控制会话还提供 agent helper：`fs.read/write/exists/remove/list/stat` 用于
+目标进程沙箱内的文件读写；`module.load/unload/loaded/symbols/resolve` 用于
+加载 so、枚举 ELF 符号和解析隐藏（`LOCAL`）符号；`native.call` /
+`native.install` 在导出符号查找失败时会回退 ELF 符号表。详见
+`zygisk/docs/agent-helpers.md`。
+
 ## 引擎模型
 
 第一版 ABI 有意只支持一种生成代码入口签名：

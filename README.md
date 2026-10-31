@@ -31,6 +31,13 @@ signature-driven type conversion protocol; returned values (primitives,
 strings and object/array handles) can be chained into subsequent calls (see
 `zygisk/docs/java-invoke-api.md` and `zygisk/docs/native-hook-api.md`).
 
+The control session also exposes agent helpers: `fs.read/write/exists/remove/
+list/stat` for files in the target sandbox, and `module.load/unload/loaded/
+symbols/resolve` for loading shared libraries, enumerating ELF symbols and
+resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
+to the ELF symbol table for non-exported symbols. See
+`zygisk/docs/agent-helpers.md`.
+
 ## Engine model
 
 The first ABI deliberately supports one generated entry signature:
@@ -206,8 +213,9 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   channel, never reboots the device, and verifies control, instance-method
   hooks, native function hooks (install and active call), Java active
   invocation (static/constructor/instance with type conversions), chained
-  invocation results (including cross-API), writable generated data, oversized
-  responses and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
+  invocation results (including cross-API), filesystem and module/symbol
+  helpers, hidden-symbol calls, writable generated data, oversized responses
+  and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
 - Patched dependencies: see `patches/README.md`.
 
 ## Known limitations
