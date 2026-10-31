@@ -519,6 +519,13 @@ bool HookManager::start_control(
             return false;
         }
     }
+    impl_->native_hooks = std::make_unique<NativeHookManager>();
+    if (!impl_->native_hooks->initialize(impl_->runtime, impl_->engine, error)) {
+        return false;
+    }
+    if (!impl_->native_hooks->register_lua(impl_->session, error)) {
+        return false;
+    }
     dejavu_value result = {};
     status = impl_->runtime->control_session_eval(
         impl_->session, script.c_str(), &result, runtime_error, sizeof(runtime_error));

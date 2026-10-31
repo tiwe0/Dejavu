@@ -9,8 +9,9 @@ set -euo pipefail
 #
 # Cases assert on the companion's logcat lines using a unique per-run token:
 # control channel, writable generated data (SIGSEGV regression), an
-# instance-method hook, oversized control responses and the documented
-# header-include limitation. --with-hang-test additionally checks that a hung
+# instance-method hook, a native function hook, oversized control responses and
+# the documented header-include limitation. --with-hang-test additionally checks
+# that a hung
 # Lua eval no longer wedges the control channel forever.
 #
 # Usage:
@@ -245,6 +246,40 @@ adb_cmd shell "input swipe 540 1600 540 600 150" >/dev/null 2>&1 || true
 sleep 1
 [[ -n "$(target_pid)" ]] || fail "instance-method hook: target died after interaction"
 pass "instance-method hook"
+
+# Native function hook: hook a libc function used by the control channel
+# itself, verify the replacement runs and calls the original, then unhook.
+echo "== native function hook"
+write_script "local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(fd, buffer, count);
+}
+]]
+local ok, id = pcall(native.install, \"libc.so\", \"read\", source)
+if not ok then error(\"${RUN_TOKEN} native-install-failed: \" .. tostring(id)) end
+_G.DEVICE_TEST_NATIVE_ID = id
+error(\"${RUN_TOKEN} native-installed\")"
+if ! wait_for_log "${RUN_TOKEN} native-installed" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native function hook: install token not observed"
+fi
+sleep 2
+write_script "local id = _G.DEVICE_TEST_NATIVE_ID
+if type(id) ~= \"number\" then error(\"${RUN_TOKEN} native-missing-id\") end
+local hits = native.stats(id)
+if type(hits) ~= \"number\" or hits <= 0 then
+    error(\"${RUN_TOKEN} native-no-hits \" .. tostring(hits))
+end
+native.uninstall(id)
+_G.DEVICE_TEST_NATIVE_ID = nil
+error(\"${RUN_TOKEN} native-ok hits=\" .. tostring(hits))"
+if ! wait_for_log "${RUN_TOKEN} native-ok" "${LOG_TIMEOUT}"; then
+    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
+    fail "native function hook: hit/uninstall token not observed"
+fi
+[[ -n "$(target_pid)" ]] || fail "native function hook: target died"
+pass "native function hook"
 
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.

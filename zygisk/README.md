@@ -41,7 +41,7 @@ required for the Loader and Agent.
 - `zygisk/arm64-v8a.so` is the Loader registered with Zygisk. It reads the
   exact process allowlist and loads the Agent only in selected processes.
 - `lib/arm64-v8a/libdejavu_agent.so` contains LSPlant, Dobby, the ART ELF
-  resolver, HookManager, Lua and TinyCC.
+  resolver, HookManager/NativeHookManager, Lua and TinyCC.
 - `lib/arm64-v8a/libdejavu.so` is the locally built Dejavu runtime loaded by
   the Agent.
 - The root companion creates two random abstract Unix domain sockets per
@@ -347,7 +347,39 @@ hook.log(hook.list())
 The full ABI, helper list and lifetime rules are in
 [docs/hook-c-api.md](docs/hook-c-api.md).
 
-## Native Hook C contract
+## Native function hooks (ABI 1)
+
+Besides Java methods, the agent can inline-hook exported native functions in an
+already-loaded module with Dobby and a TinyCC-compiled replacement:
+
+```lua
+local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(
+        fd, buffer, count);
+}
+]]
+local id = native.install("libc.so", "read", source)
+local hits = native.stats(id)
+native.uninstall(id)
+```
+
+`native.install(module, symbol, c_source)` resolves the symbol through
+`dlopen(RTLD_NOLOAD)` + `dlsym` (dynamically exported symbols only) and
+returns a positive id. `native.list()`, `native.stats(id)`,
+`native.uninstall(id)` and `native.clear()` manage the hooks. The replacement
+must be named `dejavu_native_target`; `dejavu_native_original()`,
+`dejavu_native_hit()` and `dejavu_native_log()` are provided by the preamble.
+
+Full contract and limitations: [docs/native-hook-api.md](docs/native-hook-api.md).
+Uninstall only while the target is idle: destroying the trampoline while a
+replacement is in flight is undefined behaviour.
+
+## Native Hook C contract (Java method callbacks)
+
+This section describes the native C side of *Java method* hooks; arbitrary
+native function hooks are covered above.
 
 The injected ABI preamble declares:
 

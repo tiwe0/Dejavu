@@ -294,6 +294,34 @@ local changed = hook.clear()
 - `uninstall` 才会请求 LSPlant 恢复目标方法并释放编译模块。
 - 内部 bootstrap hook 不能通过这些 API 卸载。
 
+### 7.4 Native 函数 hook（ABI 1）
+
+在目标进程里 hook **已加载模块导出的 native 函数**（Dobby inline hook +
+TinyCC 编译的替换函数）：
+
+```lua
+local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(
+        fd, buffer, count);
+}
+]]
+local id = native.install("libc.so", "read", source)  -- 返回正整数 id
+local hits = native.stats(id)
+native.uninstall(id)
+native.clear()
+```
+
+- 替换函数必须命名为 `dejavu_native_target`，签名与目标函数一致；
+  preamble 提供 `dejavu_native_original()`（调用原函数）、
+  `dejavu_native_hit()`（命中计数）和 `dejavu_native_log()`。
+- 只支持**已加载模块的动态导出符号**（`dlopen(RTLD_NOLOAD)` + `dlsym`），
+  且目标必须位于可执行映射；目前仅 arm64。
+- 不要在有并发调用时 `uninstall`（销毁 trampoline 后仍在执行的替换函数
+  行为未定义）；建议空闲期卸载或重启目标进程。
+- 完整契约与限制见 `docs/native-hook-api.md`。
+
 ## 8. TinyCC Hook C ABI
 
 每个 C source 都会自动注入 ABI 头。入口固定为：

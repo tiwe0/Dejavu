@@ -2,6 +2,7 @@
 
 #include "hook_manager.h"
 #include "hook_api_runtime.h"
+#include "native_hook_manager.h"
 
 #include <atomic>
 #include <memory>
@@ -58,6 +59,7 @@ struct HookManager::Impl {
     DejavuRuntime *runtime = nullptr;
     dejavu_engine *engine = nullptr;
     dejavu_control_session *session = nullptr;
+    std::unique_ptr<NativeHookManager> native_hooks;
     jobject app_class_loader = nullptr;
     jobject bridge_class_loader = nullptr;
     jclass bridge_class = nullptr;

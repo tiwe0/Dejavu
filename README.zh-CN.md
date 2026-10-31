@@ -19,6 +19,10 @@ Android Zygisk 集成还提供了纯 Lua 的高级辅助层 `hookx.*`，用于�
 hook 操作。完整说明参见 `zygisk/docs/user-guide.md` 和
 `zygisk/docs/cookbook.md`。
 
+Zygisk 集成同时支持 Java/Kotlin 方法 hook（LSPlant）和已加载模块中的
+native 函数 inline hook（Dobby + TinyCC 生成的替换函数）；`native.*`
+API 与限制见 `zygisk/docs/native-hook-api.md`。
+
 ## 引擎模型
 
 第一版 ABI 有意只支持一种生成代码入口签名：

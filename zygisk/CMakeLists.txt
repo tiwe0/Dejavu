@@ -62,6 +62,7 @@ add_library(dejavu_agent SHARED
     src/hook_signature.cpp
     src/lsplant_backend.cpp
     src/lsplant_runtime.cpp
+    src/native_hook_manager.cpp
 )
 
 add_library(dejavu_zygisk SHARED

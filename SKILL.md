@@ -21,6 +21,7 @@ hook）+ Dobby（inline hook）。本仓库同时提供统一 CLI `./dejavu`。
 
 - 在已 root、启用 Zygisk provider 的设备上动态 hook Java 方法、观察/修改
   参数与返回值；
+- 对目标进程里已加载模块导出的 native 函数做 inline hook（`native.*`）；
 - 需要免重启设备的开发循环（热部署 agent、重启单个 App）；
 - 验证 Dejavu 构建/模块/设备链路（CI 之外的本地验收）。
 
@@ -130,6 +131,30 @@ return hook.list()
   失败检查用 `DEJAVU_HOOK_TRY(...)`。
 - 生成代码中的可写 static/global 已由 TinyCC patch 支持；不要写超长回调。
 
+### 4.1 Native 函数 hook（Dobby）
+
+在目标进程里 hook **已加载模块的导出函数**：
+
+```lua
+local source = [[
+long dejavu_native_target(int fd, void *buffer, unsigned long count) {
+    dejavu_native_hit();
+    return ((long (*)(int, void *, unsigned long))dejavu_native_original())(
+        fd, buffer, count);
+}
+]]
+local id = native.install("libc.so", "read", source)
+local hits = native.stats(id)
+native.uninstall(id)
+```
+
+- 替换函数必须命名为 `dejavu_native_target`，签名与目标一致；preamble 提供
+  `dejavu_native_original()` / `dejavu_native_hit()` / `dejavu_native_log()`。
+- 仅支持已加载模块的动态导出符号（`dlopen(RTLD_NOLOAD)+dlsym`）、可执行映射、
+  arm64；不要在其他线程可能调用目标函数时 uninstall。
+- `native.list()` 查看、`native.clear()` 全部卸载；详见
+  `zygisk/docs/native-hook-api.md`。
+
 ### 5. hookx 高层封装（推荐）
 
 ```lua
@@ -179,7 +204,8 @@ Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboo
 - `include/dejavu.h` — 核心 C ABI
 - `zygisk/include/dejavu_hook_api.h` — Hook C ABI v1（preamble 暴露的函数）
 - `zygisk/docs/user-guide.md` — 安装、部署、Lua API、真机开发循环
-- `zygisk/docs/hook-c-api.md` — hook 回调 ABI、结果通道、限制
+- `zygisk/docs/hook-c-api.md` — Java hook 回调 ABI、结果通道、限制
+- `zygisk/docs/native-hook-api.md` — native 函数 hook API 与限制
 - `zygisk/docs/cookbook.md` — hookx 常见任务
 - `zygisk/scripts/device-test.sh` — 自动化真机验收
 - `patches/README.md` — TinyCC 维护补丁说明

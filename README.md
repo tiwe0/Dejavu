@@ -20,6 +20,10 @@ For the Android Zygisk integration, common hook tasks also have a higher-level
 pure-Lua helper layer, `hookx.*`; see `zygisk/docs/user-guide.md` and
 `zygisk/docs/cookbook.md`.
 
+The Zygisk integration supports both Java/Kotlin method hooks (LSPlant) and
+inline native function hooks (Dobby + a TinyCC-compiled replacement); see
+`zygisk/docs/native-hook-api.md` for the `native.*` API and its limits.
+
 ## Engine model
 
 The first ABI deliberately supports one generated entry signature:
@@ -183,8 +187,8 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   the on-device acceptance flow against a rooted device with a Zygisk provider
   and this module installed (see `zygisk/README.md`). It uses the file control
   channel, never reboots the device, and verifies control, instance-method
-  hooks, writable generated data, oversized responses and header-include
-  behavior; `--with-hang-test` additionally exercises the relay timeout.
+  hooks, native function hooks, writable generated data, oversized responses
+  and header-include behavior; `--with-hang-test` additionally exercises the relay timeout.
 - Patched dependencies: see `patches/README.md`.
 
 ## Known limitations
