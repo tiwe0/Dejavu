@@ -163,9 +163,11 @@ release is published when a version is explicitly introduced:
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
 A release is created only after the host tests, Android API 26 baseline,
-compatibility builds, Zygisk package, and code-quality checks all pass. A push
-that does not change the module version only builds artifacts and never
-publishes a release.
+compatibility builds, Zygisk package, and code-quality checks all pass. Each
+release carries two assets: the framework-only Zygisk module zip and
+`dejavu-plugins-vX.Y.Z-arm64.zip` with the example plugins, SKILL sidecars, JIT
+sources and unpack CLI. A push that does not change the module version only
+builds artifacts and never publishes a release.
 
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports

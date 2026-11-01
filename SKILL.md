@@ -331,8 +331,9 @@ plugin.unload('example')
 - 每个插件可带 `SKILL.md`（frontmatter name/description），安装为
   `<plugin>.so.SKILL.md`；用 `./dejavu plugin skill <name>` 读取，辅助 agent。
 - 示例：`plugins/hello`（host 服务/契约测试）、`plugins/capture`（SSL 明文
-  抓包示例）、`plugins/unpack`（脱壳）。unpack CLI：
-  `python3 plugins/unpack/cli.py ...`。
+  抓包示例）、`plugins/unpack`（脱壳）。`plugins/package.sh` 打
+  `dejavu-plugins-v<version>-arm64.zip`，CI Release 会把它作为第二个资产；
+  unpack CLI：`python3 plugins/unpack/cli.py ...`。
 - `dejavuctl` 单命令只对 module 明确标记的
   `target Agent disconnected; retry the command` 做重连重试；socket timeout
   等可能已执行请求的模糊错误不重放，避免非幂等 Lua 重复执行。

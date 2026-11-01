@@ -34,7 +34,9 @@ Build both:
 
 ```sh
 ./plugins/hello/build.sh
+./plugins/capture/build.sh
 ./plugins/unpack/build.sh
+./plugins/package.sh
 ```
 
 Each plugin may ship a `SKILL.md` next to its source. At install time copy it
@@ -43,9 +45,11 @@ next to the loaded library as `<plugin>.so.SKILL.md` (or a shared
 `plugin.skill(name)` and `./dejavu plugin skill <name>` so an agent can read the
 plugin-specific instructions without guessing the repo path.
 
-Example plugins are built separately from the module and uploaded as the
-`dejavu-example-plugins` CI artifact; they are **not** included in the release
-zip (the module remains framework-only).
+Example plugins are built separately from the module. `plugins/package.sh`
+creates `dejavu-plugins-vX.Y.Z-arm64.zip` containing the native `.so` files,
+their SKILL sidecars, JIT examples and `unpack/cli.py`. CI uploads it as the
+`dejavu-example-plugins` artifact and attaches the zip to the GitHub Release as
+a second asset; the module zip remains framework-only.
 
 The ABI and host services are documented in
 [`zygisk/docs/plugin-api.md`](../zygisk/docs/plugin-api.md).

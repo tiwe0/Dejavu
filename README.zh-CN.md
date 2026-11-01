@@ -152,7 +152,10 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
 只有主机测试、Android API 26 基线、兼容性构建、Zygisk 打包和代码质量检查
-全部通过后才会发布。版本未变化的普通 push 只构建 artifact，不会发布 Release。
+全部通过后才会发布。每个 Release 带两个资产：framework-only 的 Zygisk 模块
+zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
+`dejavu-plugins-vX.Y.Z-arm64.zip`。版本未变化的普通 push 只构建 artifact，
+不会发布 Release。
 
 构建冒烟检查会验证产物满足以下条件：
 

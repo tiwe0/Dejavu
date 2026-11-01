@@ -183,6 +183,7 @@ jobs:
       artifact_name: ${{ steps.package-meta.outputs.artifact_name }}
       package_glob: ${{ steps.package-meta.outputs.package_glob }}
       package_filename: ${{ steps.package-meta.outputs.package_filename }}
+      plugins_filename: ${{ steps.plugins-package.outputs.filename }}
     
     steps:
       - uses: actions/checkout@v4
@@ -253,11 +254,19 @@ jobs:
           ./plugins/capture/build.sh
           ./plugins/unpack/build.sh
 
+      - name: Package example plugins
+        id: plugins-package
+        env:
+          PACKAGE_VERSION: ${{ steps.package-meta.outputs.package_version }}
+        run: |
+          ./plugins/package.sh
+          echo "filename=dejavu-plugins-v${PACKAGE_VERSION}-arm64.zip" >> "$GITHUB_OUTPUT"
+
       - name: Upload example plugins
         uses: actions/upload-artifact@v4
         with:
           name: dejavu-example-plugins
-          path: out/plugins/
+          path: out/plugins/dejavu-plugins-*.zip
 
       - name: Upload Zygisk module
         uses: actions/upload-artifact@v4
@@ -318,10 +327,17 @@ jobs:
           name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
           path: release-assets
 
-      - name: Verify release asset
+      - name: Download example plugins
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: dejavu-example-plugins
+          path: release-assets/plugins
+
+      - name: Verify release assets
         run: |
-          ls -lh release-assets/
+          ls -lh release-assets/ release-assets/plugins/
           unzip -l release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+          unzip -l release-assets/plugins/${{ needs.build-zygisk-module.outputs.plugins_filename }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -331,7 +347,9 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ steps.release-meta.outputs.prerelease }}
           make_latest: ${{ steps.release-meta.outputs.make_latest }}
-          files: release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+          files: |
+            release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+            release-assets/plugins/${{ needs.build-zygisk-module.outputs.plugins_filename }}
           fail_on_unmatched_files: true
           generate_release_notes: true
 
