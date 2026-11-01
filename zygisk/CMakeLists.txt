@@ -29,6 +29,21 @@ set_target_properties(dobby_static PROPERTIES
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/DobbyPrefab/prefab/modules/dobby/include
 )
 
+set(JIT_PRELUDE_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/jit-prelude)
+add_custom_command(
+    OUTPUT ${JIT_PRELUDE_GENERATED_DIR}/jit_prelude_generated.h
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/../include/dejavu_jit.h
+        -DOUTPUT=${JIT_PRELUDE_GENERATED_DIR}/jit_prelude_generated.h
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-jit-prelude.cmake
+    DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include/dejavu_jit.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-jit-prelude.cmake
+    VERBATIM
+)
+add_custom_target(jit_prelude_generated
+    DEPENDS ${JIT_PRELUDE_GENERATED_DIR}/jit_prelude_generated.h)
+
 set(HOOK_BRIDGE_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/hook-bridge)
 add_custom_command(
     OUTPUT ${HOOK_BRIDGE_GENERATED_DIR}/hook_bridge_dex.h
@@ -65,6 +80,7 @@ add_library(dejavu_agent SHARED
     src/native_hook_manager.cpp
     src/java_invoker.cpp
     src/plugin_manager.cpp
+    src/sha256.cpp
     src/agent_helpers.cpp
 )
 
@@ -78,7 +94,9 @@ target_include_directories(dejavu_agent PRIVATE
     include
     ../include
     ${HOOK_BRIDGE_GENERATED_DIR}
+    ${JIT_PRELUDE_GENERATED_DIR}
 )
+add_dependencies(dejavu_agent jit_prelude_generated)
 target_include_directories(dejavu_zygisk PRIVATE
     include
     ../include

@@ -304,13 +304,15 @@ plugin.unload('example')
 - `plugin.unload` 只允许 descriptor 标记 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE` 且
   无 in-flight 调用的插件；装 native hook 的插件必须自己摘 hook。
 - CLI：`./dejavu plugin -p <进程> list|load|jit|install|call|unload|skill|allow|autoload`；
-  `install` 自动 push、chmod/chcon、装 SKILL sidecar、写 allowlist 并 load；
+  `install` 自动 push、chmod/chcon、装 SKILL sidecar、写 allowlist + SHA-256
+  并 load；load 前 host 校验哈希（`sha256.<slot>` 属性）；
   `call` 参数沿用类型化转换（integer/float/bool/null/string）。
 - native 文件接口：`native.install_file(module,symbol,device_path)` /
   `native.call_file(...)`；CLI `./dejavu native install-file|call-file`。
 - **JIT 插件**：`plugin.load_jit(<device.c>)` = 读文件 + TinyCC 编译 + 注册
   （`dejavu_engine_compile_file` 公共 API）；C-only、-nostdlib，需要 Lua 控制
-  engine，示例 `plugins/hello/hello_jit.c`。
+  engine；prelude 单一来源 `include/dejavu_jit.h`，示例
+  `plugins/hello/hello_jit.c`。
 - 每个插件可带 `SKILL.md`（frontmatter name/description），安装为
   `<plugin>.so.SKILL.md`；用 `./dejavu plugin skill <name>` 读取，辅助 agent。
 - 示例：`plugins/hello`（host 服务/契约测试）、`plugins/unpack`（脱壳）。

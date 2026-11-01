@@ -45,7 +45,8 @@ API 与限制见 `zygisk/docs/native-hook-api.md`。
 `native.install` 在导出符号查找失败时会回退 ELF 符号表。原生 **plugin** 机制
 （`plugin.load/list/call/unload`，C ABI 见 `include/dejavu_plugin.h`，文档见
 `zygisk/docs/plugin-api.md`）允许插件动态注册 Lua 函数，并可通过
-`debug.dejavu.plugins` 在 App 代码执行前自动加载。内存 helper
+`debug.dejavu.plugins` 在 App 代码执行前自动加载；allowlist 支持可选的
+per-path SHA-256 校验。内存 helper
 （`mem.read/write`、类型化 `read_u*/write_u*`、`mem.dump`、`mem.query`、
 `mem.protect`、`mem.maps`）提供带映射校验的目标地址空间访问。详见
 `zygisk/docs/agent-helpers.md`。

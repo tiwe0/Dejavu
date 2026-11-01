@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -35,6 +36,7 @@ DEFAULT_ZIP_GLOB = "zygisk/dist/dejavu-zygisk-v*-arm64.zip"
 LOG_TAGS = ["DejavuZygisk", "DejavuAgent", "DejavuHook", "DejavuLSPlant"]
 PLUGIN_ALLOWED_PROPERTY = "debug.dejavu.plugins.allowed"
 PLUGIN_ALLOWED_SLOTS = 16
+PLUGIN_HASH_PROPERTY = "debug.dejavu.plugins.sha256"
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 
@@ -612,30 +614,52 @@ def command_java(args: argparse.Namespace) -> int:
     fail(f"unsupported java action: {action}")
 
 
-def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
+def plugin_allowlist_state(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     paths: list[str] = []
-    for property_name in (PLUGIN_ALLOWED_PROPERTY, *(
-        f"{PLUGIN_ALLOWED_PROPERTY}.{slot}" for slot in range(PLUGIN_ALLOWED_SLOTS)
-    )):
-        try:
-            value = root_text(args, f"getprop {property_name}").strip()
-        except CliError:
-            value = ""
+    hashes: dict[str, str] = {}
+
+    def add_paths(value: str) -> None:
         for item in re.split(r"[:\s]+", value):
             if item and item not in paths:
                 paths.append(item)
-    return paths
+
+    def get_property(property_name: str) -> str:
+        try:
+            return root_text(args, f"getprop {property_name}").strip()
+        except CliError:
+            return ""
+
+    add_paths(get_property(PLUGIN_ALLOWED_PROPERTY))
+    for slot in range(PLUGIN_ALLOWED_SLOTS):
+        path_value = get_property(f"{PLUGIN_ALLOWED_PROPERTY}.{slot}")
+        add_paths(path_value)
+        hash_value = get_property(f"{PLUGIN_HASH_PROPERTY}.{slot}").strip()
+        if hash_value and path_value and " " not in path_value and ":" not in path_value:
+            hashes[path_value] = hash_value
+    return paths, hashes
 
 
-def plugin_allowlist_write(args: argparse.Namespace, paths: list[str]) -> None:
+def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
+    return plugin_allowlist_state(args)[0]
+
+
+def plugin_allowlist_write(
+    args: argparse.Namespace, paths: list[str], hashes: dict[str, str] | None = None
+) -> None:
     if len(paths) > PLUGIN_ALLOWED_SLOTS:
         fail(f"at most {PLUGIN_ALLOWED_SLOTS} allowlist paths are supported")
+    hashes = hashes or {}
     root_shell(args, f"setprop {PLUGIN_ALLOWED_PROPERTY} ''")
     for slot in range(PLUGIN_ALLOWED_SLOTS):
         value = paths[slot] if slot < len(paths) else ""
+        hash_value = hashes.get(value, "") if value else ""
         root_shell(
             args,
             f"setprop {PLUGIN_ALLOWED_PROPERTY}.{slot} {shlex.quote(value)}",
+        )
+        root_shell(
+            args,
+            f"setprop {PLUGIN_HASH_PROPERTY}.{slot} {shlex.quote(hash_value)}",
         )
 
 
@@ -696,10 +720,11 @@ def command_plugin_install(args: argparse.Namespace) -> int:
         )
     commands.append(f"rm -f {shlex.quote(staged)} {shlex.quote(staged + '.SKILL.md')}")
     root_shell(args, " && ".join(commands))
-    allowed = plugin_allowlist_read(args)
+    allowed, hashes = plugin_allowlist_state(args)
     if destination not in allowed:
         allowed.append(destination)
-    plugin_allowlist_write(args, allowed)
+    hashes[destination] = hashlib.sha256(source.read_bytes()).hexdigest()
+    plugin_allowlist_write(args, allowed, hashes)
     print(f"installed {source.name} -> {destination}")
     if skill is not None:
         print(f"installed skill -> {destination}.SKILL.md")
@@ -737,12 +762,13 @@ def command_plugin(args: argparse.Namespace) -> int:
         paths = [str(Path(path).expanduser()) for path in args.paths]
         if action == "allow":
             if args.clear:
-                plugin_allowlist_write(args, [])
+                plugin_allowlist_write(args, [], {})
                 print(f"cleared {PLUGIN_ALLOWED_PROPERTY}")
                 return 0
             if not paths:
                 fail("plugin allow requires at least one device path (or --clear)")
-            plugin_allowlist_write(args, paths)
+            _, existing_hashes = plugin_allowlist_state(args)
+            plugin_allowlist_write(args, paths, existing_hashes)
             print(f"set {PLUGIN_ALLOWED_PROPERTY} ({len(paths)} path(s))")
             return 0
         value = ":".join(paths)

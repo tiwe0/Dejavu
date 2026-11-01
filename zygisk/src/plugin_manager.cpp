@@ -18,6 +18,7 @@
 #include <sstream>
 
 #include "art_elf_resolver.h"
+#include "sha256.h"
 #include "dejavu_runtime.h"
 
 namespace {
@@ -31,6 +32,7 @@ constexpr char kAllowedUserDePrefix[] = "/data/user_de/";
 constexpr char kAllowedDataPrefix[] = "/data/data/";
 constexpr char kPluginManifest[] = "/data/adb/modules/dejavu_zygisk/config/plugins.txt";
 constexpr char kAllowedProperty[] = "debug.dejavu.plugins.allowed";
+constexpr char kAllowedHashProperty[] = "debug.dejavu.plugins.sha256";
 constexpr int kAllowedPropertySlots = 16;
 constexpr size_t kPluginIndexNone = static_cast<size_t>(-1);
 constexpr size_t kMaximumSkillSize = 128 * 1024;
@@ -53,72 +55,7 @@ struct PluginContextGuard {
     }
 };
 
-constexpr char kJitPrelude[] = R"DEJAVU_JIT(
-#ifndef NULL
-#define NULL ((void *)0)
-#endif
-
-#define DEJAVU_JIT_OK 0
-#define DEJAVU_JIT_INVALID_ARGUMENT 1
-#define DEJAVU_JIT_ERROR 2
-
-typedef struct DejavuJitValue {
-    int type;
-    int owned;
-    int boolean_value;
-    long long integer_value;
-    double number_value;
-    const char *string_value;
-    unsigned long string_size;
-    void *handle_value;
-    unsigned long long function_value;
-    void *host_function;
-    void *host_context;
-} DejavuJitValue;
-
-typedef int (*DejavuJitFunction)(void *session, void *context,
-                                 const DejavuJitValue *arguments,
-                                 unsigned long argument_count,
-                                 DejavuJitValue *result,
-                                 char *error, unsigned long error_size);
-
-extern int dejavu_jit_register(const char *namespace_name, const char *function_name,
-                               DejavuJitFunction function, void *context,
-                               char *error, unsigned long error_size);
-extern void *dejavu_jit_alloc(unsigned long size);
-extern void dejavu_jit_free(void *pointer);
-extern int dejavu_jit_log(int priority, const char *message);
-extern void *dejavu_jit_get_app_class_loader(void);
-extern int dejavu_jit_mem_read(unsigned long long address, void *buffer, unsigned long size);
-extern int dejavu_jit_mem_write(unsigned long long address, const void *buffer,
-                                unsigned long size);
-extern int dejavu_jit_mem_query(unsigned long long address, unsigned long long *start,
-                                unsigned long long *end, unsigned int *prot);
-extern void *dejavu_jit_module_resolve(const char *library, const char *symbol);
-extern int dejavu_jit_hook_install(void *target, void *replacement, void **original,
-                                   char *error, unsigned long error_size);
-extern int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size);
-
-extern void dejavu_jit_set_error(const char *message);
-extern int dejavu_jit_arg_type(const DejavuJitValue *arguments, unsigned long count,
-                               unsigned long index);
-extern int dejavu_jit_arg_int(const DejavuJitValue *arguments, unsigned long count,
-                              unsigned long index, long long *value);
-extern int dejavu_jit_arg_boolean(const DejavuJitValue *arguments, unsigned long count,
-                                  unsigned long index, int *value);
-extern const char *dejavu_jit_arg_string(const DejavuJitValue *arguments, unsigned long count,
-                                         unsigned long index, unsigned long *size);
-extern void dejavu_jit_return_int(DejavuJitValue *result, long long value);
-extern void dejavu_jit_return_boolean(DejavuJitValue *result, int value);
-extern void dejavu_jit_return_string(DejavuJitValue *result, const char *text);
-
-const char *dejavu_jit_plugin_name(void);
-const char *dejavu_jit_plugin_version(void);
-int dejavu_jit_plugin_unload_safe(void);
-int dejavu_jit_plugin_capabilities(void);
-int dejavu_jit_plugin_init(void);
-void dejavu_jit_plugin_shutdown(void);
-)DEJAVU_JIT";
+#include "jit_prelude_generated.h"
 
 struct JitValueLayout {
     int type;
@@ -532,17 +469,19 @@ bool PluginManager::load_plugin(const std::string &path, std::string *status, st
 
 void PluginManager::refresh_allowed_paths() {
     allowed_paths_.clear();
-    auto add_property_list = [this](const char *property) {
+    allowed_hashes_.clear();
+    auto add_property_list = [this](const char *property, const std::string *hash) {
         char value[PROP_VALUE_MAX] = {};
         if (__system_property_get(property, value) <= 0) {
             return;
         }
         std::string list(value);
+        std::vector<std::string> paths;
         std::string current;
         for (char character : list) {
             if (character == ':' || character == ';' || character == '\n' || character == ' ') {
                 if (!current.empty()) {
-                    allowed_paths_.insert(current);
+                    paths.push_back(current);
                     current.clear();
                 }
             } else {
@@ -550,15 +489,51 @@ void PluginManager::refresh_allowed_paths() {
             }
         }
         if (!current.empty()) {
-            allowed_paths_.insert(current);
+            paths.push_back(current);
+        }
+        for (const std::string &path : paths) {
+            allowed_paths_.insert(path);
+        }
+        if (hash != nullptr && !hash->empty() && paths.size() == 1) {
+            allowed_hashes_[paths.front()] = *hash;
         }
     };
-    add_property_list(kAllowedProperty);
+    add_property_list(kAllowedProperty, nullptr);
     for (int slot = 0; slot < kAllowedPropertySlots; ++slot) {
         const std::string property = std::string(kAllowedProperty) + "." + std::to_string(slot);
-        add_property_list(property.c_str());
+        char hash_value[PROP_VALUE_MAX] = {};
+        const std::string hash_property =
+            std::string(kAllowedHashProperty) + "." + std::to_string(slot);
+        std::string hash;
+        if (__system_property_get(hash_property.c_str(), hash_value) > 0) {
+            hash = hash_value;
+        }
+        add_property_list(property.c_str(), &hash);
     }
     load_plugin_manifest();
+}
+
+std::string PluginManager::expected_hash_for(const std::string &path) const {
+    const auto iterator = allowed_hashes_.find(path);
+    return iterator == allowed_hashes_.end() ? std::string() : iterator->second;
+}
+
+bool PluginManager::verify_file_hash(const std::string &path, std::string *error) const {
+    const std::string expected = expected_hash_for(path);
+    if (expected.empty()) {
+        return true;
+    }
+    std::string actual;
+    std::string hash_error;
+    if (!sha256_file_hex(path, &actual, &hash_error)) {
+        *error = hash_error;
+        return false;
+    }
+    if (actual != expected) {
+        *error = "plugin hash mismatch: " + path;
+        return false;
+    }
+    return true;
 }
 
 void PluginManager::load_plugin_manifest() {
@@ -708,6 +683,9 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
             return true;
         }
     }
+    if (!verify_file_hash(path, error)) {
+        return false;
+    }
     void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) {
         const char *dl_error = dlerror();
@@ -819,6 +797,9 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     }
     if (information.st_size <= 0 || information.st_size > 512 * 1024) {
         *error = "JIT source size is invalid (limit 512 KiB)";
+        return false;
+    }
+    if (!verify_file_hash(path, error)) {
         return false;
     }
     std::ifstream source_file(path, std::ios::binary);

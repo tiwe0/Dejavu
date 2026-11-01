@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -117,6 +118,8 @@ class PluginManager {
     void load_plugin_manifest();
     void refresh_allowed_paths();
     bool whitelisted_path(const std::string &path) const;
+    std::string expected_hash_for(const std::string &path) const;
+    bool verify_file_hash(const std::string &path, std::string *error) const;
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
     void remove_plugin(size_t plugin_index);
@@ -140,6 +143,7 @@ class PluginManager {
     std::deque<std::unique_ptr<Entry>> entries_;
     std::vector<Entry *> pending_entries_;
     std::set<std::string> allowed_paths_;
+    std::map<std::string, std::string> allowed_hashes_;
     std::vector<HookRecord> hooks_;
     bool registered_lua_ = false;
 };
