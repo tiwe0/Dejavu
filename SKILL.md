@@ -334,7 +334,7 @@ plugin.unload('example')
 - AI agent 接入口：`./dejavu mcp -p <pkg>` 启动 MCP stdio server；20 个工具
   覆盖 status/state、exec、插件生命周期/call/skill/allow、native、java、
   logs、验收套件、deploy-agent 和 `dejavu_cli` 通用逃生口；详见 README 的
-  MCP 配置示例。目标进程存活期间
+  MCP 配置示例；真机端到端用 `tests/mcp_device_test.py`。目标进程存活期间
   Lua 会话/插件/hook 是累计的，多步操作前先取 `dejavu_state`。
 - 设备套件：`./dejavu test -p <pkg>`（默认不重试）；需要时显式
   `--retries 1`，每次重试前清空 logcat，避免上一轮日志造成假阳性。

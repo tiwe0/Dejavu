@@ -247,7 +247,12 @@ MCP 客户端配置示例：
 当前提供 20 个工具：status/state、目标列表、Lua exec、插件
 install/load/JIT/call/unload/skill/allow、native list/call、Java invoke/new、
 日志 tail、设备验收套件、agent 部署，以及 `dejavu_cli` 通用逃生口。工具结果通过 MCP text content 返回；
-协议面见 [tests/mcp_server_test.py](tests/mcp_server_test.py)。
+协议面见 [tests/mcp_server_test.py](tests/mcp_server_test.py)。已 root 的真机可跑：
+
+```sh
+ADB=/path/to/adb ADB_SERIAL=<serial> TARGET_PROCESS=com.android.settings \
+  python3 tests/mcp_device_test.py
+```
 
 目标进程存活期间 Lua 会话是持久的：Lua 全局变量、已加载插件和 hook 会跨
 工具调用保留。多步操作前先调 `dejavu_state`，结束后及时 unload 插件。

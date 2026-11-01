@@ -264,6 +264,12 @@ plugin install/load/JIT/call/unload/skill/allow, native list/call, Java
 invoke/new, log tail, the device acceptance suite, agent deployment, and a `dejavu_cli` escape hatch for the remaining CLI surface. Tool
 results are MCP text content; `./dejavu mcp --help` and
 [tests/mcp_server_test.py](tests/mcp_server_test.py) show the protocol surface.
+For an authorized rooted device, run the real lifecycle check with:
+
+```sh
+ADB=/path/to/adb ADB_SERIAL=<serial> TARGET_PROCESS=com.android.settings \
+  python3 tests/mcp_device_test.py
+```
 
 The agent's Lua session is persistent for the lifetime of the target process:
 Lua globals, loaded plugins and hooks survive across tool calls. Use
