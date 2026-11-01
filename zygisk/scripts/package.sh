@@ -18,7 +18,7 @@ DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
     PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
 fi
-PACKAGE_VERSION=${PACKAGE_VERSION:-0.4.0}
+PACKAGE_VERSION=${PACKAGE_VERSION:-0.5.0}
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 LLVM_STRIP=${LLVM_STRIP:-llvm-strip}
 
