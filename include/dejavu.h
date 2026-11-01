@@ -16,7 +16,7 @@ extern "C" {
 /*
  * Core library ABI version (returned by dejavu_version()). This is independent
  * from the Zygisk module package version in zygisk/module/module.prop; release
- * release tags such as v0.6.0 track the module package while the core ABI stays 0.1.0
+ * release tags such as v0.7.0 track the module package while the core ABI stays 0.1.0
  * until the public C ABI changes.
  */
 #define DEJAVU_VERSION_MAJOR 0
