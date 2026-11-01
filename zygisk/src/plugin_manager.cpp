@@ -79,6 +79,74 @@ using JitShutdownFunction = void (*)();
 using JitStringFunction = const char *(*)();
 using JitUnloadSafeFunction = int (*)();
 
+bool target_module_has_execute_only_text(void *target, std::string *error) {
+    FILE *maps = fopen("/proc/self/maps", "re");
+    if (maps == nullptr) {
+        return false;
+    }
+    char line[512];
+    std::string target_path;
+    bool target_execute_only = false;
+    while (fgets(line, sizeof(line), maps) != nullptr) {
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char permissions[8] = {};
+        if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
+            continue;
+        }
+        const uintptr_t address = reinterpret_cast<uintptr_t>(target);
+        if (address >= start && address < end) {
+            if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
+                target_execute_only = true;
+            }
+            char *path = strchr(line, '/');
+            if (path != nullptr) {
+                target_path = path;
+                while (!target_path.empty() &&
+                       (target_path.back() == '\n' || target_path.back() == '\r')) {
+                    target_path.pop_back();
+                }
+            }
+            break;
+        }
+    }
+    if (target_execute_only) {
+        *error = "target mapping is execute-only; native hooks are unsupported on this ROM";
+        fclose(maps);
+        return true;
+    }
+    if (!target_path.empty()) {
+        rewind(maps);
+        while (fgets(line, sizeof(line), maps) != nullptr) {
+            unsigned long start = 0;
+            unsigned long end = 0;
+            char permissions[8] = {};
+            if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
+                continue;
+            }
+            char *path = strchr(line, '/');
+            if (path == nullptr) {
+                continue;
+            }
+            std::string candidate(path);
+            while (!candidate.empty() && (candidate.back() == '\n' || candidate.back() == '\r')) {
+                candidate.pop_back();
+            }
+            if (candidate != target_path) {
+                continue;
+            }
+            if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
+                *error =
+                    "target module has execute-only text; native hooks are unsupported on this ROM";
+                fclose(maps);
+                return true;
+            }
+        }
+    }
+    fclose(maps);
+    return false;
+}
+
 PluginManager *g_jit_manager = nullptr;
 thread_local std::string g_jit_last_error;
 
@@ -1995,6 +2063,11 @@ int PluginManagerHostHookInstall(void *host_context, void *target, void *replace
     if (manager == nullptr || target == nullptr || replacement == nullptr || original == nullptr) {
         std::snprintf(error, error_size, "hook.install requires target/replacement/original");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string mapping_error;
+    if (target_module_has_execute_only_text(target, &mapping_error)) {
+        std::snprintf(error, error_size, "%s", mapping_error.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
     }
     if (!manager->remember_hook(target)) {
         std::snprintf(error, error_size, "hook.install is only allowed from plugin code");

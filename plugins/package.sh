@@ -29,7 +29,7 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
     if readme.is_file():
         bundle.write(readme, "README.md")
 
-    for name in ("hello", "capture", "unpack"):
+    for name in ("hello", "capture", "algorithm", "unpack"):
         plugin_dir = root / "plugins" / name
         out_dir = root / "out" / "plugins" / name
         libraries = sorted(out_dir.glob("*.so")) if out_dir.is_dir() else []

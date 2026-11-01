@@ -6,6 +6,8 @@ framework. They are built separately from the agent and loaded through
 
 - [`capture/`](capture/) — example SSL plaintext capture plugin using the host
   module+hook interfaces.
+- [`algorithm/`](algorithm/) — algorithm self-disclosure tracer: native libcrypto
+  hooks plus a Java crypto Lua tracer.
 - [`hello/device-test.sh`](hello/device-test.sh) — automated on-device
   native/JIT lifecycle smoke test (`make plugin-device-test`).
 - [`hello/hello_fs_jit.c`](hello/hello_fs_jit.c) — JIT plugin exercising the

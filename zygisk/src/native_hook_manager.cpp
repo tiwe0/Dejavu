@@ -154,6 +154,73 @@ bool set_page_protection(void *address, int protection, std::string *error) {
     return true;
 }
 
+bool set_mapping_protection(void *address, int protection, std::string *error) {
+    FILE *maps = fopen("/proc/self/maps", "re");
+    if (maps == nullptr) {
+        *error = std::string("unable to open /proc/self/maps: ") + strerror(errno);
+        return false;
+    }
+    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+    char line[512];
+    bool applied = false;
+    while (fgets(line, sizeof(line), maps) != nullptr) {
+        unsigned long start = 0;
+        unsigned long end = 0;
+        if (sscanf(line, "%lx-%lx", &start, &end) != 2) {
+            continue;
+        }
+        if (value < start || value >= end) {
+            continue;
+        }
+        if (mprotect(reinterpret_cast<void *>(start), end - start, protection) != 0) {
+            *error = std::string("mprotect failed: ") + strerror(errno);
+        } else {
+            applied = true;
+        }
+        break;
+    }
+    fclose(maps);
+    if (!applied) {
+        if (error->empty()) {
+            *error = "target address is not mapped";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool module_has_execute_only_mapping(const std::string &module_name) {
+    const size_t slash = module_name.rfind('/');
+    const std::string basename =
+        slash == std::string::npos ? module_name : module_name.substr(slash + 1);
+    FILE *maps = fopen("/proc/self/maps", "re");
+    if (maps == nullptr) {
+        return false;
+    }
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), maps) != nullptr) {
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char permissions[8] = {};
+        if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
+            continue;
+        }
+        char *path = strchr(line, '/');
+        if (path == nullptr || strstr(path, basename.c_str()) == nullptr) {
+            continue;
+        }
+        found = true;
+        if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
+            fclose(maps);
+            return true;
+        }
+    }
+    fclose(maps);
+    (void)found;
+    return false;
+}
+
 std::string library_basename(const std::string &path) {
     const size_t slash = path.rfind('/');
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -352,6 +419,16 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
         *error = "target symbol is not in an executable mapping";
         return false;
     }
+    if (module_has_execute_only_mapping(module_name)) {
+        dlclose(module_handle);
+        *error = "module has execute-only text; native hooks are unsupported on this ROM";
+        return false;
+    }
+    if ((original_protection & PROT_READ) == 0) {
+        dlclose(module_handle);
+        *error = "target mapping is execute-only; native hooks are unsupported on this ROM";
+        return false;
+    }
 
     std::string full_source = "#define DEJAVU_NATIVE_HOOK_ID ";
     full_source += std::to_string(hook_id);
@@ -391,7 +468,7 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
         records_.emplace(hook_id, std::move(owned));
     }
 
-    if (!set_page_protection(target, original_protection | PROT_WRITE, error)) {
+    if (!set_mapping_protection(target, original_protection | PROT_READ | PROT_WRITE, error)) {
         std::lock_guard<std::mutex> lock(mutex_);
         records_.erase(hook_id);
         runtime_->module_destroy(module);
@@ -401,11 +478,11 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
     void *original = nullptr;
     const int hook_status = DobbyHook(target, replacement, &original);
     std::string restore_error;
-    const bool restored = set_page_protection(target, original_protection, &restore_error);
+    const bool restored = set_mapping_protection(target, original_protection, &restore_error);
     if (hook_status != 0 || !restored) {
         if (hook_status == 0) {
             std::string ignored;
-            set_page_protection(target, original_protection | PROT_WRITE, &ignored);
+            set_mapping_protection(target, original_protection | PROT_READ | PROT_WRITE, &ignored);
             DobbyDestroy(target);
             set_page_protection(target, original_protection, &ignored);
         }
@@ -448,13 +525,14 @@ bool NativeHookManager::uninstall(unsigned long long id, std::string *error) {
     std::string protection_error;
     const bool have_protection =
         query_protection(record->target, &protection, &protection_error) == 0;
-    if (have_protection && !set_page_protection(record->target, protection | PROT_WRITE, error)) {
+    if (have_protection &&
+        !set_mapping_protection(record->target, protection | PROT_READ | PROT_WRITE, error)) {
         return false;
     }
     const int destroy_status = DobbyDestroy(record->target);
     if (have_protection) {
         std::string restore_error;
-        set_page_protection(record->target, protection, &restore_error);
+        set_mapping_protection(record->target, protection, &restore_error);
     }
     if (destroy_status != 0) {
         *error = "DobbyDestroy failed with status " + std::to_string(destroy_status);
