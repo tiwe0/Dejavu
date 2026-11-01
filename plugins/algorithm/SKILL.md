@@ -48,15 +48,18 @@ CAPTURE=/data/user_de/0/<pkg>/files/algorithm.log
 # or live stream (framework TCP/UDP/KCP):
 # ./dejavu plugin -p <pkg> call algorithm start --arg s: --arg 1 --arg s:127.0.0.1:39001
 ./dejavu plugin -p <pkg> call algorithm status
+./dejavu plugin -p <pkg> call algorithm selftest
 ./dejavu plugin -p <pkg> call algorithm stop
 ./dejavu plugin -p <pkg> unload algorithm
 ```
 
 If the target has not loaded libcrypto yet, open/use a crypto API once first.
 On Android 15 some APEX BoringSSL libraries have **execute-only** text; Dobby
-cannot relocate those functions, so the host now refuses the hook instead of
-crashing and the plugin reports "no libcrypto algorithm symbols were
-hookable". Use a readable library/provider or the Java tracer in that case.
+cannot relocate those functions. The host can use the root helper prototype
+(`zygisk/docs/root-helper-prototype.md`) to temporarily unlock the mapping;
+without that helper it reports "no libcrypto algorithm symbols were
+hookable" instead of crashing. `algorithm.selftest` invokes EVP digest
+directly through the hooked library to verify the hook path.
 
 ## Java tracing
 

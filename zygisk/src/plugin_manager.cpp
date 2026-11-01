@@ -1,4 +1,5 @@
 #include "plugin_manager.h"
+#include "root_helper_client.h"
 
 #include <android/dlext.h>
 #include <android/log.h>
@@ -949,7 +950,22 @@ bool PluginManager::uninstall_owned_hook(void *target, char *error, size_t error
             return false;
         }
     }
+    int original_protection = 0;
+    size_t mapping_length = 0;
+    bool root_unlocked = false;
+    std::string mapping_error;
+    if (target_module_has_execute_only_text(target, &mapping_error)) {
+        if (!root_helper_unlock(target, &original_protection, &mapping_length, &mapping_error)) {
+            std::snprintf(error, error_size, "%s", mapping_error.c_str());
+            return false;
+        }
+        root_unlocked = true;
+    }
     const int status = DobbyDestroy(target);
+    if (root_unlocked) {
+        std::string ignored;
+        root_helper_restore(target, mapping_length, original_protection, &ignored);
+    }
     if (status != 0) {
         std::snprintf(error, error_size, "DobbyDestroy failed with status %d", status);
         return false;
@@ -2064,20 +2080,43 @@ int PluginManagerHostHookInstall(void *host_context, void *target, void *replace
         std::snprintf(error, error_size, "hook.install requires target/replacement/original");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
+    int original_protection = 0;
+    size_t mapping_length = 0;
+    bool root_unlocked = false;
     std::string mapping_error;
     if (target_module_has_execute_only_text(target, &mapping_error)) {
-        std::snprintf(error, error_size, "%s", mapping_error.c_str());
-        return DEJAVU_ERROR_LUA_EXECUTE;
+        if (!root_helper_unlock(target, &original_protection, &mapping_length, &mapping_error)) {
+            std::snprintf(error, error_size, "%s", mapping_error.c_str());
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        root_unlocked = true;
     }
     if (!manager->remember_hook(target)) {
+        if (root_unlocked) {
+            std::string ignored;
+            root_helper_restore(target, mapping_length, original_protection, &ignored);
+        }
         std::snprintf(error, error_size, "hook.install is only allowed from plugin code");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const int status = DobbyHook(target, replacement, original);
     if (status != 0) {
         manager->forget_hook(target);
+        if (root_unlocked) {
+            std::string ignored;
+            root_helper_restore(target, mapping_length, original_protection, &ignored);
+        }
         std::snprintf(error, error_size, "DobbyHook failed with status %d", status);
         return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    if (root_unlocked) {
+        std::string restore_error;
+        if (!root_helper_restore(target, mapping_length, original_protection, &restore_error)) {
+            DobbyDestroy(target);
+            manager->forget_hook(target);
+            std::snprintf(error, error_size, "%s", restore_error.c_str());
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
     }
     return DEJAVU_OK;
 }

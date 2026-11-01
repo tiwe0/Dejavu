@@ -354,7 +354,14 @@ int hook_verify_final(void *ctx, const unsigned char *signature, size_t size) {
 }
 
 void *resolve_any(AlgorithmState *state, const char *symbol) {
-    static const char *libraries[] = {"libcrypto.so", "libssl.so", "libjavacrypto.so", ""};
+    static const char *libraries[] = {
+        "/apex/com.android.conscrypt/lib64/libcrypto.so",
+        "/system/lib64/libcrypto.so",
+        "libcrypto.so",
+        "libssl.so",
+        "libjavacrypto.so",
+        "",
+    };
     for (const char *library : libraries) {
         void *address = state->module->resolve(state->host->host_context, library, symbol);
         if (address != nullptr) {
@@ -589,6 +596,57 @@ int lua_stop(dejavu_control_session *, void *context, const dejavu_value *, size
     return DEJAVU_OK;
 }
 
+int lua_selftest(dejavu_control_session *, void *context, const dejavu_value *, size_t,
+                 dejavu_value *result, char *error, size_t error_size) {
+    auto *state = static_cast<AlgorithmState *>(context);
+    if (state == nullptr || state->module == nullptr) {
+        std::snprintf(error, error_size, "algorithm module interface is unavailable");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    if (state->hooks.empty()) {
+        std::snprintf(error, error_size, "algorithm.start must install hooks first");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    using CtxNew = void *(*)();
+    using CtxFree = void (*)(void *);
+    using Md5 = const void *(*)();
+    using Init = int (*)(void *, const void *, void *);
+    using Update = int (*)(void *, const void *, size_t);
+    using Final = int (*)(void *, unsigned char *, unsigned int *);
+    auto *ctx_new = reinterpret_cast<CtxNew>(resolve_any(state, "EVP_MD_CTX_new"));
+    auto *ctx_free = reinterpret_cast<CtxFree>(resolve_any(state, "EVP_MD_CTX_free"));
+    auto *md5 = reinterpret_cast<Md5>(resolve_any(state, "EVP_md5"));
+    auto *init = reinterpret_cast<Init>(resolve_any(state, "EVP_DigestInit_ex"));
+    auto *update = reinterpret_cast<Update>(resolve_any(state, "EVP_DigestUpdate"));
+    auto *final = reinterpret_cast<Final>(resolve_any(state, "EVP_DigestFinal_ex"));
+    if (ctx_new == nullptr || ctx_free == nullptr || md5 == nullptr || init == nullptr ||
+        update == nullptr || final == nullptr) {
+        std::snprintf(error, error_size, "EVP digest selftest symbols are unavailable");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    void *ctx = ctx_new();
+    if (ctx == nullptr) {
+        std::snprintf(error, error_size, "EVP_MD_CTX_new failed");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    unsigned char digest[64] = {};
+    unsigned int digest_size = 0;
+    int status = init(ctx, md5(), nullptr);
+    if (status == 1) {
+        status = update(ctx, "abc", 3);
+    }
+    if (status == 1) {
+        status = final(ctx, digest, &digest_size);
+    }
+    ctx_free(ctx);
+    if (status != 1) {
+        std::snprintf(error, error_size, "EVP digest selftest failed");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    set_result_string(state, result, hex_text(digest, digest_size));
+    return DEJAVU_OK;
+}
+
 int lua_status(dejavu_control_session *, void *context, const dejavu_value *, size_t,
                dejavu_value *result, char *, size_t) {
     auto *state = static_cast<AlgorithmState *>(context);
@@ -627,6 +685,7 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
         {"start", lua_start},
         {"stop", lua_stop},
         {"status", lua_status},
+        {"selftest", lua_selftest},
     };
     for (const auto &registration : registrations) {
         if (host->register_function(host->host_context, "algorithm", registration.name,

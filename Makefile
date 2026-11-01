@@ -1,4 +1,4 @@
-.PHONY: android-arm64 host-smoke plugin-device-test stream-receiver smoke clean
+.PHONY: android-arm64 host-smoke plugin-device-test stream-receiver root-helper smoke clean
 
 android-arm64:
 	./scripts/build-android-arm64.sh
@@ -10,6 +10,9 @@ smoke: host-smoke android-arm64
 
 clean:
 	rm -rf out
+
+root-helper:
+	zygisk/scripts/build-root-helper.sh
 
 stream-receiver:
 	mkdir -p out/host-stream

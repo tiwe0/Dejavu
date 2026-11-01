@@ -82,6 +82,7 @@ add_library(dejavu_agent SHARED
     src/plugin_manager.cpp
     src/sha256.cpp
     src/stream_service.cpp
+    src/root_helper_client.cpp
     src/agent_helpers.cpp
 )
 
