@@ -40,6 +40,7 @@ class PluginManager {
     void forget_hook(void *target);
     bool uninstall_owned_hook(void *target, char *error, size_t error_size);
     size_t hook_count_for(size_t plugin_index) const;
+    bool active_plugin_has_capability(uint32_t capability) const;
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;
@@ -135,6 +136,8 @@ class PluginManager {
     void refresh_allowed_paths();
     bool whitelisted_path(const std::string &path) const;
     std::string expected_hash_for(const std::string &path) const;
+    bool verify_skill_text(const std::string &path, const std::string &text,
+                           std::string *error) const;
     bool verify_file_hash(const std::string &path, std::string *error) const;
     dejavu_module *compile_jit_source(const std::string &hash, const std::string &source,
                                       std::string *error);
@@ -164,6 +167,7 @@ class PluginManager {
     std::vector<Entry *> pending_entries_;
     std::set<std::string> allowed_paths_;
     std::map<std::string, std::string> allowed_hashes_;
+    std::map<std::string, std::string> allowed_skill_hashes_;
     std::vector<HookRecord> hooks_;
     std::map<std::string, JitCacheEntry> jit_cache_;
     unsigned long long jit_cache_clock_ = 0;

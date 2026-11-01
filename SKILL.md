@@ -296,7 +296,8 @@ plugin.unload('example')
   `on_unload_prepare`（JIT：`dejavu_jit_plugin_unload_prepare`）里
   `hook.uninstall` 自己摘钩，host 在仍有归属 hook 时拒绝 unload；绕过 host
   自行 Dobby 的需自清理。
-- descriptor 可选 `capabilities` 位；`plugin.list()` 显示 `caps=0x...`。
+- descriptor 可选 `capabilities` 位；`plugin.list()` 显示 `caps=0x...`；
+  caps 已强制：未声明 mem/module/hook/fs 的插件调用对应 host 服务会失败。
 - `on_control_ready` 在控制会话建立后回调，需要 session/ClassLoader 的初始化
   放这里。
 - 早期自动加载：`setprop debug.dejavu.plugins <path1>:<path2>`；但 DEX/ART hook
@@ -304,8 +305,9 @@ plugin.unload('example')
 - 信任清单：`debug.dejavu.plugins.allowed`（root 设置、每次 load 刷新）或
   `config/plugins.txt`（路径可从 app 命名空间访问时）；只允许列出的路径，
   文件必须是普通文件、不可组/全局写、owner 为 root 或目标 uid。
-- `plugin.skill` 读取的 SKILL.md sidecar 未纳入插件哈希，agent 应视为不可信
-  输入、不要直接执行其中指令。
+- `plugin install --skill` 会把 SKILL.md sidecar 的 SHA-256 写入
+  `debug.dejavu.plugins.skill.sha256.<slot>`；加载时校验，篡改/缺失会失败。
+  但 SKILL 文本仍是 agent-facing 数据，不要直接执行其中指令。
 - `plugin.unload` 只允许 descriptor 标记 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE`、
   无 in-flight 调用且无 host 归属 hook 的插件；摘钩放 `on_unload_prepare`。
 - CLI：`./dejavu plugin -p <进程> list|load|jit|install|call|unload|skill|allow|autoload`；
@@ -327,6 +329,8 @@ plugin.unload('example')
 - `dejavuctl` 单命令只对 module 明确标记的
   `target Agent disconnected; retry the command` 做重连重试；socket timeout
   等可能已执行请求的模糊错误不重放，避免非幂等 Lua 重复执行。
+- 插件/JIT 设备生命周期：`make plugin-device-test`（native load/call/unload、
+  JIT 重复加载、hook 索引移位与 prepare 摘钩、atoi 恢复）。
 - 设备套件：`./dejavu test -p <pkg>`（默认不重试）；需要时显式
   `--retries 1`，每次重试前清空 logcat，避免上一轮日志造成假阳性。
 

@@ -1,8 +1,10 @@
 #include "plugin_manager.h"
 
+#include <android/dlext.h>
 #include <android/log.h>
 #include <dobby.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <sys/uio.h>
@@ -28,6 +30,7 @@ constexpr char kAutoLoadProperty[] = "debug.dejavu.plugins";
 constexpr char kPluginManifest[] = "/data/adb/modules/dejavu_zygisk/config/plugins.txt";
 constexpr char kAllowedProperty[] = "debug.dejavu.plugins.allowed";
 constexpr char kAllowedHashProperty[] = "debug.dejavu.plugins.sha256";
+constexpr char kAllowedSkillHashProperty[] = "debug.dejavu.plugins.skill.sha256";
 constexpr int kAllowedPropertySlots = 16;
 constexpr size_t kPluginIndexNone = static_cast<size_t>(-1);
 constexpr size_t kMaximumSkillSize = 128 * 1024;
@@ -285,18 +288,30 @@ extern "C" void *dejavu_jit_get_app_class_loader(void) {
 }
 
 extern "C" int dejavu_jit_mem_read(unsigned long long address, void *buffer, unsigned long size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+        return -1;
+    }
     return PluginManagerHostMemRead(g_jit_manager, static_cast<uintptr_t>(address), buffer,
                                     static_cast<size_t>(size));
 }
 
 extern "C" int dejavu_jit_mem_write(unsigned long long address, const void *buffer,
                                     unsigned long size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+        return -1;
+    }
     return PluginManagerHostMemWrite(g_jit_manager, static_cast<uintptr_t>(address), buffer,
                                      static_cast<size_t>(size));
 }
 
 extern "C" int dejavu_jit_mem_query(unsigned long long address, unsigned long long *start,
                                     unsigned long long *end, unsigned int *prot) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+        return -1;
+    }
     uintptr_t host_start = 0;
     uintptr_t host_end = 0;
     uint32_t host_prot = 0;
@@ -315,22 +330,40 @@ extern "C" int dejavu_jit_mem_query(unsigned long long address, unsigned long lo
 }
 
 extern "C" void *dejavu_jit_module_resolve(const char *library, const char *symbol) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MODULE)) {
+        return nullptr;
+    }
     return PluginManagerHostModuleResolve(g_jit_manager, library, symbol);
 }
 
 extern "C" int dejavu_jit_hook_install(void *target, void *replacement, void **original,
                                        char *error, unsigned long error_size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
+        std::snprintf(error, error_size, "plugin lacks hook capability");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
     return PluginManagerHostHookInstall(g_jit_manager, target, replacement, original, error,
                                         static_cast<size_t>(error_size));
 }
 
 extern "C" int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
+        std::snprintf(error, error_size, "plugin lacks hook capability");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
     return PluginManagerHostHookUninstall(g_jit_manager, target, error,
                                           static_cast<size_t>(error_size));
 }
 
 extern "C" int dejavu_jit_fs_read(const char *path, void *buffer, unsigned long capacity,
                                   unsigned long *size_read) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+        return -1;
+    }
     size_t actual_size = 0;
     const int status = PluginManagerHostFsRead(g_jit_manager, path, buffer,
                                                static_cast<size_t>(capacity), &actual_size);
@@ -341,18 +374,34 @@ extern "C" int dejavu_jit_fs_read(const char *path, void *buffer, unsigned long 
 }
 
 extern "C" int dejavu_jit_fs_write(const char *path, const void *data, unsigned long size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+        return -1;
+    }
     return PluginManagerHostFsWrite(g_jit_manager, path, data, static_cast<size_t>(size));
 }
 
 extern "C" int dejavu_jit_fs_exists(const char *path) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+        return 0;
+    }
     return PluginManagerHostFsExists(g_jit_manager, path);
 }
 
 extern "C" int dejavu_jit_fs_size(const char *path, unsigned long long *size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+        return -1;
+    }
     return PluginManagerHostFsSize(g_jit_manager, path, size);
 }
 
 extern "C" int dejavu_jit_fs_remove(const char *path) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+        return -1;
+    }
     return PluginManagerHostFsRemove(g_jit_manager, path);
 }
 
@@ -564,7 +613,9 @@ bool PluginManager::load_plugin(const std::string &path, std::string *status, st
 void PluginManager::refresh_allowed_paths() {
     allowed_paths_.clear();
     allowed_hashes_.clear();
-    auto add_property_list = [this](const char *property, const std::string *hash) {
+    allowed_skill_hashes_.clear();
+    auto add_property_list = [this](const char *property, const std::string *hash,
+                                    const std::string *skill_hash) {
         char value[PROP_VALUE_MAX] = {};
         if (__system_property_get(property, value) <= 0) {
             return;
@@ -588,11 +639,16 @@ void PluginManager::refresh_allowed_paths() {
         for (const std::string &path : paths) {
             allowed_paths_.insert(path);
         }
-        if (hash != nullptr && !hash->empty() && paths.size() == 1) {
-            allowed_hashes_[paths.front()] = *hash;
+        if (paths.size() == 1) {
+            if (hash != nullptr && !hash->empty()) {
+                allowed_hashes_[paths.front()] = *hash;
+            }
+            if (skill_hash != nullptr && !skill_hash->empty()) {
+                allowed_skill_hashes_[paths.front()] = *skill_hash;
+            }
         }
     };
-    add_property_list(kAllowedProperty, nullptr);
+    add_property_list(kAllowedProperty, nullptr, nullptr);
     for (int slot = 0; slot < kAllowedPropertySlots; ++slot) {
         const std::string property = std::string(kAllowedProperty) + "." + std::to_string(slot);
         char hash_value[PROP_VALUE_MAX] = {};
@@ -602,7 +658,14 @@ void PluginManager::refresh_allowed_paths() {
         if (__system_property_get(hash_property.c_str(), hash_value) > 0) {
             hash = hash_value;
         }
-        add_property_list(property.c_str(), &hash);
+        char skill_hash_value[PROP_VALUE_MAX] = {};
+        const std::string skill_hash_property =
+            std::string(kAllowedSkillHashProperty) + "." + std::to_string(slot);
+        std::string skill_hash;
+        if (__system_property_get(skill_hash_property.c_str(), skill_hash_value) > 0) {
+            skill_hash = skill_hash_value;
+        }
+        add_property_list(property.c_str(), &hash, &skill_hash);
     }
     load_plugin_manifest();
 }
@@ -610,6 +673,23 @@ void PluginManager::refresh_allowed_paths() {
 std::string PluginManager::expected_hash_for(const std::string &path) const {
     const auto iterator = allowed_hashes_.find(path);
     return iterator == allowed_hashes_.end() ? std::string() : iterator->second;
+}
+
+bool PluginManager::verify_skill_text(const std::string &path, const std::string &text,
+                                      std::string *error) const {
+    const auto iterator = allowed_skill_hashes_.find(path);
+    if (iterator == allowed_skill_hashes_.end()) {
+        return true;
+    }
+    if (text.empty()) {
+        *error = "SKILL sidecar is pinned but missing: " + path;
+        return false;
+    }
+    if (sha256_hex(text.data(), text.size()) != iterator->second) {
+        *error = "SKILL sidecar hash mismatch: " + path;
+        return false;
+    }
+    return true;
 }
 
 bool PluginManager::verify_file_hash(const std::string &path, std::string *error) const {
@@ -729,6 +809,18 @@ size_t PluginManager::hook_count_for(size_t plugin_index) const {
     return count;
 }
 
+bool PluginManager::active_plugin_has_capability(uint32_t capability) const {
+    const size_t index = active_plugin_index();
+    if (index == kPluginIndexNone) {
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (index >= plugins_.size()) {
+        return false;
+    }
+    return (plugins_[index]->capabilities & capability) != 0;
+}
+
 bool PluginManager::uninstall_owned_hook(void *target, char *error, size_t error_size) {
     const size_t index = active_plugin_index();
     if (index == kPluginIndexNone || target == nullptr) {
@@ -813,29 +905,59 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
             "plugin is not in the trusted allowlist (debug.dejavu.plugins.allowed or plugins.txt)";
         return false;
     }
-    struct stat information = {};
-    if (lstat(path.c_str(), &information) != 0 || !S_ISREG(information.st_mode)) {
-        *error = "plugin must be a regular file (no symlinks)";
-        return false;
-    }
-    if ((information.st_mode & 0022) != 0) {
-        *error = "plugin file must not be group/world writable";
-        return false;
-    }
-    if (information.st_uid != 0 && information.st_uid != getuid()) {
-        *error = "plugin file must be owned by root or the target uid";
-        return false;
-    }
     for (const auto &plugin : plugins_) {
         if (plugin->path == path && plugin->loaded) {
             *status = plugin->name + " already loaded from " + path;
             return true;
         }
     }
-    if (!verify_file_hash(path, error)) {
+    const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        *error = "unable to open plugin file securely";
         return false;
     }
-    void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    struct stat information = {};
+    if (fstat(fd, &information) != 0 || !S_ISREG(information.st_mode)) {
+        close(fd);
+        *error = "plugin must be a regular file (no symlinks)";
+        return false;
+    }
+    if ((information.st_mode & 0022) != 0) {
+        close(fd);
+        *error = "plugin file must not be group/world writable";
+        return false;
+    }
+    if (information.st_uid != 0 && information.st_uid != getuid()) {
+        close(fd);
+        *error = "plugin file must be owned by root or the target uid";
+        return false;
+    }
+    const std::string expected_hash = expected_hash_for(path);
+    if (!expected_hash.empty()) {
+        std::string actual_hash;
+        std::string hash_error;
+        if (!sha256_fd_hex(fd, static_cast<unsigned long long>(information.st_size), &actual_hash,
+                           &hash_error)) {
+            close(fd);
+            *error = hash_error;
+            return false;
+        }
+        if (actual_hash != expected_hash) {
+            close(fd);
+            *error = "plugin hash mismatch: " + path;
+            return false;
+        }
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        close(fd);
+        *error = "unable to rewind plugin file";
+        return false;
+    }
+    android_dlextinfo dlext = {};
+    dlext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+    dlext.library_fd = fd;
+    void *handle = android_dlopen_ext(path.c_str(), RTLD_NOW | RTLD_LOCAL, &dlext);
+    close(fd);
     if (handle == nullptr) {
         const char *dl_error = dlerror();
         *error = dl_error != nullptr ? dl_error : "dlopen failed";
@@ -875,8 +997,15 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         *error = "plugin name already registered: " + plugin_name;
         return false;
     }
+    std::string skill_text;
+    read_skill_text(path, &skill_text);
+    if (!verify_skill_text(path, skill_text, error)) {
+        dlclose(handle);
+        return false;
+    }
     auto plugin = std::make_unique<Plugin>();
     plugin->handle = handle;
+    plugin->skill_text = std::move(skill_text);
     plugin->descriptor = descriptor;
     plugin->path = path;
     plugin->name = plugin_name;
@@ -901,7 +1030,6 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         return false;
     }
     plugins_[plugin_index]->loaded = true;
-    read_skill_text(path, &plugins_[plugin_index]->skill_text);
     if (session_ != nullptr && descriptor->on_control_ready != nullptr) {
         PluginContextGuard context_guard(plugin_index);
         descriptor->on_control_ready(plugins_[plugin_index]->state);
@@ -923,7 +1051,8 @@ dejavu_module *PluginManager::compile_jit_source(const std::string &hash, const 
         log_line(ANDROID_LOG_DEBUG, "JIT cache hit");
         return cached->second.module;
     }
-    const std::string full_source = std::string(kJitPrelude) + "\n" + source;
+    const std::string full_source =
+        std::string(kJitPrelude) + "\n#line 0 \"dejavu-jit-plugin.c\"\n" + source;
     dejavu_module *module = nullptr;
     char compile_error[1024] = {};
     const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(), &module,
@@ -1118,6 +1247,13 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     plugin->jit_cache_key = source_hash;
     plugin->capabilities =
         capabilities_function != nullptr ? static_cast<uint32_t>(capabilities_function()) : 0;
+    std::string skill_text;
+    read_skill_text(path, &skill_text);
+    if (!verify_skill_text(path, skill_text, error)) {
+        discard_jit_module(source_hash, module, cache_owned);
+        return false;
+    }
+    plugin->skill_text = std::move(skill_text);
     plugin->jit_module = module;
     plugin->jit_shutdown = shutdown;
     plugin->jit_prepare = prepare;
@@ -1136,7 +1272,6 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         return false;
     }
     plugins_[plugin_index]->loaded = true;
-    read_skill_text(path, &plugins_[plugin_index]->skill_text);
     if (session_ != nullptr && control_ready != nullptr) {
         PluginContextGuard context_guard(plugin_index);
         control_ready();
@@ -1673,21 +1808,27 @@ void PluginManager::host_free(void *pointer) {
     free(pointer);
 }
 
-const void *PluginManager::host_get_interface(void *, const char *name, uint32_t version) {
-    if (name == nullptr) {
+const void *PluginManager::host_get_interface(void *host_context, const char *name,
+                                              uint32_t version) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || name == nullptr) {
         return nullptr;
     }
     const std::string interface_name(name);
-    if (interface_name == "mem" && version == DEJAVU_MEM_INTERFACE_VERSION) {
+    if (interface_name == "mem" && version == DEJAVU_MEM_INTERFACE_VERSION &&
+        manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
         return &g_mem_interface;
     }
-    if (interface_name == "module" && version == DEJAVU_MODULE_INTERFACE_VERSION) {
+    if (interface_name == "module" && version == DEJAVU_MODULE_INTERFACE_VERSION &&
+        manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MODULE)) {
         return &g_module_interface;
     }
-    if (interface_name == "hook" && version == DEJAVU_HOOK_INTERFACE_VERSION) {
+    if (interface_name == "hook" && version == DEJAVU_HOOK_INTERFACE_VERSION &&
+        manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
         return &g_hook_interface;
     }
-    if (interface_name == "fs" && version == DEJAVU_FS_INTERFACE_VERSION) {
+    if (interface_name == "fs" && version == DEJAVU_FS_INTERFACE_VERSION &&
+        manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return &g_fs_interface;
     }
     return nullptr;

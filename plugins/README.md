@@ -4,6 +4,8 @@ These shared objects are **examples and ABI contract tests**, not part of the
 framework. They are built separately from the agent and loaded through
 `plugin.load()` / `debug.dejavu.plugins`.
 
+- [`hello/device-test.sh`](hello/device-test.sh) — automated on-device
+  native/JIT lifecycle smoke test (`make plugin-device-test`).
 - [`hello/hello_fs_jit.c`](hello/hello_fs_jit.c) — JIT plugin exercising the
   host fs interface (read/write/exists/remove) without libc.
 - [`hello/hello_hook_jit.c`](hello/hello_hook_jit.c) — JIT plugin installing a

@@ -31,6 +31,10 @@ append-only and must be validated with `struct_size`; v2 is the current frozen l
 The descriptor may append optional `capabilities` bits
 (`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA`); `plugin.list()` prints them as
 `caps=0x...`. Read the field only when `struct_size` reaches its offset.
+Capabilities are enforced: `get_interface("mem"|"module"|"hook"|"fs")` and
+the corresponding `dejavu_jit_*` helpers return failure unless the plugin
+declared the matching bit. A plugin that resolves `libc.so` symbols and then
+installs a hook needs `HOOK|MODULE`; declare every service actually used.
 
 `on_control_ready` is called once the Lua control session exists; plugins that
 need the control session/ClassLoader should defer that work there instead of

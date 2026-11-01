@@ -58,7 +58,7 @@ int dejavu_jit_plugin_unload_safe(void) {
 }
 
 int dejavu_jit_plugin_capabilities(void) {
-    return 4; /* DEJAVU_PLUGIN_CAP_HOOK */
+    return 4 | 2; /* DEJAVU_PLUGIN_CAP_HOOK | DEJAVU_PLUGIN_CAP_MODULE */
 }
 
 int dejavu_jit_plugin_init(void) {

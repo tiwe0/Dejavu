@@ -37,6 +37,7 @@ LOG_TAGS = ["DejavuZygisk", "DejavuAgent", "DejavuHook", "DejavuLSPlant"]
 PLUGIN_ALLOWED_PROPERTY = "debug.dejavu.plugins.allowed"
 PLUGIN_ALLOWED_SLOTS = 16
 PLUGIN_HASH_PROPERTY = "debug.dejavu.plugins.sha256"
+PLUGIN_SKILL_HASH_PROPERTY = "debug.dejavu.plugins.skill.sha256"
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 
@@ -201,18 +202,6 @@ def push_file(args: argparse.Namespace, local: Path, remote: str) -> None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or b"").decode(errors="replace").strip()
         fail(f"unable to push {local}: {detail or 'adb push failed'}")
-
-
-def install_file_into_module(args: argparse.Namespace, local: Path, remote: str, mode: str) -> None:
-    temporary = f"/data/local/tmp/dejavu-{os.getpid()}-{local.name}"
-    push_file(args, local, temporary)
-    root_shell(
-        args,
-        f"cp {temporary} {remote}.new && "
-        f"chmod {mode} {remote}.new && "
-        f"chcon u:object_r:system_file:s0 {remote}.new && "
-        f"mv -f {remote}.new {remote} && rm -f {temporary}",
-    )
 
 
 def latest_package() -> Path:
@@ -403,36 +392,22 @@ def resolve_launcher_activity(args: argparse.Namespace, process: str) -> str:
 
 def command_deploy_agent(args: argparse.Namespace) -> int:
     require_root(args)
-    agent = (
-        REPO_ROOT
-        / "zygisk"
-        / "out"
-        / f"lsplant-android-arm64-v8a-api{args.api}"
-        / "libdejavu_agent.so"
-    )
-    if not agent.is_file():
-        fail(f"agent library not found: {agent}; run `./dejavu build` and `./dejavu package` first")
-    render = (
-        (REPO_ROOT / "zygisk" / "config" / "hookx.lua").read_text()
-        + "\n"
-        + (REPO_ROOT / "zygisk" / "config" / "init.lua").read_text()
-    )
-    core = (
-        REPO_ROOT / "out" / f"android-arm64-v8a-api{args.api}" / "libdejavu.so"
-    )
-    if not core.is_file():
-        fail(f"core library not found: {core}; run `./dejavu build` first")
+    script = REPO_ROOT / "zygisk" / "scripts" / "deploy-agent.sh"
+    if not script.is_file():
+        fail(f"deploy script not found: {script}")
+    env = dict(os.environ)
+    env["PROCESS"] = args.process
+    env["ANDROID_API"] = str(args.api)
+    env["NO_RESTART"] = "1"
+    env["ADB"] = os.environ.get("ADB") or args.adb or "adb"
+    if args.serial or os.environ.get("ADB_SERIAL"):
+        env["ADB_SERIAL"] = args.serial or os.environ["ADB_SERIAL"]
+    if args.activity:
+        env["ACTIVITY"] = args.activity
     print(f"deploying agent for {args.process}")
-    install_file_into_module(args, core, f"{MODULE_DIR}/lib/arm64-v8a/libdejavu.so", "0755")
-    install_file_into_module(args, agent, f"{MODULE_DIR}/lib/arm64-v8a/libdejavu_agent.so", "0755")
-    with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
-        handle.write(render)
-        init_path = Path(handle.name)
-    try:
-        install_file_into_module(args, init_path, f"{MODULE_DIR}/config/init.lua", "0644")
-    finally:
-        init_path.unlink(missing_ok=True)
-    print("agent and init.lua replaced")
+    result = subprocess.run(["bash", str(script)], env=env)
+    if result.returncode != 0:
+        fail("agent deployment failed; existing module files were left unchanged")
     if not args.no_restart:
         restart_target(args, args.process, args.activity)
         print(f"restarted {args.process}")
@@ -619,10 +594,13 @@ def plugin_property_names() -> list[str]:
     for slot in range(PLUGIN_ALLOWED_SLOTS):
         names.append(f"{PLUGIN_ALLOWED_PROPERTY}.{slot}")
         names.append(f"{PLUGIN_HASH_PROPERTY}.{slot}")
+        names.append(f"{PLUGIN_SKILL_HASH_PROPERTY}.{slot}")
     return names
 
 
-def plugin_allowlist_state(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
+def plugin_allowlist_state(
+    args: argparse.Namespace,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
     names = plugin_property_names()
     command = "for name in " + " ".join(shlex.quote(name) for name in names) + "; do "
     command += "printf '%s=' \"$name\"; getprop \"$name\"; done"
@@ -636,6 +614,7 @@ def plugin_allowlist_state(args: argparse.Namespace) -> tuple[list[str], dict[st
 
     paths: list[str] = []
     hashes: dict[str, str] = {}
+    skill_hashes: dict[str, str] = {}
 
     def add_paths(value: str) -> None:
         for item in re.split(r"[:\s]+", value):
@@ -647,9 +626,13 @@ def plugin_allowlist_state(args: argparse.Namespace) -> tuple[list[str], dict[st
         path_value = values.get(f"{PLUGIN_ALLOWED_PROPERTY}.{slot}", "")
         add_paths(path_value)
         hash_value = values.get(f"{PLUGIN_HASH_PROPERTY}.{slot}", "").strip()
-        if hash_value and path_value and " " not in path_value and ":" not in path_value:
-            hashes[path_value] = hash_value
-    return paths, hashes
+        skill_hash_value = values.get(f"{PLUGIN_SKILL_HASH_PROPERTY}.{slot}", "").strip()
+        if path_value and " " not in path_value and ":" not in path_value:
+            if hash_value:
+                hashes[path_value] = hash_value
+            if skill_hash_value:
+                skill_hashes[path_value] = skill_hash_value
+    return paths, hashes, skill_hashes
 
 
 def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
@@ -657,28 +640,38 @@ def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
 
 
 def plugin_allowlist_write(
-    args: argparse.Namespace, paths: list[str], hashes: dict[str, str] | None = None
+    args: argparse.Namespace,
+    paths: list[str],
+    hashes: dict[str, str] | None = None,
+    skill_hashes: dict[str, str] | None = None,
 ) -> None:
     if len(paths) > PLUGIN_ALLOWED_SLOTS:
         fail(f"at most {PLUGIN_ALLOWED_SLOTS} allowlist paths are supported")
     hashes = hashes or {}
+    skill_hashes = skill_hashes or {}
     commands = [f"setprop {PLUGIN_ALLOWED_PROPERTY} ''"]
     for slot in range(PLUGIN_ALLOWED_SLOTS):
         value = paths[slot] if slot < len(paths) else ""
         hash_value = hashes.get(value, "") if value else ""
+        skill_hash_value = skill_hashes.get(value, "") if value else ""
         commands.append(
             f"setprop {PLUGIN_ALLOWED_PROPERTY}.{slot} {shlex.quote(value)}"
         )
         commands.append(
             f"setprop {PLUGIN_HASH_PROPERTY}.{slot} {shlex.quote(hash_value)}"
         )
+        commands.append(
+            f"setprop {PLUGIN_SKILL_HASH_PROPERTY}.{slot} {shlex.quote(skill_hash_value)}"
+        )
     root_shell(args, "set -e; " + " && ".join(commands))
-    read_paths, read_hashes = plugin_allowlist_state(args)
+    read_paths, read_hashes, read_skill_hashes = plugin_allowlist_state(args)
     if read_paths != paths:
         fail("allowlist read-back mismatch after write")
     for path in paths:
         if hashes.get(path, "") != read_hashes.get(path, ""):
             fail(f"allowlist hash read-back mismatch for {path}")
+        if skill_hashes.get(path, "") != read_skill_hashes.get(path, ""):
+            fail(f"allowlist SKILL hash read-back mismatch for {path}")
 
 
 def command_plugin_install(args: argparse.Namespace) -> int:
@@ -748,11 +741,15 @@ def command_plugin_install(args: argparse.Namespace) -> int:
         )
     commands.append(f"rm -f {shlex.quote(staged)} {shlex.quote(staged + '.SKILL.md')}")
     root_shell(args, " && ".join(commands))
-    allowed, hashes = plugin_allowlist_state(args)
+    allowed, hashes, skill_hashes = plugin_allowlist_state(args)
     if destination not in allowed:
         allowed.append(destination)
     hashes[destination] = hashlib.sha256(source.read_bytes()).hexdigest()
-    plugin_allowlist_write(args, allowed, hashes)
+    if skill is None:
+        skill_hashes.pop(destination, None)
+    else:
+        skill_hashes[destination] = hashlib.sha256(skill.read_bytes()).hexdigest()
+    plugin_allowlist_write(args, allowed, hashes, skill_hashes)
     print(f"installed {source.name} -> {destination}")
     if skill is not None:
         print(f"installed skill -> {destination}.SKILL.md")
@@ -790,13 +787,13 @@ def command_plugin(args: argparse.Namespace) -> int:
         paths = [str(Path(path).expanduser()) for path in args.paths]
         if action == "allow":
             if args.clear:
-                plugin_allowlist_write(args, [], {})
+                plugin_allowlist_write(args, [], {}, {})
                 print(f"cleared {PLUGIN_ALLOWED_PROPERTY}")
                 return 0
             if not paths:
                 fail("plugin allow requires at least one device path (or --clear)")
-            _, existing_hashes = plugin_allowlist_state(args)
-            plugin_allowlist_write(args, paths, existing_hashes)
+            _, existing_hashes, existing_skill_hashes = plugin_allowlist_state(args)
+            plugin_allowlist_write(args, paths, existing_hashes, existing_skill_hashes)
             print(f"set {PLUGIN_ALLOWED_PROPERTY} ({len(paths)} path(s))")
             return 0
         value = ":".join(paths)

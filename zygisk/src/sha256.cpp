@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -134,6 +135,39 @@ bool sha256_file_hex(const std::string &path, std::string *digest, std::string *
     content.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     if (file.bad()) {
         *error = "unable to read file for hash verification";
+        return false;
+    }
+    *digest = sha256_hex(content.data(), content.size());
+    return true;
+}
+
+bool sha256_fd_hex(int fd, unsigned long long size, std::string *digest, std::string *error) {
+    constexpr unsigned long long kMaximumHashSize = 64ULL * 1024 * 1024;
+    if (fd < 0 || digest == nullptr || size > kMaximumHashSize) {
+        *error = "invalid fd hash target";
+        return false;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        *error = "unable to seek hash target";
+        return false;
+    }
+    std::string content;
+    content.reserve(static_cast<size_t>(size));
+    char buffer[16384];
+    unsigned long long remaining = size;
+    while (remaining > 0) {
+        const size_t wanted =
+            remaining < sizeof(buffer) ? static_cast<size_t>(remaining) : sizeof(buffer);
+        const ssize_t count = read(fd, buffer, wanted);
+        if (count <= 0) {
+            *error = "unable to read hash target";
+            return false;
+        }
+        content.append(buffer, static_cast<size_t>(count));
+        remaining -= static_cast<unsigned long long>(count);
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        *error = "unable to rewind hash target";
         return false;
     }
     *digest = sha256_hex(content.data(), content.size());
