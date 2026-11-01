@@ -14,10 +14,13 @@
 /*
  * Active Java method invocation (Lua API):
  *
+ *   java.load_dex(path) -> class_loader_handle
  *   java.invoke(class_or_handle, method, jni_signature, ...args)
  *       - a string first argument selects a static method on that class
+ *       - "<loader_handle>:<class>" selects a class from a dex class loader
  *       - an integer first argument selects an instance method on a handle
  *   java.new(class_name, constructor_signature, ...args) -> handle
+ *       - class_name may also be "<loader_handle>:<class>"
  *   java.release(handle) -> true
  *
  * Argument conversion is driven by the JNI signature: primitives accept the
@@ -49,9 +52,15 @@ class JavaInvoker {
     bool construct_jni(const dejavu_value *arguments, size_t argument_count, dejavu_value *result,
                        std::string *error);
     bool release_handle(long long handle, std::string *error);
+    bool load_dex(const dejavu_value *arguments, size_t argument_count, dejavu_value *result,
+                  std::string *error);
+    bool resolve_class_target(const std::string &target, jlong *loader_handle,
+                              std::string *class_name, std::string *error);
 
     JNIEnv *current_env();
     jclass find_class(JNIEnv *env, const std::string &name, std::string *error);
+    jclass find_class_with_loader(JNIEnv *env, const std::string &name, jobject loader,
+                                  std::string *error);
     bool convert_arguments(JNIEnv *env, const std::vector<std::string> &parameters,
                            const dejavu_value *arguments, size_t argument_count,
                            ConvertedArguments *converted, std::string *error);
@@ -73,6 +82,8 @@ class JavaInvoker {
                        dejavu_value *, char *, size_t);
     static int lua_release(dejavu_control_session *, void *, const dejavu_value *, size_t,
                            dejavu_value *, char *, size_t);
+    static int lua_load_dex(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
 
     JavaVM *vm_ = nullptr;
     DejavuRuntime *runtime_ = nullptr;

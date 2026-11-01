@@ -4,6 +4,8 @@ These shared objects are **examples and ABI contract tests**, not part of the
 framework. They are built separately from the agent and loaded through
 `plugin.load()` / `debug.dejavu.plugins`.
 
+- [`capture/`](capture/) — example SSL plaintext capture plugin using the host
+  module+hook interfaces.
 - [`hello/device-test.sh`](hello/device-test.sh) — automated on-device
   native/JIT lifecycle smoke test (`make plugin-device-test`).
 - [`hello/hello_fs_jit.c`](hello/hello_fs_jit.c) — JIT plugin exercising the

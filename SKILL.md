@@ -193,6 +193,8 @@ CLI 快捷方式（等价于在目标进程执行对应 Lua）：
 ./dejavu java -p com.android.settings new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p com.android.settings invoke <handle> toString '()Ljava/lang/String;'
 ./dejavu java -p com.android.settings release <handle>
+./dejavu java -p com.android.settings load-dex /data/user_de/0/<pkg>/files/probe.dex
+./dejavu java -p com.android.settings invoke <loader>:dexprobe.Probe add '(II)I' --arg 3 --arg 4
 ```
 
 
@@ -207,7 +209,11 @@ local text = java.invoke('java.lang.String', 'valueOf', '(I)Ljava/lang/String;',
 -- 构造 + 实例方法 + 释放
 local handle = java.new('java.lang.StringBuilder', '(Ljava/lang/String;)V', 'abc')
 local value = java.invoke(handle, 'toString', '()Ljava/lang/String;')
+local loader = java.load_dex('/data/user_de/0/<pkg>/files/probe.dex')
+local probe_text = java.invoke(loader .. ':dexprobe.Probe', 'hello',
+                               '(Ljava/lang/String;)Ljava/lang/String;', 'world')
 java.release(handle)
+java.release(loader)
 ```
 
 - `java.invoke(类名, 方法, JNI签名, ...)` 调静态方法；
@@ -324,14 +330,15 @@ plugin.unload('example')
   `plugins/hello/hello_jit.c`。
 - 每个插件可带 `SKILL.md`（frontmatter name/description），安装为
   `<plugin>.so.SKILL.md`；用 `./dejavu plugin skill <name>` 读取，辅助 agent。
-- 示例：`plugins/hello`（host 服务/契约测试）、`plugins/unpack`（脱壳）。
-  unpack CLI：`python3 plugins/unpack/cli.py ...`。
+- 示例：`plugins/hello`（host 服务/契约测试）、`plugins/capture`（SSL 明文
+  抓包示例）、`plugins/unpack`（脱壳）。unpack CLI：
+  `python3 plugins/unpack/cli.py ...`。
 - `dejavuctl` 单命令只对 module 明确标记的
   `target Agent disconnected; retry the command` 做重连重试；socket timeout
   等可能已执行请求的模糊错误不重放，避免非幂等 Lua 重复执行。
 - 插件/JIT 设备生命周期：`make plugin-device-test`（native load/call/unload、
   JIT 重复加载、hook 索引移位与 prepare 摘钩、atoi 恢复）。
-- AI agent 接入口：`./dejavu mcp -p <pkg>` 启动 MCP stdio server；20 个工具
+- AI agent 接入口：`./dejavu mcp -p <pkg>` 启动 MCP stdio server；21 个工具
   覆盖 status/state、exec、插件生命周期/call/skill/allow、native、java、
   logs、验收套件、deploy-agent 和 `dejavu_cli` 通用逃生口；详见 README 的
   MCP 配置示例；真机端到端用 `tests/mcp_device_test.py`。目标进程存活期间

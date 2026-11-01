@@ -374,6 +374,22 @@ TOOLS: list[dict[str, Any]] = [
         annotations={"destructiveHint": True},
     ),
     _tool(
+        "dejavu_java_load_dex",
+        "Load a .dex file into the target process with InMemoryDexClassLoader and "
+        "return its ClassLoader handle. Use '<handle>:<class>' as the class "
+        "argument of dejavu_java_invoke/new to resolve classes from it.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Device path to a .dex file"},
+                "process": PROCESS_SCHEMA,
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        annotations={"destructiveHint": True},
+    ),
+    _tool(
         "dejavu_java_invoke",
         "Invoke a Java method with a JNI signature; target is a class name or a "
         "handle returned by dejavu_java_new.",
@@ -620,6 +636,17 @@ class McpServer:
             ]
             _append_arguments(command, arguments.get("arguments"))
             return self.runner.run(command)
+        if name == "dejavu_java_load_dex":
+            process = _process(arguments, self.default_process)
+            return self.runner.run(
+                [
+                    "java",
+                    "-p",
+                    process,
+                    "load-dex",
+                    _string(arguments.get("path"), "path"),
+                ]
+            )
         if name == "dejavu_java_invoke":
             process = _process(arguments, self.default_process)
             command = [

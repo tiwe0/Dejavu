@@ -129,7 +129,7 @@ def main() -> int:
 
     check(responses[1]["result"]["protocolVersion"] == "2025-06-18", "initialize protocol")
     tools = responses[2]["result"]["tools"]
-    check(len(tools) == 20, "tools/list count", str(len(tools)))
+    check(len(tools) == 21, "tools/list count", str(len(tools)))
     try:
         state = json.loads(text(3))
         check(state.get("process") == PROCESS, "state process", str(state.get("process")))

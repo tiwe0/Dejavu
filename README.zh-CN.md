@@ -34,7 +34,8 @@ native 函数 inline hook（Dobby + TinyCC 生成的替换函数）；`native.*`
 API 与限制见 `zygisk/docs/native-hook-api.md`。
 
 也支持主动调用：`native.call(...)` 通过 TinyCC 包装器直接调用已加载模块的
-导出函数；`java.invoke(...)` / `java.new(...)` / `java.release(...)` 通过 JNI
+导出函数；`java.invoke(...)` / `java.new(...)` / `java.release(...)` /
+`java.load_dex(...)` 通过 JNI
 直接调用 Java 方法，参数由 JNI 签名驱动转换；返回值（primitive、string、
 对象/数组 handle）可以继续参与后续调用（见 `zygisk/docs/java-invoke-api.md`
 和 `zygisk/docs/native-hook-api.md`）。
@@ -244,9 +245,9 @@ MCP 客户端配置示例：
 }
 ```
 
-当前提供 20 个工具：status/state、目标列表、Lua exec、插件
-install/load/JIT/call/unload/skill/allow、native list/call、Java invoke/new、
-日志 tail、设备验收套件、agent 部署，以及 `dejavu_cli` 通用逃生口。工具结果通过 MCP text content 返回；
+当前提供 21 个工具：status/state、目标列表、Lua exec、插件
+install/load/JIT/call/unload/skill/allow、native list/call、Java
+invoke/new/load-dex、日志 tail、设备验收套件、agent 部署，以及 `dejavu_cli` 通用逃生口。工具结果通过 MCP text content 返回；
 协议面见 [tests/mcp_server_test.py](tests/mcp_server_test.py)。已 root 的真机可跑：
 
 ```sh

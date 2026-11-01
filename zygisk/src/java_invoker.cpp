@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -250,6 +251,7 @@ bool JavaInvoker::register_lua(dejavu_control_session *session, std::string *err
         {"invoke", JavaInvoker::lua_invoke},
         {"new", JavaInvoker::lua_new},
         {"release", JavaInvoker::lua_release},
+        {"load_dex", JavaInvoker::lua_load_dex},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -303,15 +305,19 @@ JNIEnv *JavaInvoker::current_env() {
 }
 
 jclass JavaInvoker::find_class(JNIEnv *env, const std::string &name, std::string *error) {
-    jclass class_loader_class = env->FindClass("java/lang/ClassLoader");
-    if (class_loader_class == nullptr) {
-        env->ExceptionClear();
-        *error = "java.lang.ClassLoader is unavailable";
-        return nullptr;
+    return find_class_with_loader(env, name, class_loader_, error);
+}
+
+jclass JavaInvoker::find_class_with_loader(JNIEnv *env, const std::string &name, jobject loader,
+                                           std::string *error) {
+    std::string dotted = name;
+    for (char &character : dotted) {
+        if (character == '/') {
+            character = '.';
+        }
     }
-    if (class_loader_ == nullptr) {
-        env->DeleteLocalRef(class_loader_class);
-        std::string path = name;
+    if (loader == nullptr) {
+        std::string path = dotted;
         for (char &character : path) {
             if (character == '.') {
                 character = '/';
@@ -319,11 +325,17 @@ jclass JavaInvoker::find_class(JNIEnv *env, const std::string &name, std::string
         }
         jclass result = env->FindClass(path.c_str());
         if (env->ExceptionCheck() || result == nullptr) {
-            *error = "class not found: " + name;
             env->ExceptionClear();
+            *error = "class not found: " + name;
             return nullptr;
         }
         return result;
+    }
+    jclass class_loader_class = env->GetObjectClass(loader);
+    if (class_loader_class == nullptr) {
+        env->ExceptionClear();
+        *error = "unable to inspect the dex ClassLoader";
+        return nullptr;
     }
     const jmethodID load =
         env->GetMethodID(class_loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
@@ -333,18 +345,12 @@ jclass JavaInvoker::find_class(JNIEnv *env, const std::string &name, std::string
         *error = "unable to resolve ClassLoader.loadClass";
         return nullptr;
     }
-    std::string dotted = name;
-    for (char &character : dotted) {
-        if (character == '/') {
-            character = '.';
-        }
-    }
     jstring class_name = create_string(env, dotted, error);
     if (class_name == nullptr) {
         env->DeleteLocalRef(class_loader_class);
         return nullptr;
     }
-    jobject loaded = env->CallObjectMethod(class_loader_, load, class_name);
+    jobject loaded = env->CallObjectMethod(loader, load, class_name);
     env->DeleteLocalRef(class_name);
     env->DeleteLocalRef(class_loader_class);
     if (env->ExceptionCheck()) {
@@ -744,6 +750,153 @@ void JavaInvoker::cleanup(ConvertedArguments *converted, jclass class_object) {
     }
 }
 
+bool JavaInvoker::resolve_class_target(const std::string &target, jlong *loader_handle,
+                                       std::string *class_name, std::string *error) {
+    *loader_handle = 0;
+    const size_t colon = target.find(':');
+    if (colon == std::string::npos) {
+        *class_name = target;
+        return !class_name->empty();
+    }
+    const std::string prefix = target.substr(0, colon);
+    if (prefix.empty() || prefix.find_first_not_of("0123456789") != std::string::npos) {
+        *error = "class loader target must be <positive_handle>:<class_name>";
+        return false;
+    }
+    *class_name = target.substr(colon + 1);
+    if (class_name->empty()) {
+        *error = "class name is missing after the class loader handle";
+        return false;
+    }
+    try {
+        *loader_handle = std::stoll(prefix);
+    } catch (const std::exception &) {
+        *error = "invalid class loader handle: " + prefix;
+        return false;
+    }
+    if (*loader_handle <= 0) {
+        *error = "class loader handle must be positive";
+        return false;
+    }
+    return true;
+}
+
+bool JavaInvoker::load_dex(const dejavu_value *arguments, size_t argument_count,
+                           dejavu_value *result, std::string *error) {
+    JNIEnv *env = current_env();
+    if (env == nullptr) {
+        *error = "Java thread is not attached";
+        return false;
+    }
+    if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_STRING ||
+        arguments[0].string_value == nullptr || arguments[0].string_size == 0) {
+        *error = "java.load_dex expects a device path to a .dex file";
+        return false;
+    }
+    const std::string path = value_string(arguments[0]);
+    constexpr size_t kMaximumDexSize = 64 * 1024 * 1024;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        *error = "unable to open dex: " + path;
+        return false;
+    }
+    const std::streamoff file_size = file.tellg();
+    if (file_size <= 0 || static_cast<unsigned long long>(file_size) > kMaximumDexSize) {
+        *error = "dex size is invalid or exceeds 64 MiB";
+        return false;
+    }
+    std::string bytes(static_cast<size_t>(file_size), '\0');
+    file.seekg(0, std::ios::beg);
+    file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!file) {
+        *error = "unable to read dex: " + path;
+        return false;
+    }
+
+    jbyteArray array = env->NewByteArray(static_cast<jsize>(bytes.size()));
+    if (array == nullptr) {
+        env->ExceptionClear();
+        *error = "unable to allocate the dex byte array";
+        return false;
+    }
+    env->SetByteArrayRegion(array, 0, static_cast<jsize>(bytes.size()),
+                            reinterpret_cast<const jbyte *>(bytes.data()));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(array);
+        *error = "unable to copy dex bytes into the Java heap";
+        return false;
+    }
+    jclass byte_buffer_class = env->FindClass("java/nio/ByteBuffer");
+    jmethodID wrap = nullptr;
+    jobject buffer = nullptr;
+    jclass loader_class = nullptr;
+    jmethodID constructor = nullptr;
+    jobject loader = nullptr;
+    do {
+        if (byte_buffer_class == nullptr || env->ExceptionCheck()) {
+            env->ExceptionClear();
+            *error = "java.nio.ByteBuffer is unavailable";
+            break;
+        }
+        wrap = env->GetStaticMethodID(byte_buffer_class, "wrap", "([B)Ljava/nio/ByteBuffer;");
+        if (wrap == nullptr || env->ExceptionCheck()) {
+            env->ExceptionClear();
+            *error = "unable to resolve ByteBuffer.wrap";
+            break;
+        }
+        buffer = env->CallStaticObjectMethod(byte_buffer_class, wrap, array);
+        if (env->ExceptionCheck() || buffer == nullptr) {
+            env->ExceptionClear();
+            *error = "unable to wrap dex bytes in a ByteBuffer";
+            break;
+        }
+        loader_class = env->FindClass("dalvik/system/InMemoryDexClassLoader");
+        if (loader_class == nullptr || env->ExceptionCheck()) {
+            env->ExceptionClear();
+            *error = "InMemoryDexClassLoader is unavailable";
+            break;
+        }
+        constructor = env->GetMethodID(loader_class, "<init>",
+                                       "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+        if (constructor == nullptr || env->ExceptionCheck()) {
+            env->ExceptionClear();
+            *error = "unable to resolve InMemoryDexClassLoader constructor";
+            break;
+        }
+        loader = env->NewObject(loader_class, constructor, buffer, class_loader_);
+        if (env->ExceptionCheck() || loader == nullptr) {
+            if (env->ExceptionCheck()) {
+                *error = describe_exception(env);
+            } else {
+                *error = "unable to create InMemoryDexClassLoader";
+            }
+            break;
+        }
+    } while (false);
+    if (byte_buffer_class != nullptr) {
+        env->DeleteLocalRef(byte_buffer_class);
+    }
+    if (loader_class != nullptr) {
+        env->DeleteLocalRef(loader_class);
+    }
+    if (buffer != nullptr) {
+        env->DeleteLocalRef(buffer);
+    }
+    env->DeleteLocalRef(array);
+    if (loader == nullptr) {
+        return false;
+    }
+    const jlong handle = register_object(env, loader, error);
+    env->DeleteLocalRef(loader);
+    if (handle == 0) {
+        return false;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = static_cast<long long>(handle);
+    return true;
+}
+
 bool JavaInvoker::invoke_jni(const dejavu_value *arguments, size_t argument_count,
                              dejavu_value *result, std::string *error) {
     JNIEnv *env = current_env();
@@ -771,7 +924,20 @@ bool JavaInvoker::invoke_jni(const dejavu_value *arguments, size_t argument_coun
     jclass class_object = nullptr;
     jobject receiver = nullptr;
     if (is_static) {
-        class_object = find_class(env, value_string(arguments[0]), error);
+        jlong loader_handle = 0;
+        std::string class_name;
+        if (!resolve_class_target(value_string(arguments[0]), &loader_handle, &class_name, error)) {
+            return false;
+        }
+        if (loader_handle != 0) {
+            jobject loader = lookup_object(loader_handle, error);
+            if (loader == nullptr) {
+                return false;
+            }
+            class_object = find_class_with_loader(env, class_name, loader, error);
+        } else {
+            class_object = find_class(env, class_name, error);
+        }
         if (class_object == nullptr) {
             return false;
         }
@@ -825,7 +991,7 @@ bool JavaInvoker::construct_jni(const dejavu_value *arguments, size_t argument_c
         *error = "java.new expects a class name, constructor signature and arguments";
         return false;
     }
-    const std::string class_name = value_string(arguments[0]);
+    const std::string target = value_string(arguments[0]);
     const std::string signature = value_string(arguments[1]);
     std::vector<std::string> parameters;
     std::string return_type;
@@ -836,7 +1002,21 @@ bool JavaInvoker::construct_jni(const dejavu_value *arguments, size_t argument_c
         *error = "java.new constructor signature must return void";
         return false;
     }
-    jclass class_object = find_class(env, class_name, error);
+    jlong loader_handle = 0;
+    std::string class_name;
+    if (!resolve_class_target(target, &loader_handle, &class_name, error)) {
+        return false;
+    }
+    jclass class_object = nullptr;
+    if (loader_handle != 0) {
+        jobject loader = lookup_object(loader_handle, error);
+        if (loader == nullptr) {
+            return false;
+        }
+        class_object = find_class_with_loader(env, class_name, loader, error);
+    } else {
+        class_object = find_class(env, class_name, error);
+    }
     if (class_object == nullptr) {
         return false;
     }
@@ -912,5 +1092,17 @@ int JavaInvoker::lua_release(dejavu_control_session *, void *context, const deja
     }
     result->type = DEJAVU_VALUE_BOOLEAN;
     result->boolean_value = 1;
+    return DEJAVU_OK;
+}
+
+int JavaInvoker::lua_load_dex(dejavu_control_session *, void *context,
+                              const dejavu_value *arguments, size_t argument_count,
+                              dejavu_value *result, char *error, size_t error_size) {
+    auto *invoker = static_cast<JavaInvoker *>(context);
+    std::string load_error;
+    if (invoker == nullptr || !invoker->load_dex(arguments, argument_count, result, &load_error)) {
+        copy_error(error, error_size, load_error.empty() ? "java.load_dex failed" : load_error);
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
     return DEJAVU_OK;
 }

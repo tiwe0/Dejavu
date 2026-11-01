@@ -55,6 +55,7 @@ def main():
         "dejavu_plugin_list",
         "dejavu_plugin_call",
         "dejavu_plugin_install",
+        "dejavu_java_load_dex",
         "dejavu_logs_tail",
     ):
         assert expected in names, expected

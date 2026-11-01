@@ -39,7 +39,8 @@ inline native function hooks (Dobby + a TinyCC-compiled replacement); see
 
 Active invocation is available as well: `native.call(...)` calls an exported
 native function through a TinyCC wrapper, and `java.invoke(...)` /
-`java.new(...)` / `java.release(...)` call Java methods through JNI with a
+`java.new(...)` / `java.release(...)` / `java.load_dex(...)` call Java methods
+and load raw dex files through JNI with a
 signature-driven type conversion protocol; returned values (primitives,
 strings and object/array handles) can be chained into subsequent calls (see
 `zygisk/docs/java-invoke-api.md` and `zygisk/docs/native-hook-api.md`).
@@ -202,6 +203,7 @@ control channel into one command:
 ./dejavu native -p <process> call-file libc.so getpid /data/.../call.c
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
+./dejavu java -p <process> load-dex /data/user_de/0/<pkg>/files/probe.dex
 ./dejavu java -p <process> release <handle>
 ./dejavu plugin -p <process> list
 ./dejavu plugin -p <process> allow <device-plugin.so>   # trusted allowlist
@@ -259,7 +261,7 @@ Example MCP client configuration:
 }
 ```
 
-The server exposes 20 tools covering status/state, measured targets, Lua exec,
+The server exposes 21 tools covering status/state, measured targets, Lua exec,
 plugin install/load/JIT/call/unload/skill/allow, native list/call, Java
 invoke/new, log tail, the device acceptance suite, agent deployment, and a `dejavu_cli` escape hatch for the remaining CLI surface. Tool
 results are MCP text content; `./dejavu mcp --help` and
@@ -308,6 +310,10 @@ SKILL.md text is exposed only on demand and remains untrusted documentation.
   validation. Android 16/17 support remains pending.
 
 ## Examples (not framework capabilities)
+
+`plugins/capture/` is an example SSL plaintext capture plugin built on the
+host `module` + `hook` services; it is unload-safe and writes capture records
+under the target app files dir. See `plugins/capture/SKILL.md`.
 
 `plugins/unpack/` is a **use-case demo**, not a stable framework feature. It is
 built as a dynamically loaded plugin (`plugins/unpack/build.sh` →

@@ -250,6 +250,7 @@ jobs:
       - name: Build example plugins
         run: |
           ./plugins/hello/build.sh
+          ./plugins/capture/build.sh
           ./plugins/unpack/build.sh
 
       - name: Upload example plugins

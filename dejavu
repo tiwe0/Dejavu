@@ -605,6 +605,10 @@ def command_java(args: argparse.Namespace) -> int:
         return exec_inline(args, args.process, code)
     if action == "release":
         return exec_inline(args, args.process, f"return java.release({args.handle})")
+    if action in ("load_dex", "load-dex"):
+        return exec_inline(
+            args, args.process, f"return java.load_dex({lua_quote(args.path)})"
+        )
     fail(f"unsupported java action: {action}")
 
 
@@ -890,6 +894,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings install-file libc.so read /data/local/tmp/hook.c\n"
             "  ./dejavu native -p com.android.settings call-file libc.so getpid /data/local/tmp/call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
+            "  ./dejavu java -p com.android.settings load-dex /data/user_de/0/com.android.settings/files/probe.dex\n"
             "  ./dejavu mcp -p com.android.settings   # MCP stdio server for AI agents\n"
             "  ./dejavu plugin -p com.android.settings list\n"
             "  ./dejavu plugin -p com.android.settings allow /data/user_de/0/com.android.settings/files/libdemo.so\n"
@@ -1052,6 +1057,11 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser = java_actions.add_parser("release", help="release a Java object handle")
     release_parser.add_argument("handle", type=int)
     release_parser.set_defaults(func=command_java)
+    load_dex_parser = java_actions.add_parser(
+        "load-dex", help="load a .dex file and return its ClassLoader handle"
+    )
+    load_dex_parser.add_argument("path", help="device path to the .dex file")
+    load_dex_parser.set_defaults(func=command_java)
 
     sub = subparsers.add_parser("plugin", help="load, inspect and call native plugins")
     sub.add_argument("-p", "--process", default="bin.mt.plus")

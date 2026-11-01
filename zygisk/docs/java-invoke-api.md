@@ -7,6 +7,7 @@ Lua control session (CLI, REPL, `run/<process>.lua`):
 local text = java.invoke(class_name, method_name, jni_signature, ...args)
 local text = java.invoke(handle, method_name, jni_signature, ...args)
 local handle = java.new(class_name, constructor_signature, ...args)
+local loader = java.load_dex(device_dex_path)
 java.release(handle)
 ```
 
@@ -15,7 +16,12 @@ java.release(handle)
   (integer).
 - `java.new` constructs an object and returns a process-session scoped integer
   handle.
-- `java.release` deletes the global reference behind a handle.
+- `java.load_dex(path)` loads a raw `.dex` file with
+  `android.system.InMemoryDexClassLoader` (API 26+) and returns a ClassLoader
+  handle. Use `"<loader_handle>:<class_name>"` as the class argument of
+  `java.invoke`/`java.new` to resolve classes from that loader.
+- `java.release` deletes the global reference behind a handle. Releasing a
+  loader handle does not unload classes already loaded from it.
 
 ## Examples
 
@@ -34,6 +40,23 @@ local decimal = java.invoke("java.lang.Double", "parseDouble", "(Ljava/lang/Stri
 local flag = java.invoke("java.lang.Boolean", "parseBoolean", "(Ljava/lang/String;)Z", "true")
 ```
 
+Dex class loader:
+
+```lua
+local loader = java.load_dex("/data/user_de/0/com.android.settings/files/probe.dex")
+local text = java.invoke(loader .. ":dexprobe.Probe", "hello",
+                         "(Ljava/lang/String;)Ljava/lang/String;", "world")
+local value = java.invoke(loader .. ":dexprobe.Probe", "add", "(II)I", 3, 4)
+local object = java.new(loader .. ":dexprobe.Probe", "(Ljava/lang/String;)V", "abc")
+local value_text = java.invoke(object, "value", "()Ljava/lang/String;")
+java.release(object)
+java.release(loader)
+```
+
+`java.load_dex` accepts a raw dex file readable by the target process; it does
+not extract `classes.dex` from APK/JAR files. The dex is loaded in memory, so
+no writable optimized-directory is needed.
+
 Constructors and instance methods:
 
 ```lua
@@ -51,6 +74,9 @@ The CLI exposes the same calls:
     '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p com.android.settings invoke 1 toString '()Ljava/lang/String;'
 ./dejavu java -p com.android.settings release 1
+./dejavu java -p com.android.settings load-dex \
+    /data/user_de/0/com.android.settings/files/probe.dex
+./dejavu java -p com.android.settings invoke 2:dexprobe.Probe add '(II)I' --arg 3 --arg 4
 ```
 
 ## Argument conversion protocol
