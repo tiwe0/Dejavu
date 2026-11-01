@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "dejavu.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int host_add(int left, int right) {
     return left + right;
@@ -118,6 +122,34 @@ int main(void) {
         dejavu_module_destroy(module);
         dejavu_engine_destroy(engine);
         return 1;
+    }
+
+    {
+        char path[] = "/tmp/dejavu-compile-file-XXXXXX";
+        const char *file_source = "int dejavu_entry(void) { return 7; }";
+        const int file_descriptor = mkstemp(path);
+        if (!check(file_descriptor >= 0, "compile_file temp file")) {
+            dejavu_engine_destroy(engine);
+            return 1;
+        }
+        const ssize_t written = write(file_descriptor, file_source, strlen(file_source));
+        close(file_descriptor);
+        if (!check(written == (ssize_t)strlen(file_source), "compile_file write")) {
+            unlink(path);
+            dejavu_engine_destroy(engine);
+            return 1;
+        }
+        status = dejavu_engine_compile_file(engine, path, &module, error, sizeof(error));
+        unlink(path);
+        if (!check(status == DEJAVU_OK, error) ||
+            !check(dejavu_module_call(module, &result) == DEJAVU_OK, "compile_file call") ||
+            !check(result == 7, "compile_file result")) {
+            dejavu_module_destroy(module);
+            dejavu_engine_destroy(engine);
+            return 1;
+        }
+        dejavu_module_destroy(module);
+        module = NULL;
     }
 
     status = dejavu_control_run(engine, lua_script, &result, error, sizeof(error));

@@ -13,6 +13,7 @@ struct DejavuRuntime {
     decltype(&dejavu_engine_destroy) engine_destroy;
     decltype(&dejavu_engine_add_symbol) engine_add_symbol;
     decltype(&dejavu_engine_compile) engine_compile;
+    decltype(&dejavu_engine_compile_file) engine_compile_file;
     decltype(&dejavu_module_symbol) module_symbol;
     decltype(&dejavu_module_call) module_call;
     decltype(&dejavu_module_destroy) module_destroy;
@@ -27,9 +28,5 @@ struct DejavuRuntime {
     decltype(&dejavu_smoke) smoke;
 };
 
-bool dejavu_runtime_load(
-    int module_dir_fd,
-    DejavuRuntime *runtime,
-    char *error,
-    size_t error_size);
+bool dejavu_runtime_load(int module_dir_fd, DejavuRuntime *runtime, char *error, size_t error_size);
 void dejavu_runtime_unload(DejavuRuntime *runtime);

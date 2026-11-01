@@ -200,6 +200,7 @@ control channel into one command:
 ./dejavu plugin -p <process> list
 ./dejavu plugin -p <process> allow <device-plugin.so>   # trusted allowlist
 ./dejavu plugin -p <process> load <device-plugin.so>
+./dejavu plugin -p <process> jit <device-source.c>   # TinyCC JIT
 ./dejavu plugin -p <process> call <name> <namespace.function> [--arg VALUE]
 ./dejavu plugin -p <process> unload <name>
 ./dejavu plugin -p <process> skill <name>   # read per-plugin SKILL.md

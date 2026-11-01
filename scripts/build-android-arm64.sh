@@ -178,6 +178,7 @@ expected_exports=$(printf '%s\n' \
     dejavu_engine_destroy \
     dejavu_engine_add_symbol \
     dejavu_engine_compile \
+    dejavu_engine_compile_file \
     dejavu_module_symbol \
     dejavu_module_call \
     dejavu_module_destroy \

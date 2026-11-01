@@ -36,6 +36,81 @@ constexpr size_t kMaximumSkillSize = 128 * 1024;
 
 thread_local size_t g_loading_plugin_index = kPluginIndexNone;
 
+constexpr char kJitPrelude[] = R"DEJAVU_JIT(
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
+typedef struct DejavuJitValue {
+    int type;
+    int owned;
+    int boolean_value;
+    long long integer_value;
+    double number_value;
+    const char *string_value;
+    unsigned long string_size;
+    void *handle_value;
+    unsigned long long function_value;
+    void *host_function;
+    void *host_context;
+} DejavuJitValue;
+
+typedef int (*DejavuJitFunction)(void *session, void *context,
+                                 const DejavuJitValue *arguments,
+                                 unsigned long argument_count,
+                                 DejavuJitValue *result,
+                                 char *error, unsigned long error_size);
+
+extern int dejavu_jit_register(const char *namespace_name, const char *function_name,
+                               DejavuJitFunction function, void *context,
+                               char *error, unsigned long error_size);
+extern void *dejavu_jit_alloc(unsigned long size);
+extern void dejavu_jit_free(void *pointer);
+extern int dejavu_jit_log(int priority, const char *message);
+extern void *dejavu_jit_get_app_class_loader(void);
+extern int dejavu_jit_mem_read(unsigned long long address, void *buffer, unsigned long size);
+extern int dejavu_jit_mem_write(unsigned long long address, const void *buffer,
+                                unsigned long size);
+extern int dejavu_jit_mem_query(unsigned long long address, unsigned long long *start,
+                                unsigned long long *end, unsigned int *prot);
+extern void *dejavu_jit_module_resolve(const char *library, const char *symbol);
+extern int dejavu_jit_hook_install(void *target, void *replacement, void **original,
+                                   char *error, unsigned long error_size);
+extern int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size);
+
+const char *dejavu_jit_plugin_name(void);
+const char *dejavu_jit_plugin_version(void);
+int dejavu_jit_plugin_unload_safe(void);
+int dejavu_jit_plugin_init(void);
+void dejavu_jit_plugin_shutdown(void);
+)DEJAVU_JIT";
+
+struct JitValueLayout {
+    int type;
+    int owned;
+    int boolean_value;
+    long long integer_value;
+    double number_value;
+    const char *string_value;
+    unsigned long string_size;
+    void *handle_value;
+    unsigned long long function_value;
+    void *host_function;
+    void *host_context;
+};
+static_assert(sizeof(JitValueLayout) == sizeof(dejavu_value), "JIT value layout mismatch");
+static_assert(offsetof(JitValueLayout, string_value) == offsetof(dejavu_value, string_value),
+              "JIT value offset mismatch");
+
+using JitFunction = int (*)(void *, void *, const JitValueLayout *, unsigned long, JitValueLayout *,
+                            char *, unsigned long);
+using JitInitFunction = int (*)();
+using JitShutdownFunction = void (*)();
+using JitStringFunction = const char *(*)();
+using JitUnloadSafeFunction = int (*)();
+
+PluginManager *g_jit_manager = nullptr;
+
 int PluginManagerHostMemRead(void *host_context, uintptr_t address, void *buffer, size_t size);
 int PluginManagerHostMemWrite(void *host_context, uintptr_t address, const void *buffer,
                               size_t size);
@@ -83,6 +158,43 @@ bool valid_identifier_text(const char *value) {
     return true;
 }
 
+void read_skill_text(const std::string &path, std::string *text) {
+    const std::string sidecar = path + ".SKILL.md";
+    std::string skill_path;
+    struct stat information = {};
+    if (lstat(sidecar.c_str(), &information) == 0 && S_ISREG(information.st_mode)) {
+        skill_path = sidecar;
+    } else {
+        const size_t slash = path.find_last_of('/');
+        const std::string directory = slash == std::string::npos ? "." : path.substr(0, slash);
+        const std::string fallback = directory + "/SKILL.md";
+        if (lstat(fallback.c_str(), &information) == 0 && S_ISREG(information.st_mode)) {
+            skill_path = fallback;
+        }
+    }
+    if (skill_path.empty()) {
+        return;
+    }
+    std::ifstream skill_file(skill_path, std::ios::binary);
+    if (!skill_file.is_open()) {
+        return;
+    }
+    std::ostringstream buffer;
+    char chunk[4096];
+    size_t total = 0;
+    while (skill_file && total < kMaximumSkillSize) {
+        const size_t wanted = std::min(sizeof(chunk), kMaximumSkillSize - total);
+        skill_file.read(chunk, static_cast<std::streamsize>(wanted));
+        const size_t count = static_cast<size_t>(skill_file.gcount());
+        if (count == 0) {
+            break;
+        }
+        buffer.write(chunk, static_cast<std::streamsize>(count));
+        total += count;
+    }
+    *text = buffer.str();
+}
+
 void trim_line(std::string *line) {
     const size_t first = line->find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -98,6 +210,82 @@ void log_line(int priority, const char *message) {
 }
 
 } // namespace
+
+extern "C" int dejavu_jit_register(const char *namespace_name, const char *function_name,
+                                   JitFunction function, void *context, char *error,
+                                   unsigned long error_size) {
+    if (g_jit_manager == nullptr) {
+        std::snprintf(error, error_size, "JIT registration outside plugin initialization");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    return g_jit_manager->register_jit_function(namespace_name, function_name,
+                                                reinterpret_cast<void *>(function), context, error,
+                                                error_size)
+               ? DEJAVU_OK
+               : DEJAVU_ERROR_INVALID_ARGUMENT;
+}
+
+extern "C" void *dejavu_jit_alloc(unsigned long size) {
+    return malloc(size);
+}
+
+extern "C" void dejavu_jit_free(void *pointer) {
+    free(pointer);
+}
+
+extern "C" int dejavu_jit_log(int priority, const char *message) {
+    log_line(priority, message);
+    return 0;
+}
+
+extern "C" void *dejavu_jit_get_app_class_loader(void) {
+    return g_jit_manager != nullptr ? g_jit_manager->app_class_loader() : nullptr;
+}
+
+extern "C" int dejavu_jit_mem_read(unsigned long long address, void *buffer, unsigned long size) {
+    return PluginManagerHostMemRead(g_jit_manager, static_cast<uintptr_t>(address), buffer,
+                                    static_cast<size_t>(size));
+}
+
+extern "C" int dejavu_jit_mem_write(unsigned long long address, const void *buffer,
+                                    unsigned long size) {
+    return PluginManagerHostMemWrite(g_jit_manager, static_cast<uintptr_t>(address), buffer,
+                                     static_cast<size_t>(size));
+}
+
+extern "C" int dejavu_jit_mem_query(unsigned long long address, unsigned long long *start,
+                                    unsigned long long *end, unsigned int *prot) {
+    uintptr_t host_start = 0;
+    uintptr_t host_end = 0;
+    uint32_t host_prot = 0;
+    const int status = PluginManagerHostMemQuery(g_jit_manager, static_cast<uintptr_t>(address),
+                                                 &host_start, &host_end, &host_prot);
+    if (start != nullptr) {
+        *start = static_cast<unsigned long long>(host_start);
+    }
+    if (end != nullptr) {
+        *end = static_cast<unsigned long long>(host_end);
+    }
+    if (prot != nullptr) {
+        *prot = host_prot;
+    }
+    return status;
+}
+
+extern "C" void *dejavu_jit_module_resolve(const char *library, const char *symbol) {
+    return PluginManagerHostModuleResolve(g_jit_manager, library, symbol);
+}
+
+extern "C" int dejavu_jit_hook_install(void *target, void *replacement, void **original,
+                                       char *error, unsigned long error_size) {
+    return PluginManagerHostHookInstall(g_jit_manager, target, replacement, original, error,
+                                        static_cast<size_t>(error_size));
+}
+
+extern "C" int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size) {
+    return PluginManagerHostHookUninstall(g_jit_manager, target, error,
+                                          static_cast<size_t>(error_size));
+}
 
 PluginManager::PluginManager() = default;
 
@@ -116,11 +304,22 @@ PluginManager::~PluginManager() {
 
 void PluginManager::shutdown() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (g_jit_manager == this) {
+        g_jit_manager = nullptr;
+    }
     for (auto &plugin : plugins_) {
         if (!plugin->loaded) {
             continue;
         }
-        if (plugin->descriptor != nullptr && plugin->descriptor->shutdown != nullptr) {
+        if (plugin->jit) {
+            if (plugin->jit_shutdown != nullptr) {
+                plugin->jit_shutdown();
+            }
+            if (plugin->jit_module != nullptr && runtime_ != nullptr) {
+                runtime_->module_destroy(plugin->jit_module);
+                plugin->jit_module = nullptr;
+            }
+        } else if (plugin->descriptor != nullptr && plugin->descriptor->shutdown != nullptr) {
             plugin->descriptor->shutdown(plugin->state);
         }
         for (auto &entry : entries_) {
@@ -365,40 +564,7 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         return false;
     }
     plugins_[plugin_index]->loaded = true;
-    {
-        const std::string sidecar = path + ".SKILL.md";
-        std::string skill_path;
-        struct stat skill_stat = {};
-        if (lstat(sidecar.c_str(), &skill_stat) == 0 && S_ISREG(skill_stat.st_mode)) {
-            skill_path = sidecar;
-        } else {
-            const size_t slash = path.find_last_of('/');
-            const std::string directory = slash == std::string::npos ? "." : path.substr(0, slash);
-            const std::string fallback = directory + "/SKILL.md";
-            if (lstat(fallback.c_str(), &skill_stat) == 0 && S_ISREG(skill_stat.st_mode)) {
-                skill_path = fallback;
-            }
-        }
-        if (!skill_path.empty()) {
-            std::ifstream skill_file(skill_path, std::ios::binary);
-            if (skill_file.is_open()) {
-                std::ostringstream buffer;
-                char chunk[4096];
-                size_t total = 0;
-                while (skill_file && total < kMaximumSkillSize) {
-                    const size_t wanted = std::min(sizeof(chunk), kMaximumSkillSize - total);
-                    skill_file.read(chunk, static_cast<std::streamsize>(wanted));
-                    const size_t count = static_cast<size_t>(skill_file.gcount());
-                    if (count == 0) {
-                        break;
-                    }
-                    buffer.write(chunk, static_cast<std::streamsize>(count));
-                    total += count;
-                }
-                plugins_[plugin_index]->skill_text = buffer.str();
-            }
-        }
-    }
+    read_skill_text(path, &plugins_[plugin_index]->skill_text);
     if (session_ != nullptr && descriptor->on_control_ready != nullptr) {
         descriptor->on_control_ready(plugins_[plugin_index]->state);
         plugins_[plugin_index]->control_ready = true;
@@ -408,6 +574,155 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         (plugins_[plugin_index]->version.empty() ? "" : " " + plugins_[plugin_index]->version);
     log_line(ANDROID_LOG_INFO, ("plugin loaded: " + *status + " from " + path).c_str());
     return true;
+}
+
+bool PluginManager::load_jit_plugin(const std::string &path, std::string *status,
+                                    std::string *error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    refresh_allowed_paths();
+    return load_jit_plugin_locked(path, status, error);
+}
+
+bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string *status,
+                                           std::string *error) {
+    if (engine_ == nullptr || runtime_ == nullptr) {
+        *error = "JIT plugins require the Lua control engine; load after start_control";
+        return false;
+    }
+    if (!whitelisted_path(path)) {
+        *error = "JIT source is not in the trusted allowlist";
+        return false;
+    }
+    struct stat information = {};
+    if (lstat(path.c_str(), &information) != 0 || !S_ISREG(information.st_mode)) {
+        *error = "JIT source must be a regular file (no symlinks)";
+        return false;
+    }
+    if ((information.st_mode & 0022) != 0) {
+        *error = "JIT source must not be group/world writable";
+        return false;
+    }
+    if (information.st_uid != 0 && information.st_uid != getuid()) {
+        *error = "JIT source must be owned by root or the target uid";
+        return false;
+    }
+    if (information.st_size <= 0 || information.st_size > 512 * 1024) {
+        *error = "JIT source size is invalid (limit 512 KiB)";
+        return false;
+    }
+    std::ifstream source_file(path, std::ios::binary);
+    if (!source_file.is_open()) {
+        *error = "unable to read JIT source";
+        return false;
+    }
+    std::ostringstream source_buffer;
+    source_buffer << source_file.rdbuf();
+    const std::string source = source_buffer.str();
+    if (source.empty()) {
+        *error = "JIT source is empty";
+        return false;
+    }
+    const std::string full_source = std::string(kJitPrelude) + "\n" + source;
+    dejavu_module *module = nullptr;
+    char compile_error[1024] = {};
+    const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(), &module,
+                                                        compile_error, sizeof(compile_error));
+    if (compile_status != DEJAVU_OK || module == nullptr) {
+        if (module != nullptr) {
+            runtime_->module_destroy(module);
+        }
+        *error = compile_error[0] != '\0' ? compile_error : "JIT compilation failed";
+        return false;
+    }
+    auto symbol = [this, module](const char *name) {
+        return runtime_->module_symbol(module, name);
+    };
+    auto *initialize = reinterpret_cast<JitInitFunction>(symbol("dejavu_jit_plugin_init"));
+    if (initialize == nullptr) {
+        runtime_->module_destroy(module);
+        *error = "JIT source must define int dejavu_jit_plugin_init(void)";
+        return false;
+    }
+    auto *shutdown = reinterpret_cast<JitShutdownFunction>(symbol("dejavu_jit_plugin_shutdown"));
+    auto *name_function = reinterpret_cast<JitStringFunction>(symbol("dejavu_jit_plugin_name"));
+    auto *version_function =
+        reinterpret_cast<JitStringFunction>(symbol("dejavu_jit_plugin_version"));
+    auto *unload_safe_function =
+        reinterpret_cast<JitUnloadSafeFunction>(symbol("dejavu_jit_plugin_unload_safe"));
+    auto *control_ready =
+        reinterpret_cast<JitShutdownFunction>(symbol("dejavu_jit_plugin_control_ready"));
+    std::string plugin_name;
+    if (name_function != nullptr && name_function() != nullptr) {
+        plugin_name = name_function();
+    } else {
+        size_t slash = path.find_last_of('/');
+        std::string stem = slash == std::string::npos ? path : path.substr(slash + 1);
+        const size_t dot = stem.find_last_of('.');
+        if (dot != std::string::npos) {
+            stem.resize(dot);
+        }
+        plugin_name = stem;
+    }
+    if (!valid_identifier(plugin_name)) {
+        runtime_->module_destroy(module);
+        *error = "JIT plugin name must be a simple identifier";
+        return false;
+    }
+    if (name_exists(plugin_name)) {
+        runtime_->module_destroy(module);
+        *error = "plugin name already registered: " + plugin_name;
+        return false;
+    }
+    auto plugin = std::make_unique<Plugin>();
+    plugin->path = path;
+    plugin->name = plugin_name;
+    plugin->version =
+        (version_function != nullptr && version_function() != nullptr) ? version_function() : "";
+    plugin->flags = (unload_safe_function != nullptr && unload_safe_function() != 0)
+                        ? DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE
+                        : 0;
+    plugin->jit = true;
+    plugin->jit_module = module;
+    plugin->jit_shutdown = shutdown;
+    const size_t plugin_index = plugins_.size();
+    plugins_.push_back(std::move(plugin));
+    char init_error[512] = {};
+    g_loading_plugin_index = plugin_index;
+    g_jit_manager = this;
+    const int init_status = initialize();
+    g_loading_plugin_index = kPluginIndexNone;
+    if (init_status != 0) {
+        *error = init_error[0] != '\0' ? init_error : "JIT plugin initialize failed";
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        invalidate_entries(plugin_index);
+        plugins_.pop_back();
+        runtime_->module_destroy(module);
+        return false;
+    }
+    plugins_[plugin_index]->loaded = true;
+    read_skill_text(path, &plugins_[plugin_index]->skill_text);
+    if (session_ != nullptr && control_ready != nullptr) {
+        control_ready();
+        plugins_[plugin_index]->control_ready = true;
+    }
+    *status =
+        plugins_[plugin_index]->name +
+        (plugins_[plugin_index]->version.empty() ? "" : " " + plugins_[plugin_index]->version);
+    log_line(ANDROID_LOG_INFO, ("JIT plugin loaded: " + *status + " from " + path).c_str());
+    return true;
+}
+
+bool PluginManager::register_jit_function(const char *namespace_name, const char *function_name,
+                                          void *function, void *function_context, char *error,
+                                          size_t error_size) {
+    if (function == nullptr) {
+        std::snprintf(error, error_size, "JIT function pointer is null");
+        return false;
+    }
+    const int status = host_register_function(this, namespace_name, function_name,
+                                              reinterpret_cast<dejavu_host_function>(function),
+                                              function_context, error, error_size);
+    return status == DEJAVU_OK;
 }
 
 bool PluginManager::unload_plugin(const std::string &name, std::string *status,
@@ -436,14 +751,22 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
             return false;
         }
     }
-    if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
+    if (target->jit) {
+        if (target->jit_shutdown != nullptr) {
+            target->jit_shutdown();
+        }
+        if (target->jit_module != nullptr && runtime_ != nullptr) {
+            runtime_->module_destroy(target->jit_module);
+            target->jit_module = nullptr;
+        }
+    } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
         target->descriptor->shutdown(target->state);
     }
     invalidate_entries(index);
     target->loaded = false;
     target->control_ready = false;
     target->state = nullptr;
-    if (target->handle != nullptr) {
+    if (!target->jit && target->handle != nullptr) {
         dlclose(target->handle);
         target->handle = nullptr;
     }
@@ -461,9 +784,10 @@ bool PluginManager::register_lua(dejavu_control_session *session, std::string *e
         dejavu_host_function function;
     };
     const Registration registrations[] = {
-        {"load", &PluginManager::lua_load},     {"list", &PluginManager::lua_list},
-        {"status", &PluginManager::lua_status}, {"unload", &PluginManager::lua_unload},
-        {"call", &PluginManager::lua_call},     {"skill", &PluginManager::lua_skill},
+        {"load", &PluginManager::lua_load},     {"load_jit", &PluginManager::lua_load_jit},
+        {"list", &PluginManager::lua_list},     {"status", &PluginManager::lua_status},
+        {"unload", &PluginManager::lua_unload}, {"call", &PluginManager::lua_call},
+        {"skill", &PluginManager::lua_skill},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -479,13 +803,44 @@ bool PluginManager::register_lua(dejavu_control_session *session, std::string *e
     return true;
 }
 
-bool PluginManager::attach_session(dejavu_control_session *session, JNIEnv *env,
-                                   jobject app_class_loader, std::string *error) {
+bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engine *engine,
+                                   JNIEnv *env, jobject app_class_loader, std::string *error) {
     if (session == nullptr) {
         *error = "invalid plugin control session";
         return false;
     }
     session_ = session;
+    engine_ = engine;
+    g_jit_manager = this;
+    if (engine_ != nullptr) {
+        struct HostSymbol {
+            const char *name;
+            const void *address;
+        };
+        const HostSymbol host_symbols[] = {
+            {"dejavu_jit_register", reinterpret_cast<const void *>(&dejavu_jit_register)},
+            {"dejavu_jit_alloc", reinterpret_cast<const void *>(&dejavu_jit_alloc)},
+            {"dejavu_jit_free", reinterpret_cast<const void *>(&dejavu_jit_free)},
+            {"dejavu_jit_log", reinterpret_cast<const void *>(&dejavu_jit_log)},
+            {"dejavu_jit_get_app_class_loader",
+             reinterpret_cast<const void *>(&dejavu_jit_get_app_class_loader)},
+            {"dejavu_jit_mem_read", reinterpret_cast<const void *>(&dejavu_jit_mem_read)},
+            {"dejavu_jit_mem_write", reinterpret_cast<const void *>(&dejavu_jit_mem_write)},
+            {"dejavu_jit_mem_query", reinterpret_cast<const void *>(&dejavu_jit_mem_query)},
+            {"dejavu_jit_module_resolve",
+             reinterpret_cast<const void *>(&dejavu_jit_module_resolve)},
+            {"dejavu_jit_hook_install", reinterpret_cast<const void *>(&dejavu_jit_hook_install)},
+            {"dejavu_jit_hook_uninstall",
+             reinterpret_cast<const void *>(&dejavu_jit_hook_uninstall)},
+        };
+        for (const HostSymbol &symbol : host_symbols) {
+            const int status = runtime_->engine_add_symbol(engine_, symbol.name, symbol.address);
+            if (status != DEJAVU_OK) {
+                *error = std::string("unable to register JIT host symbol ") + symbol.name;
+                return false;
+            }
+        }
+    }
     if (env != nullptr && app_class_loader != nullptr) {
         if (app_class_loader_ != nullptr) {
             env->DeleteGlobalRef(app_class_loader_);
@@ -632,6 +987,29 @@ bool PluginManager::lua_string_argument(const dejavu_value *arguments, size_t co
     return true;
 }
 
+int PluginManager::lua_load_jit(dejavu_control_session *, void *context,
+                                const dejavu_value *arguments, size_t argument_count,
+                                dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<PluginManager *>(context);
+    std::string path;
+    if (manager == nullptr || argument_count != 1 ||
+        !lua_string_argument(arguments, argument_count, 0, &path)) {
+        std::snprintf(error, error_size, "plugin.load_jit expects a source file path");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string status;
+    std::string load_error;
+    if (!manager->load_jit_plugin(path, &status, &load_error)) {
+        std::snprintf(error, error_size, "%s", load_error.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    if (!make_string(status, result)) {
+        std::snprintf(error, error_size, "unable to allocate plugin status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    return DEJAVU_OK;
+}
+
 int PluginManager::lua_load(dejavu_control_session *, void *context, const dejavu_value *arguments,
                             size_t argument_count, dejavu_value *result, char *error,
                             size_t error_size) {
@@ -671,6 +1049,7 @@ std::string PluginManager::status() const {
             output << " " << plugin->version;
         }
         output << " loaded=" << (plugin->loaded ? "yes" : "no")
+               << " jit=" << (plugin->jit ? "yes" : "no")
                << " skill=" << (plugin->skill_text.empty() ? "no" : "yes")
                << " path=" << plugin->path << "]";
     }

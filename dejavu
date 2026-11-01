@@ -413,7 +413,13 @@ def command_deploy_agent(args: argparse.Namespace) -> int:
         + "\n"
         + (REPO_ROOT / "zygisk" / "config" / "init.lua").read_text()
     )
+    core = (
+        REPO_ROOT / "out" / f"android-arm64-v8a-api{args.api}" / "libdejavu.so"
+    )
+    if not core.is_file():
+        fail(f"core library not found: {core}; run `./dejavu build` first")
     print(f"deploying agent for {args.process}")
+    install_file_into_module(args, core, f"{MODULE_DIR}/lib/arm64-v8a/libdejavu.so", "0755")
     install_file_into_module(args, agent, f"{MODULE_DIR}/lib/arm64-v8a/libdejavu_agent.so", "0755")
     with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
         handle.write(render)
@@ -598,6 +604,8 @@ def command_plugin(args: argparse.Namespace) -> int:
         return exec_inline(args, process, f"return plugin.unload({lua_quote(args.name)})")
     if action == "skill":
         return exec_inline(args, process, f"return plugin.skill({lua_quote(args.name)})")
+    if action == "jit":
+        return exec_inline(args, process, f"return plugin.load_jit({lua_quote(args.path)})")
     if action == "call":
         arguments = "".join(f", {lua_argument_literal(value)}" for value in args.arguments)
         return exec_inline(
@@ -828,6 +836,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_skill.add_argument("name")
     plugin_skill.set_defaults(func=command_plugin)
+    plugin_jit = plugin_actions.add_parser(
+        "jit", help="read a C source file and compile/load it with TinyCC"
+    )
+    plugin_jit.add_argument("path", help="device path to the JIT C source")
+    plugin_jit.set_defaults(func=command_plugin)
     plugin_call = plugin_actions.add_parser("call", help="call a registered plugin function")
     plugin_call.add_argument("name", help="plugin name, e.g. hello")
     plugin_call.add_argument("function", help="namespace.function or function name")

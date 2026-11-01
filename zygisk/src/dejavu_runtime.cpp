@@ -19,8 +19,7 @@ void set_error(char *error, size_t error_size, const char *message) {
     snprintf(error, error_size, "%s", message != nullptr ? message : "unknown error");
 }
 
-template <typename Function>
-bool resolve(void *handle, const char *name, Function *function) {
+template <typename Function> bool resolve(void *handle, const char *name, Function *function) {
     dlerror();
     void *symbol = dlsym(handle, name);
     if (symbol == nullptr || dlerror() != nullptr) {
@@ -31,13 +30,10 @@ bool resolve(void *handle, const char *name, Function *function) {
     return true;
 }
 
-}  // namespace
+} // namespace
 
-bool dejavu_runtime_load(
-    int module_dir_fd,
-    DejavuRuntime *runtime,
-    char *error,
-    size_t error_size) {
+bool dejavu_runtime_load(int module_dir_fd, DejavuRuntime *runtime, char *error,
+                         size_t error_size) {
     android_dlextinfo info = {};
     void *handle;
     int library_fd;
@@ -65,15 +61,15 @@ bool dejavu_runtime_load(
     }
 
     runtime->handle = handle;
-#define RESOLVE_DEJAVU(member, symbol) \
-    do { \
-        if (!resolve(handle, symbol, &runtime->member)) { \
-            char message[128]; \
-            snprintf(message, sizeof(message), "missing Dejavu ABI symbol: %s", symbol); \
-            set_error(error, error_size, message); \
-            dejavu_runtime_unload(runtime); \
-            return false; \
-        } \
+#define RESOLVE_DEJAVU(member, symbol)                                                             \
+    do {                                                                                           \
+        if (!resolve(handle, symbol, &runtime->member)) {                                          \
+            char message[128];                                                                     \
+            snprintf(message, sizeof(message), "missing Dejavu ABI symbol: %s", symbol);           \
+            set_error(error, error_size, message);                                                 \
+            dejavu_runtime_unload(runtime);                                                        \
+            return false;                                                                          \
+        }                                                                                          \
     } while (false)
     RESOLVE_DEJAVU(version, "dejavu_version");
     RESOLVE_DEJAVU(lua_version, "dejavu_lua_version");
@@ -82,6 +78,7 @@ bool dejavu_runtime_load(
     RESOLVE_DEJAVU(engine_destroy, "dejavu_engine_destroy");
     RESOLVE_DEJAVU(engine_add_symbol, "dejavu_engine_add_symbol");
     RESOLVE_DEJAVU(engine_compile, "dejavu_engine_compile");
+    RESOLVE_DEJAVU(engine_compile_file, "dejavu_engine_compile_file");
     RESOLVE_DEJAVU(module_symbol, "dejavu_module_symbol");
     RESOLVE_DEJAVU(module_call, "dejavu_module_call");
     RESOLVE_DEJAVU(module_destroy, "dejavu_module_destroy");
@@ -90,9 +87,7 @@ bool dejavu_runtime_load(
     RESOLVE_DEJAVU(control_session_register, "dejavu_control_session_register");
     RESOLVE_DEJAVU(control_session_eval, "dejavu_control_session_eval");
     RESOLVE_DEJAVU(control_session_invoke, "dejavu_control_session_invoke");
-    RESOLVE_DEJAVU(
-        control_session_release_function,
-        "dejavu_control_session_release_function");
+    RESOLVE_DEJAVU(control_session_release_function, "dejavu_control_session_release_function");
     RESOLVE_DEJAVU(value_release, "dejavu_value_release");
     RESOLVE_DEJAVU(control_run, "dejavu_control_run");
     RESOLVE_DEJAVU(smoke, "dejavu_smoke");

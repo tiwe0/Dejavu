@@ -4,6 +4,8 @@ These shared objects are **examples and ABI contract tests**, not part of the
 framework. They are built separately from the agent and loaded through
 `plugin.load()` / `debug.dejavu.plugins`.
 
+- [`hello/hello_jit.c`](hello/hello_jit.c) — TinyCC JIT version: `plugin jit`
+  reads/compiles the C source in-process; exercises host mem/module services.
 - [`hello/`](hello/plugin_entry.cpp) — minimal unload-safe plugin that
   exercises host services (`mem.query`, `module.resolve`), registration and
   safe unload. Built by `hello/build.sh`.

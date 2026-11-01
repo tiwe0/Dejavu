@@ -24,14 +24,21 @@ class PluginManager {
     PluginManager &operator=(const PluginManager &) = delete;
 
     bool initialize(DejavuRuntime *runtime, JavaVM *vm, std::string *error);
-    bool attach_session(dejavu_control_session *session, JNIEnv *env, jobject app_class_loader,
-                        std::string *error);
+    bool attach_session(dejavu_control_session *session, dejavu_engine *engine, JNIEnv *env,
+                        jobject app_class_loader, std::string *error);
     bool register_lua(dejavu_control_session *session, std::string *error);
     void shutdown();
 
     bool load_plugin(const std::string &path, std::string *status, std::string *error);
+    bool load_jit_plugin(const std::string &path, std::string *status, std::string *error);
+    bool register_jit_function(const char *namespace_name, const char *function_name,
+                               void *function, void *function_context, char *error,
+                               size_t error_size);
     bool unload_plugin(const std::string &name, std::string *status, std::string *error);
     std::string status() const;
+    jobject app_class_loader() const {
+        return app_class_loader_;
+    }
 
   private:
     struct Entry {
@@ -53,6 +60,9 @@ class PluginManager {
         uint32_t flags = 0;
         bool loaded = false;
         bool control_ready = false;
+        bool jit = false;
+        dejavu_module *jit_module = nullptr;
+        void (*jit_shutdown)() = nullptr;
         std::string skill_text;
     };
 
@@ -80,6 +90,8 @@ class PluginManager {
 
     static int lua_load(dejavu_control_session *, void *, const dejavu_value *, size_t,
                         dejavu_value *, char *, size_t);
+    static int lua_load_jit(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                            dejavu_value *, char *, size_t);
     static int lua_list(dejavu_control_session *, void *, const dejavu_value *, size_t,
                         dejavu_value *, char *, size_t);
     static int lua_unload(dejavu_control_session *, void *, const dejavu_value *, size_t,
@@ -93,6 +105,7 @@ class PluginManager {
 
     bool register_entry(Entry *entry, char *error, size_t error_size);
     bool load_plugin_locked(const std::string &path, std::string *status, std::string *error);
+    bool load_jit_plugin_locked(const std::string &path, std::string *status, std::string *error);
     void autoload_from_property();
     void load_plugin_manifest();
     void refresh_allowed_paths();
@@ -109,6 +122,7 @@ class PluginManager {
     DejavuRuntime *runtime_ = nullptr;
     JavaVM *vm_ = nullptr;
     dejavu_control_session *session_ = nullptr;
+    dejavu_engine *engine_ = nullptr;
     jobject app_class_loader_ = nullptr;
     DejavuPluginHost host_ = {};
     mutable std::recursive_mutex mutex_;

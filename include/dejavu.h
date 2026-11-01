@@ -109,6 +109,14 @@ DEJAVU_API int dejavu_engine_add_symbol(dejavu_engine *engine, const char *name,
 DEJAVU_API int dejavu_engine_compile(const dejavu_engine *engine, const char *source,
                                      dejavu_module **module, char *error, size_t error_size);
 
+/*
+ * Reads a C source file and compiles it with the same engine rules as
+ * dejavu_engine_compile(). The file must be a regular file no larger than
+ * 4 MiB; include paths are not configured, so sources should be self-contained.
+ */
+DEJAVU_API int dejavu_engine_compile_file(const dejavu_engine *engine, const char *path,
+                                          dejavu_module **module, char *error, size_t error_size);
+
 DEJAVU_API void *dejavu_module_symbol(dejavu_module *module, const char *name);
 DEJAVU_API int dejavu_module_call(dejavu_module *module, int *result);
 DEJAVU_API void dejavu_module_destroy(dejavu_module *module);

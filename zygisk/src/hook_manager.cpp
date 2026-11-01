@@ -489,7 +489,8 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
         return false;
     }
     if (impl_->plugins != nullptr &&
-        !impl_->plugins->attach_session(impl_->session, env, app_class_loader, error)) {
+        !impl_->plugins->attach_session(impl_->session, impl_->engine, env, app_class_loader,
+                                        error)) {
         return false;
     }
     dejavu_value result = {};

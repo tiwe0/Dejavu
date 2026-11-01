@@ -5,6 +5,7 @@
 #include "dejavu.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -79,11 +80,8 @@ static void tcc_error_callback(void *opaque, const char *message) {
     append_error((struct dejavu_error_sink *)opaque, message);
 }
 
-static int fail_compile(
-    TCCState *state,
-    int status,
-    struct dejavu_error_sink *sink,
-    const char *fallback) {
+static int fail_compile(TCCState *state, int status, struct dejavu_error_sink *sink,
+                        const char *fallback) {
     if (sink->length == 0) {
         append_error(sink, fallback);
     }
@@ -108,10 +106,7 @@ void dejavu_engine_destroy(dejavu_engine *engine) {
     free(engine);
 }
 
-int dejavu_engine_add_symbol(
-    dejavu_engine *engine,
-    const char *name,
-    const void *address) {
+int dejavu_engine_add_symbol(dejavu_engine *engine, const char *name, const void *address) {
     struct dejavu_symbol *symbols;
     char *name_copy;
     size_t index;
@@ -134,9 +129,8 @@ int dejavu_engine_add_symbol(
 
     if (engine->symbol_count == engine->symbol_capacity) {
         capacity = engine->symbol_capacity == 0 ? 8 : engine->symbol_capacity * 2;
-        symbols = (struct dejavu_symbol *)realloc(
-            engine->symbols,
-            capacity * sizeof(struct dejavu_symbol));
+        symbols = (struct dejavu_symbol *)realloc(engine->symbols,
+                                                  capacity * sizeof(struct dejavu_symbol));
         if (symbols == NULL) {
             return DEJAVU_ERROR_OUT_OF_MEMORY;
         }
@@ -156,12 +150,8 @@ int dejavu_engine_add_symbol(
     return DEJAVU_OK;
 }
 
-int dejavu_engine_compile(
-    const dejavu_engine *engine,
-    const char *source,
-    dejavu_module **module,
-    char *error,
-    size_t error_size) {
+int dejavu_engine_compile(const dejavu_engine *engine, const char *source, dejavu_module **module,
+                          char *error, size_t error_size) {
     struct dejavu_error_sink sink = {error, error_size, 0};
     dejavu_module *new_module;
     TCCState *state;
@@ -191,36 +181,29 @@ int dejavu_engine_compile(
     }
 
     for (index = 0; index < engine->symbol_count; ++index) {
-        if (tcc_add_symbol(state,
-                           engine->symbols[index].name,
-                           engine->symbols[index].address) < 0) {
+        if (tcc_add_symbol(state, engine->symbols[index].name, engine->symbols[index].address) <
+            0) {
             return fail_compile(state, DEJAVU_ERROR_TCC_SYMBOL, &sink,
                                 "unable to register host symbol");
         }
     }
 
     if (tcc_compile_string(state, source) < 0) {
-        return fail_compile(state, DEJAVU_ERROR_TCC_COMPILE, &sink,
-                            "C compilation failed");
+        return fail_compile(state, DEJAVU_ERROR_TCC_COMPILE, &sink, "C compilation failed");
     }
     relocation_size = tcc_relocate(state, NULL);
     if (relocation_size < 0) {
-        return fail_compile(state, DEJAVU_ERROR_TCC_RELOCATE, &sink,
-                            "C relocation failed");
+        return fail_compile(state, DEJAVU_ERROR_TCC_RELOCATE, &sink, "C relocation failed");
     }
 
     page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) {
         page_size = 4096;
     }
-    allocation_size = ((size_t)relocation_size + (size_t)page_size - 1) /
-                      (size_t)page_size * (size_t)page_size;
-    memory = mmap(NULL,
-                  allocation_size,
-                  PROT_READ | PROT_WRITE,
-                  MAP_PRIVATE | MAP_ANONYMOUS,
-                  -1,
-                  0);
+    allocation_size =
+        ((size_t)relocation_size + (size_t)page_size - 1) / (size_t)page_size * (size_t)page_size;
+    memory =
+        mmap(NULL, allocation_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED) {
         return fail_compile(state, DEJAVU_ERROR_OUT_OF_MEMORY, &sink,
                             "unable to allocate code pages");
@@ -234,8 +217,7 @@ int dejavu_engine_compile(
     new_module = (dejavu_module *)malloc(sizeof(dejavu_module));
     if (new_module == NULL) {
         munmap(memory, allocation_size);
-        return fail_compile(state, DEJAVU_ERROR_OUT_OF_MEMORY, &sink,
-                            "unable to allocate module");
+        return fail_compile(state, DEJAVU_ERROR_OUT_OF_MEMORY, &sink, "unable to allocate module");
     }
     new_module->state = state;
     new_module->memory = memory;
@@ -275,4 +257,52 @@ void dejavu_module_destroy(dejavu_module *module) {
     tcc_delete(module->state);
     munmap(module->memory, module->memory_size);
     free(module);
+}
+
+int dejavu_engine_compile_file(const dejavu_engine *engine, const char *path,
+                               dejavu_module **module, char *error, size_t error_size) {
+    const long maximum_size = 4 * 1024 * 1024;
+    FILE *file;
+    long size;
+    char *source;
+    size_t read_size;
+    int status;
+
+    clear_error(error, error_size);
+    if (engine == NULL || path == NULL || module == NULL) {
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    *module = NULL;
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        append_error((struct dejavu_error_sink *)&(struct dejavu_error_sink){error, error_size, 0},
+                     "unable to open C source file");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    size = ftell(file);
+    if (size <= 0 || size > maximum_size || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        append_error((struct dejavu_error_sink *)&(struct dejavu_error_sink){error, error_size, 0},
+                     "invalid or oversized C source file");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    source = (char *)malloc((size_t)size + 1);
+    if (source == NULL) {
+        fclose(file);
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    read_size = fread(source, 1, (size_t)size, file);
+    fclose(file);
+    if (read_size != (size_t)size) {
+        free(source);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    source[size] = '\0';
+    status = dejavu_engine_compile(engine, source, module, error, error_size);
+    free(source);
+    return status;
 }

@@ -48,3 +48,6 @@ Expected `hello.info` includes `interfaces=mem,module,hook query=ok resolve=ok`.
 - It is unload-safe; any crash or error during `unload` indicates a host ABI or
   registration bug, not a hook-teardown issue.
 - Do not use it as a production hook; it has no native hook installations.
+- JIT variant: `plugins/hello/hello_jit.c` is loaded with
+  `./dejavu plugin -p <pkg> jit <device-path>`; it needs no NDK build and
+  registers `hellojit.greet` / `hellojit.info`.
