@@ -587,6 +587,38 @@ def command_java(args: argparse.Namespace) -> int:
     fail(f"unsupported java action: {action}")
 
 
+def command_plugin(args: argparse.Namespace) -> int:
+    action = args.plugin_action
+    process = args.process
+    if action in ("list", "status"):
+        return exec_inline(args, process, "return plugin.list()")
+    if action == "load":
+        return exec_inline(args, process, f"return plugin.load({lua_quote(args.path)})")
+    if action == "unload":
+        return exec_inline(args, process, f"return plugin.unload({lua_quote(args.name)})")
+    if action == "call":
+        arguments = "".join(f", {lua_argument_literal(value)}" for value in args.arguments)
+        return exec_inline(
+            args,
+            process,
+            f"return plugin.call({lua_quote(args.name)}, {lua_quote(args.function)}{arguments})",
+        )
+    if action in ("allow", "autoload"):
+        paths = [str(Path(path).expanduser()) for path in args.paths]
+        value = ":".join(paths)
+        prop = "debug.dejavu.plugins.allowed" if action == "allow" else "debug.dejavu.plugins"
+        if args.clear:
+            root_shell(args, f"setprop {prop} ''")
+            print(f"cleared {prop}")
+            return 0
+        if not paths:
+            fail(f"plugin {action} requires at least one device path (or --clear)")
+        root_shell(args, f"setprop {prop} {shlex.quote(value)}")
+        print(f"set {prop}={value}")
+        return 0
+    fail(f"unsupported plugin action: {action}")
+
+
 def command_log(args: argparse.Namespace) -> int:
     require_device(args)
     if args.clear:
@@ -637,6 +669,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
+            "  ./dejavu plugin -p com.android.settings list\n"
+            "  ./dejavu plugin -p com.android.settings allow /data/user_de/0/com.android.settings/files/libdemo.so\n"
+            "  ./dejavu plugin -p com.android.settings load /data/user_de/0/com.android.settings/files/libdemo.so\n"
+            "  ./dejavu plugin -p com.android.settings call hello greet\n"
             "  python3 plugins/unpack/cli.py -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-plugin\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
@@ -772,6 +808,37 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser = java_actions.add_parser("release", help="release a Java object handle")
     release_parser.add_argument("handle", type=int)
     release_parser.set_defaults(func=command_java)
+
+    sub = subparsers.add_parser("plugin", help="load, inspect and call native plugins")
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    plugin_actions = sub.add_subparsers(dest="plugin_action", required=True)
+    plugin_actions.add_parser("list", help="list loaded plugins").set_defaults(func=command_plugin)
+    plugin_actions.add_parser("status", help="alias for list").set_defaults(func=command_plugin)
+    plugin_load = plugin_actions.add_parser("load", help="load a plugin by device path")
+    plugin_load.add_argument("path", help="absolute device path to the plugin .so")
+    plugin_load.set_defaults(func=command_plugin)
+    plugin_unload = plugin_actions.add_parser("unload", help="unload an unload-safe plugin")
+    plugin_unload.add_argument("name")
+    plugin_unload.set_defaults(func=command_plugin)
+    plugin_call = plugin_actions.add_parser("call", help="call a registered plugin function")
+    plugin_call.add_argument("name", help="plugin name, e.g. hello")
+    plugin_call.add_argument("function", help="namespace.function or function name")
+    plugin_call.add_argument(
+        "--arg",
+        dest="arguments",
+        action="append",
+        default=[],
+        help="typed argument (repeatable): integer, float, true/false, null or string",
+    )
+    plugin_call.set_defaults(func=command_plugin)
+    for action_name, help_text in (
+        ("allow", "set the trusted plugin allowlist property"),
+        ("autoload", "set the early plugin autoload property"),
+    ):
+        plugin_action = plugin_actions.add_parser(action_name, help=help_text)
+        plugin_action.add_argument("paths", nargs="*", help="absolute device paths")
+        plugin_action.add_argument("--clear", action="store_true")
+        plugin_action.set_defaults(func=command_plugin)
 
     sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
     sub.add_argument("-p", "--process", help="only show lines mentioning this process")

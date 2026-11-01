@@ -197,6 +197,11 @@ control channel into one command:
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>
+./dejavu plugin -p <process> list
+./dejavu plugin -p <process> allow <device-plugin.so>   # trusted allowlist
+./dejavu plugin -p <process> load <device-plugin.so>
+./dejavu plugin -p <process> call <name> <namespace.function> [--arg VALUE]
+./dejavu plugin -p <process> unload <name>
 
 
 ./dejavu repl -p <process>

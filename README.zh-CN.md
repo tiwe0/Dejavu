@@ -187,6 +187,11 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu java -p <进程> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <进程> release <handle>
+./dejavu plugin -p <进程> list
+./dejavu plugin -p <进程> allow <设备plugin.so>   # 信任 allowlist
+./dejavu plugin -p <进程> load <设备plugin.so>
+./dejavu plugin -p <进程> call <name> <namespace.function> [--arg 值]
+./dejavu plugin -p <进程> unload <name>
 
 
 ./dejavu repl -p <进程>
