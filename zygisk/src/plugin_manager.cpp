@@ -31,6 +31,7 @@ constexpr char kAllowedUserDePrefix[] = "/data/user_de/";
 constexpr char kAllowedDataPrefix[] = "/data/data/";
 constexpr char kPluginManifest[] = "/data/adb/modules/dejavu_zygisk/config/plugins.txt";
 constexpr char kAllowedProperty[] = "debug.dejavu.plugins.allowed";
+constexpr int kAllowedPropertySlots = 16;
 constexpr size_t kPluginIndexNone = static_cast<size_t>(-1);
 constexpr size_t kMaximumSkillSize = 128 * 1024;
 
@@ -40,6 +41,10 @@ constexpr char kJitPrelude[] = R"DEJAVU_JIT(
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
+
+#define DEJAVU_JIT_OK 0
+#define DEJAVU_JIT_INVALID_ARGUMENT 1
+#define DEJAVU_JIT_ERROR 2
 
 typedef struct DejavuJitValue {
     int type;
@@ -78,6 +83,19 @@ extern int dejavu_jit_hook_install(void *target, void *replacement, void **origi
                                    char *error, unsigned long error_size);
 extern int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size);
 
+extern void dejavu_jit_set_error(const char *message);
+extern int dejavu_jit_arg_type(const DejavuJitValue *arguments, unsigned long count,
+                               unsigned long index);
+extern int dejavu_jit_arg_int(const DejavuJitValue *arguments, unsigned long count,
+                              unsigned long index, long long *value);
+extern int dejavu_jit_arg_boolean(const DejavuJitValue *arguments, unsigned long count,
+                                  unsigned long index, int *value);
+extern const char *dejavu_jit_arg_string(const DejavuJitValue *arguments, unsigned long count,
+                                         unsigned long index, unsigned long *size);
+extern void dejavu_jit_return_int(DejavuJitValue *result, long long value);
+extern void dejavu_jit_return_boolean(DejavuJitValue *result, int value);
+extern void dejavu_jit_return_string(DejavuJitValue *result, const char *text);
+
 const char *dejavu_jit_plugin_name(void);
 const char *dejavu_jit_plugin_version(void);
 int dejavu_jit_plugin_unload_safe(void);
@@ -110,6 +128,7 @@ using JitStringFunction = const char *(*)();
 using JitUnloadSafeFunction = int (*)();
 
 PluginManager *g_jit_manager = nullptr;
+thread_local std::string g_jit_last_error;
 
 int PluginManagerHostMemRead(void *host_context, uintptr_t address, void *buffer, size_t size);
 int PluginManagerHostMemWrite(void *host_context, uintptr_t address, const void *buffer,
@@ -287,6 +306,91 @@ extern "C" int dejavu_jit_hook_uninstall(void *target, char *error, unsigned lon
                                           static_cast<size_t>(error_size));
 }
 
+extern "C" void dejavu_jit_set_error(const char *message) {
+    g_jit_last_error = message != nullptr ? message : "";
+}
+
+extern "C" int dejavu_jit_arg_type(const JitValueLayout *arguments, unsigned long count,
+                                   unsigned long index) {
+    if (arguments == nullptr || index >= count) {
+        return -1;
+    }
+    return arguments[index].type;
+}
+
+extern "C" int dejavu_jit_arg_int(const JitValueLayout *arguments, unsigned long count,
+                                  unsigned long index, long long *value) {
+    if (arguments == nullptr || value == nullptr || index >= count ||
+        arguments[index].type != DEJAVU_VALUE_INTEGER) {
+        return 0;
+    }
+    *value = arguments[index].integer_value;
+    return 1;
+}
+
+extern "C" int dejavu_jit_arg_boolean(const JitValueLayout *arguments, unsigned long count,
+                                      unsigned long index, int *value) {
+    if (arguments == nullptr || value == nullptr || index >= count ||
+        arguments[index].type != DEJAVU_VALUE_BOOLEAN) {
+        return 0;
+    }
+    *value = arguments[index].boolean_value;
+    return 1;
+}
+
+extern "C" const char *dejavu_jit_arg_string(const JitValueLayout *arguments, unsigned long count,
+                                             unsigned long index, unsigned long *size) {
+    if (arguments == nullptr || index >= count || arguments[index].type != DEJAVU_VALUE_STRING ||
+        arguments[index].string_value == nullptr) {
+        return nullptr;
+    }
+    if (size != nullptr) {
+        *size = static_cast<unsigned long>(arguments[index].string_size);
+    }
+    return arguments[index].string_value;
+}
+
+extern "C" void dejavu_jit_return_int(JitValueLayout *result, long long value) {
+    if (result == nullptr) {
+        return;
+    }
+    std::memset(result, 0, sizeof(*result));
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = value;
+}
+
+extern "C" void dejavu_jit_return_boolean(JitValueLayout *result, int value) {
+    if (result == nullptr) {
+        return;
+    }
+    std::memset(result, 0, sizeof(*result));
+    result->type = DEJAVU_VALUE_BOOLEAN;
+    result->boolean_value = value != 0 ? 1 : 0;
+}
+
+extern "C" void dejavu_jit_return_string(JitValueLayout *result, const char *text) {
+    if (result == nullptr) {
+        return;
+    }
+    std::memset(result, 0, sizeof(*result));
+    if (text == nullptr) {
+        result->type = DEJAVU_VALUE_NIL;
+        return;
+    }
+    const size_t size = std::strlen(text);
+    char *copy = static_cast<char *>(malloc(size + 1));
+    if (copy == nullptr) {
+        result->type = DEJAVU_VALUE_NIL;
+        return;
+    }
+    std::memcpy(copy, text, size);
+    copy[size] = '\0';
+    result->type = DEJAVU_VALUE_STRING;
+    result->owned = 1;
+    result->string_value = copy;
+    result->string_size = size;
+}
+
 PluginManager::PluginManager() = default;
 
 PluginManager::~PluginManager() {
@@ -409,8 +513,11 @@ bool PluginManager::load_plugin(const std::string &path, std::string *status, st
 
 void PluginManager::refresh_allowed_paths() {
     allowed_paths_.clear();
-    char value[PROP_VALUE_MAX] = {};
-    if (__system_property_get(kAllowedProperty, value) > 0) {
+    auto add_property_list = [this](const char *property) {
+        char value[PROP_VALUE_MAX] = {};
+        if (__system_property_get(property, value) <= 0) {
+            return;
+        }
         std::string list(value);
         std::string current;
         for (char character : list) {
@@ -426,6 +533,11 @@ void PluginManager::refresh_allowed_paths() {
         if (!current.empty()) {
             allowed_paths_.insert(current);
         }
+    };
+    add_property_list(kAllowedProperty);
+    for (int slot = 0; slot < kAllowedPropertySlots; ++slot) {
+        const std::string property = std::string(kAllowedProperty) + "." + std::to_string(slot);
+        add_property_list(property.c_str());
     }
     load_plugin_manifest();
 }
@@ -469,6 +581,19 @@ void PluginManager::invalidate_entries(size_t plugin_index) {
                                               return entry->plugin_index == plugin_index;
                                           }),
                            pending_entries_.end());
+}
+
+void PluginManager::remove_plugin(size_t plugin_index) {
+    if (plugin_index >= plugins_.size()) {
+        return;
+    }
+    invalidate_entries(plugin_index);
+    plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(plugin_index));
+    for (auto &entry : entries_) {
+        if (entry->plugin_index > plugin_index) {
+            --entry->plugin_index;
+        }
+    }
 }
 
 bool PluginManager::valid_identifier(const std::string &value) {
@@ -536,6 +661,13 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         *error = "plugin name must be a simple identifier";
         return false;
     }
+    for (size_t position = 0; position < plugins_.size();) {
+        if (plugins_[position]->name == plugin_name && !plugins_[position]->loaded) {
+            remove_plugin(position);
+        } else {
+            ++position;
+        }
+    }
     if (name_exists(plugin_name)) {
         dlclose(handle);
         *error = "plugin name already registered: " + plugin_name;
@@ -558,8 +690,7 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     if (init_status != 0) {
         *error = plugin_error[0] != '\0' ? plugin_error : "plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        invalidate_entries(plugin_index);
-        plugins_.pop_back();
+        remove_plugin(plugin_index);
         dlclose(handle);
         return false;
     }
@@ -668,6 +799,13 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         *error = "JIT plugin name must be a simple identifier";
         return false;
     }
+    for (size_t position = 0; position < plugins_.size();) {
+        if (plugins_[position]->name == plugin_name && !plugins_[position]->loaded) {
+            remove_plugin(position);
+        } else {
+            ++position;
+        }
+    }
     if (name_exists(plugin_name)) {
         runtime_->module_destroy(module);
         *error = "plugin name already registered: " + plugin_name;
@@ -686,16 +824,15 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     plugin->jit_shutdown = shutdown;
     const size_t plugin_index = plugins_.size();
     plugins_.push_back(std::move(plugin));
-    char init_error[512] = {};
+    g_jit_last_error.clear();
     g_loading_plugin_index = plugin_index;
     g_jit_manager = this;
     const int init_status = initialize();
     g_loading_plugin_index = kPluginIndexNone;
     if (init_status != 0) {
-        *error = init_error[0] != '\0' ? init_error : "JIT plugin initialize failed";
+        *error = !g_jit_last_error.empty() ? g_jit_last_error : "JIT plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        invalidate_entries(plugin_index);
-        plugins_.pop_back();
+        remove_plugin(plugin_index);
         runtime_->module_destroy(module);
         return false;
     }
@@ -762,14 +899,11 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
     } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
         target->descriptor->shutdown(target->state);
     }
-    invalidate_entries(index);
-    target->loaded = false;
-    target->control_ready = false;
-    target->state = nullptr;
     if (!target->jit && target->handle != nullptr) {
         dlclose(target->handle);
         target->handle = nullptr;
     }
+    remove_plugin(index);
     *status = name + " unloaded";
     return true;
 }
@@ -832,6 +966,15 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
             {"dejavu_jit_hook_install", reinterpret_cast<const void *>(&dejavu_jit_hook_install)},
             {"dejavu_jit_hook_uninstall",
              reinterpret_cast<const void *>(&dejavu_jit_hook_uninstall)},
+            {"dejavu_jit_set_error", reinterpret_cast<const void *>(&dejavu_jit_set_error)},
+            {"dejavu_jit_arg_type", reinterpret_cast<const void *>(&dejavu_jit_arg_type)},
+            {"dejavu_jit_arg_int", reinterpret_cast<const void *>(&dejavu_jit_arg_int)},
+            {"dejavu_jit_arg_boolean", reinterpret_cast<const void *>(&dejavu_jit_arg_boolean)},
+            {"dejavu_jit_arg_string", reinterpret_cast<const void *>(&dejavu_jit_arg_string)},
+            {"dejavu_jit_return_int", reinterpret_cast<const void *>(&dejavu_jit_return_int)},
+            {"dejavu_jit_return_boolean",
+             reinterpret_cast<const void *>(&dejavu_jit_return_boolean)},
+            {"dejavu_jit_return_string", reinterpret_cast<const void *>(&dejavu_jit_return_string)},
         };
         for (const HostSymbol &symbol : host_symbols) {
             const int status = runtime_->engine_add_symbol(engine_, symbol.name, symbol.address);

@@ -23,6 +23,7 @@ adb -s "$ADB_SERIAL" shell su -c '
 ./dejavu plugin -p <pkg> allow /data/user_de/0/<pkg>/files/hello_jit.c
 ./dejavu plugin -p <pkg> jit /data/user_de/0/<pkg>/files/hello_jit.c
 ./dejavu plugin -p <pkg> call hellojit greet
+./dejavu plugin -p <pkg> call hellojit add --arg 20 --arg 22
 ./dejavu plugin -p <pkg> call hellojit info
 ./dejavu plugin -p <pkg> unload hellojit
 ```

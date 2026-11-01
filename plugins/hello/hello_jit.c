@@ -1,40 +1,5 @@
 /* TinyCC JIT plugin example: no headers, no libc; host ABI comes from the prelude. */
 
-static unsigned long jit_strlen(const char *text) {
-    unsigned long size = 0;
-    while (text[size] != '\0') {
-        ++size;
-    }
-    return size;
-}
-
-static char *jit_copy(const char *text) {
-    unsigned long size = jit_strlen(text);
-    char *copy = (char *)dejavu_jit_alloc(size + 1);
-    unsigned long index;
-    if (copy == NULL) {
-        return NULL;
-    }
-    for (index = 0; index < size; ++index) {
-        copy[index] = text[index];
-    }
-    copy[size] = '\0';
-    return copy;
-}
-
-static void put_string(DejavuJitValue *result, const char *text) {
-    result->type = 4; /* DEJAVU_VALUE_STRING */
-    result->owned = 1;
-    result->string_value = jit_copy(text);
-    result->string_size = jit_strlen(text);
-    result->integer_value = 0;
-    result->number_value = 0;
-    result->handle_value = NULL;
-    result->function_value = 0;
-    result->host_function = NULL;
-    result->host_context = NULL;
-}
-
 static int greet(void *session, void *context, const DejavuJitValue *arguments,
                  unsigned long argument_count, DejavuJitValue *result, char *error,
                  unsigned long error_size) {
@@ -44,8 +9,26 @@ static int greet(void *session, void *context, const DejavuJitValue *arguments,
     (void)argument_count;
     (void)error;
     (void)error_size;
-    put_string(result, "hello from a TinyCC JIT plugin");
-    return result->string_value != NULL ? 0 : 2;
+    dejavu_jit_return_string(result, "hello from a TinyCC JIT plugin");
+    return result->type == 4 ? DEJAVU_JIT_OK : DEJAVU_JIT_ERROR;
+}
+
+static int add(void *session, void *context, const DejavuJitValue *arguments,
+               unsigned long argument_count, DejavuJitValue *result, char *error,
+               unsigned long error_size) {
+    long long left = 0;
+    long long right = 0;
+    (void)session;
+    (void)context;
+    (void)error;
+    (void)error_size;
+    if (!dejavu_jit_arg_int(arguments, argument_count, 0, &left) ||
+        !dejavu_jit_arg_int(arguments, argument_count, 1, &right)) {
+        dejavu_jit_return_string(result, "add expects two integers");
+        return DEJAVU_JIT_INVALID_ARGUMENT;
+    }
+    dejavu_jit_return_int(result, left + right);
+    return DEJAVU_JIT_OK;
 }
 
 static int info(void *session, void *context, const DejavuJitValue *arguments,
@@ -66,15 +49,15 @@ static int info(void *session, void *context, const DejavuJitValue *arguments,
     getpid_symbol = dejavu_jit_module_resolve("libc.so", "getpid");
     dejavu_jit_log(4, "hello_jit: info called");
     if (mem_ok == 0 && getpid_symbol != NULL) {
-        put_string(result, "JIT plugin: mem=ok module=ok");
+        dejavu_jit_return_string(result, "JIT plugin: mem=ok module=ok");
     } else if (mem_ok == 0) {
-        put_string(result, "JIT plugin: mem=ok module=failed");
+        dejavu_jit_return_string(result, "JIT plugin: mem=ok module=failed");
     } else if (getpid_symbol != NULL) {
-        put_string(result, "JIT plugin: mem=failed module=ok");
+        dejavu_jit_return_string(result, "JIT plugin: mem=failed module=ok");
     } else {
-        put_string(result, "JIT plugin: mem=failed module=failed");
+        dejavu_jit_return_string(result, "JIT plugin: mem=failed module=failed");
     }
-    return result->string_value != NULL ? 0 : 2;
+    return result->type == 4 ? DEJAVU_JIT_OK : DEJAVU_JIT_ERROR;
 }
 
 const char *dejavu_jit_plugin_name(void) {
@@ -82,7 +65,7 @@ const char *dejavu_jit_plugin_name(void) {
 }
 
 const char *dejavu_jit_plugin_version(void) {
-    return "1.0.0";
+    return "1.1.0";
 }
 
 int dejavu_jit_plugin_unload_safe(void) {
@@ -92,9 +75,15 @@ int dejavu_jit_plugin_unload_safe(void) {
 int dejavu_jit_plugin_init(void) {
     char error[128];
     if (dejavu_jit_register("hellojit", "greet", greet, NULL, error, sizeof(error)) != 0) {
+        dejavu_jit_set_error("failed to register hellojit.greet");
+        return 1;
+    }
+    if (dejavu_jit_register("hellojit", "add", add, NULL, error, sizeof(error)) != 0) {
+        dejavu_jit_set_error("failed to register hellojit.add");
         return 1;
     }
     if (dejavu_jit_register("hellojit", "info", info, NULL, error, sizeof(error)) != 0) {
+        dejavu_jit_set_error("failed to register hellojit.info");
         return 1;
     }
     return 0;

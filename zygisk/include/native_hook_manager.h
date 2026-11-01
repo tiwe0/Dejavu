@@ -108,6 +108,10 @@ class NativeHookManager {
                          dejavu_value *, char *, size_t);
     static int lua_call(dejavu_control_session *, void *, const dejavu_value *, size_t,
                         dejavu_value *, char *, size_t);
+    static int lua_install_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_call_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                             dejavu_value *, char *, size_t);
 
     static NativeHookManager *instance_;
 

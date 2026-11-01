@@ -14,6 +14,14 @@ framework. They are built separately from the agent and loaded through
   interface instead of linking Dobby directly. Built by `unpack/build.sh` and
   driven by `unpack/cli.py`.
 
+One-stop install (push + permissions + allowlist + load):
+
+```sh
+./dejavu plugin -p <pkg> install out/plugins/hello/libdejavu_hello.so \
+    --skill plugins/hello/SKILL.md
+./dejavu plugin -p <pkg> install plugins/hello/hello_jit.c
+```
+
 Build both:
 
 ```sh

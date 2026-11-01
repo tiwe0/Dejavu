@@ -33,6 +33,8 @@ DEJAVUCTL = REPO_ROOT / "zygisk" / "scripts" / "dejavuctl"
 DEVICE_TEST = REPO_ROOT / "zygisk" / "scripts" / "device-test.sh"
 DEFAULT_ZIP_GLOB = "zygisk/dist/dejavu-zygisk-v*-arm64.zip"
 LOG_TAGS = ["DejavuZygisk", "DejavuAgent", "DejavuHook", "DejavuLSPlant"]
+PLUGIN_ALLOWED_PROPERTY = "debug.dejavu.plugins.allowed"
+PLUGIN_ALLOWED_SLOTS = 16
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 
@@ -519,7 +521,7 @@ def exec_lua_file(args: argparse.Namespace, process: str, script: str) -> int:
 
 def command_native(args: argparse.Namespace) -> int:
     process = args.process
-    action = args.native_action
+    action = args.native_action.replace("-", "_")
     if action == "list":
         return exec_inline(args, process, "return native.list()")
     if action == "stats":
@@ -528,6 +530,23 @@ def command_native(args: argparse.Namespace) -> int:
         return exec_inline(args, process, f"return native.uninstall({args.id})")
     if action == "clear":
         return exec_inline(args, process, "return native.clear()")
+    if action == "install_file":
+        return exec_inline(
+            args,
+            process,
+            f"return native.install_file({lua_quote(args.module)}, "
+            f"{lua_quote(args.symbol)}, {lua_quote(args.path)})",
+        )
+    if action == "call_file":
+        call_arguments = "".join(
+            f", {lua_argument_literal(value)}" for value in args.arguments
+        )
+        return exec_inline(
+            args,
+            process,
+            f"return native.call_file({lua_quote(args.module)}, {lua_quote(args.symbol)}, "
+            f"{lua_quote(args.path)}{call_arguments})",
+        )
     if action == "call":
         source_path = Path(args.source).expanduser()
         if not source_path.is_file():
@@ -593,6 +612,105 @@ def command_java(args: argparse.Namespace) -> int:
     fail(f"unsupported java action: {action}")
 
 
+def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
+    paths: list[str] = []
+    for property_name in (PLUGIN_ALLOWED_PROPERTY, *(
+        f"{PLUGIN_ALLOWED_PROPERTY}.{slot}" for slot in range(PLUGIN_ALLOWED_SLOTS)
+    )):
+        try:
+            value = root_text(args, f"getprop {property_name}").strip()
+        except CliError:
+            value = ""
+        for item in re.split(r"[:\s]+", value):
+            if item and item not in paths:
+                paths.append(item)
+    return paths
+
+
+def plugin_allowlist_write(args: argparse.Namespace, paths: list[str]) -> None:
+    if len(paths) > PLUGIN_ALLOWED_SLOTS:
+        fail(f"at most {PLUGIN_ALLOWED_SLOTS} allowlist paths are supported")
+    root_shell(args, f"setprop {PLUGIN_ALLOWED_PROPERTY} ''")
+    for slot in range(PLUGIN_ALLOWED_SLOTS):
+        value = paths[slot] if slot < len(paths) else ""
+        root_shell(
+            args,
+            f"setprop {PLUGIN_ALLOWED_PROPERTY}.{slot} {shlex.quote(value)}",
+        )
+
+
+def command_plugin_install(args: argparse.Namespace) -> int:
+    source = Path(args.local_path).expanduser().resolve()
+    if not source.is_file():
+        fail(f"plugin source not found: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in (".so", ".c"):
+        fail("plugin install accepts a .so plugin or a JIT .c source")
+    process = args.process
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", process):
+        fail("invalid process name")
+    require_root(args)
+    device_dir = args.dir
+    if not device_dir:
+        for candidate in (
+            f"/data/user_de/0/{process}/files",
+            f"/data/user/0/{process}/files",
+            f"/data/data/{process}/files",
+        ):
+            try:
+                if "yes" in root_text(args, f"test -d {candidate} && echo yes"):
+                    device_dir = candidate
+                    break
+            except CliError:
+                continue
+    if not device_dir:
+        fail("unable to locate the app files dir; pass --dir <device-dir>")
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", device_dir):
+        fail("--dir may only contain letters, digits, '_', '.', '/' and '-'")
+    destination = device_dir.rstrip("/") + "/" + source.name
+    staged = f"/data/local/tmp/{source.name}.dejavu-install"
+    adb(args, "push", str(source), staged)
+    skill = None
+    if args.skill:
+        skill = Path(args.skill).expanduser().resolve()
+        if not skill.is_file():
+            fail(f"skill file not found: {skill}")
+    else:
+        for candidate in (Path(str(source) + ".SKILL.md"), source.parent / "SKILL.md"):
+            if candidate.is_file():
+                skill = candidate
+                break
+    commands = [
+        f"cp {shlex.quote(staged)} {shlex.quote(destination)}",
+        f"chmod {'755' if suffix == '.so' else '644'} {shlex.quote(destination)}",
+        f"(chcon u:object_r:apk_data_file:s0 {shlex.quote(destination)} || true)",
+    ]
+    if skill is not None:
+        staged_skill = staged + ".SKILL.md"
+        adb(args, "push", str(skill), staged_skill)
+        commands.extend(
+            [
+                f"cp {shlex.quote(staged_skill)} {shlex.quote(destination + '.SKILL.md')}",
+                f"chmod 644 {shlex.quote(destination + '.SKILL.md')}",
+            ]
+        )
+    commands.append(f"rm -f {shlex.quote(staged)} {shlex.quote(staged + '.SKILL.md')}")
+    root_shell(args, " && ".join(commands))
+    allowed = plugin_allowlist_read(args)
+    if destination not in allowed:
+        allowed.append(destination)
+    plugin_allowlist_write(args, allowed)
+    print(f"installed {source.name} -> {destination}")
+    if skill is not None:
+        print(f"installed skill -> {destination}.SKILL.md")
+    if args.no_load:
+        print("skipped load (--no-load); load it with `./dejavu plugin load|jit`")
+        return 0
+    if suffix == ".c":
+        return exec_inline(args, process, f"return plugin.load_jit({lua_quote(destination)})")
+    return exec_inline(args, process, f"return plugin.load({lua_quote(destination)})")
+
+
 def command_plugin(args: argparse.Namespace) -> int:
     action = args.plugin_action
     process = args.process
@@ -606,6 +724,8 @@ def command_plugin(args: argparse.Namespace) -> int:
         return exec_inline(args, process, f"return plugin.skill({lua_quote(args.name)})")
     if action == "jit":
         return exec_inline(args, process, f"return plugin.load_jit({lua_quote(args.path)})")
+    if action == "install":
+        return command_plugin_install(args)
     if action == "call":
         arguments = "".join(f", {lua_argument_literal(value)}" for value in args.arguments)
         return exec_inline(
@@ -615,14 +735,24 @@ def command_plugin(args: argparse.Namespace) -> int:
         )
     if action in ("allow", "autoload"):
         paths = [str(Path(path).expanduser()) for path in args.paths]
+        if action == "allow":
+            if args.clear:
+                plugin_allowlist_write(args, [])
+                print(f"cleared {PLUGIN_ALLOWED_PROPERTY}")
+                return 0
+            if not paths:
+                fail("plugin allow requires at least one device path (or --clear)")
+            plugin_allowlist_write(args, paths)
+            print(f"set {PLUGIN_ALLOWED_PROPERTY} ({len(paths)} path(s))")
+            return 0
         value = ":".join(paths)
-        prop = "debug.dejavu.plugins.allowed" if action == "allow" else "debug.dejavu.plugins"
+        prop = "debug.dejavu.plugins"
         if args.clear:
             root_shell(args, f"setprop {prop} ''")
             print(f"cleared {prop}")
             return 0
         if not paths:
-            fail(f"plugin {action} requires at least one device path (or --clear)")
+            fail("plugin autoload requires at least one device path (or --clear)")
         root_shell(args, f"setprop {prop} {shlex.quote(value)}")
         print(f"set {prop}={value}")
         return 0
@@ -678,6 +808,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings list\n"
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
+            "  ./dejavu native -p com.android.settings install-file libc.so read /data/local/tmp/hook.c\n"
+            "  ./dejavu native -p com.android.settings call-file libc.so getpid /data/local/tmp/call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
             "  ./dejavu plugin -p com.android.settings list\n"
             "  ./dejavu plugin -p com.android.settings allow /data/user_de/0/com.android.settings/files/libdemo.so\n"
@@ -778,6 +910,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     call_parser.set_defaults(func=command_native)
+    install_file_parser = native_actions.add_parser(
+        "install-file", help="install a native hook from a C file on the device"
+    )
+    install_file_parser.add_argument("module", help="loaded module, e.g. libc.so")
+    install_file_parser.add_argument("symbol", help="exported symbol, e.g. read")
+    install_file_parser.add_argument("path", help="device path to the C replacement source")
+    install_file_parser.set_defaults(func=command_native)
+    call_file_parser = native_actions.add_parser(
+        "call-file", help="actively call a native function from a C file on the device"
+    )
+    call_file_parser.add_argument("module", help="loaded module, e.g. libc.so")
+    call_file_parser.add_argument("symbol", help="exported symbol, e.g. getpid")
+    call_file_parser.add_argument("path", help="device path to the C wrapper source")
+    call_file_parser.add_argument(
+        "--arg",
+        dest="arguments",
+        action="append",
+        default=[],
+        help="typed argument (repeatable): integer, float, true/false, null or string",
+    )
+    call_file_parser.set_defaults(func=command_native)
     stats_parser = native_actions.add_parser("stats", help="show a hook's hit count")
     stats_parser.add_argument("id", type=int)
     stats_parser.set_defaults(func=command_native)
@@ -841,6 +994,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_jit.add_argument("path", help="device path to the JIT C source")
     plugin_jit.set_defaults(func=command_plugin)
+    plugin_install = plugin_actions.add_parser(
+        "install", help="push a .so/.c plugin into app files, allowlist and load it"
+    )
+    plugin_install.add_argument("local_path", help="host .so plugin or JIT .c source")
+    plugin_install.add_argument("--dir", help="device app files dir (auto-detected by default)")
+    plugin_install.add_argument("--skill", help="SKILL.md sidecar (default: <plugin>.SKILL.md)")
+    plugin_install.add_argument("--no-load", action="store_true", help="install without loading")
+    plugin_install.set_defaults(func=command_plugin)
     plugin_call = plugin_actions.add_parser("call", help="call a registered plugin function")
     plugin_call.add_argument("name", help="plugin name, e.g. hello")
     plugin_call.add_argument("function", help="namespace.function or function name")

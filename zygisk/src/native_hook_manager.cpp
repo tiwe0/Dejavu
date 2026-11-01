@@ -13,6 +13,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,31 @@ void copy_error(char *error, size_t error_size, const std::string &message) {
     if (error != nullptr && error_size != 0) {
         snprintf(error, error_size, "%s", message.c_str());
     }
+}
+
+bool read_source_file(const std::string &path, std::string *source, std::string *error) {
+    struct stat information = {};
+    if (path.empty() || lstat(path.c_str(), &information) != 0 || !S_ISREG(information.st_mode)) {
+        *error = "C source path must be a regular file";
+        return false;
+    }
+    if (information.st_size <= 0 || information.st_size > 1024 * 1024) {
+        *error = "C source size is invalid (limit 1 MiB)";
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        *error = "unable to open C source file";
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    *source = buffer.str();
+    if (source->empty()) {
+        *error = "C source file is empty";
+        return false;
+    }
+    return true;
 }
 
 std::string value_string(const dejavu_value &value) {
@@ -281,6 +309,8 @@ bool NativeHookManager::register_lua(dejavu_control_session *session, std::strin
         {"stats", NativeHookManager::lua_stats},
         {"clear", NativeHookManager::lua_clear},
         {"call", NativeHookManager::lua_call},
+        {"install_file", NativeHookManager::lua_install_file},
+        {"call_file", NativeHookManager::lua_call_file},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -941,6 +971,94 @@ int NativeHookManager::lua_call(dejavu_control_session *, void *context,
     std::string call_error;
     if (!manager->call(value_string(arguments[0]), value_string(arguments[1]),
                        value_string(arguments[2]), call_arguments, &call_result, &call_error)) {
+        copy_error(error, error_size, call_error);
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = call_result;
+    return DEJAVU_OK;
+}
+
+int NativeHookManager::lua_install_file(dejavu_control_session *, void *context,
+                                        const dejavu_value *arguments, size_t argument_count,
+                                        dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<NativeHookManager *>(context);
+    if (manager == nullptr || argument_count != 3 || arguments[0].type != DEJAVU_VALUE_STRING ||
+        arguments[1].type != DEJAVU_VALUE_STRING || arguments[2].type != DEJAVU_VALUE_STRING) {
+        copy_error(error, error_size,
+                   "native.install_file expects module, symbol and device C source path");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string source;
+    std::string read_error;
+    if (!read_source_file(value_string(arguments[2]), &source, &read_error)) {
+        copy_error(error, error_size, read_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    unsigned long long id = 0;
+    std::string install_error;
+    if (!manager->install(value_string(arguments[0]), value_string(arguments[1]), source, &id,
+                          &install_error)) {
+        copy_error(error, error_size, install_error);
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = static_cast<long long>(id);
+    return DEJAVU_OK;
+}
+
+int NativeHookManager::lua_call_file(dejavu_control_session *, void *context,
+                                     const dejavu_value *arguments, size_t argument_count,
+                                     dejavu_value *result, char *error, size_t error_size) {
+    auto *manager = static_cast<NativeHookManager *>(context);
+    if (manager == nullptr || argument_count < 3 || argument_count > 3 + 32 ||
+        arguments[0].type != DEJAVU_VALUE_STRING || arguments[1].type != DEJAVU_VALUE_STRING ||
+        arguments[2].type != DEJAVU_VALUE_STRING) {
+        copy_error(error, error_size,
+                   "native.call_file expects module, symbol, device C source path and args");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string source;
+    std::string read_error;
+    if (!read_source_file(value_string(arguments[2]), &source, &read_error)) {
+        copy_error(error, error_size, read_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::vector<NativeCallArgument> call_arguments;
+    for (size_t index = 3; index < argument_count; ++index) {
+        NativeCallArgument argument;
+        switch (arguments[index].type) {
+        case DEJAVU_VALUE_NIL:
+            argument.type = NativeCallArgument::kNull;
+            break;
+        case DEJAVU_VALUE_BOOLEAN:
+            argument.type = NativeCallArgument::kBoolean;
+            argument.boolean_value = arguments[index].boolean_value != 0;
+            break;
+        case DEJAVU_VALUE_INTEGER:
+            argument.type = NativeCallArgument::kInteger;
+            argument.integer_value = arguments[index].integer_value;
+            break;
+        case DEJAVU_VALUE_NUMBER:
+            argument.type = NativeCallArgument::kNumber;
+            argument.number_value = arguments[index].number_value;
+            break;
+        case DEJAVU_VALUE_STRING:
+            argument.type = NativeCallArgument::kString;
+            argument.string_value = value_string(arguments[index]);
+            break;
+        default:
+            copy_error(
+                error, error_size,
+                "native.call_file arguments support nil, boolean, integer, number and string");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        call_arguments.push_back(std::move(argument));
+    }
+    long long call_result = 0;
+    std::string call_error;
+    if (!manager->call(value_string(arguments[0]), value_string(arguments[1]), source,
+                       call_arguments, &call_result, &call_error)) {
         copy_error(error, error_size, call_error);
         return DEJAVU_ERROR_LUA_EXECUTE;
     }

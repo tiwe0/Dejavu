@@ -184,6 +184,8 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu native -p <进程> list|stats|uninstall|clear
 ./dejavu native -p <进程> install libc.so read replacement.c
 ./dejavu native -p <进程> call libc.so getpid call.c
+./dejavu native -p <进程> install-file libc.so read /data/.../hook.c
+./dejavu native -p <进程> call-file libc.so getpid /data/.../call.c
 ./dejavu java -p <进程> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <进程> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <进程> release <handle>

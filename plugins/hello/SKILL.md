@@ -29,7 +29,14 @@ adb -s "$ADB_SERIAL" shell su -c '
 '
 ```
 
-Load and exercise it:
+One-stop alternative:
+
+```sh
+./dejavu plugin -p <pkg> install out/plugins/hello/libdejavu_hello.so \
+    --skill plugins/hello/SKILL.md
+```
+
+Manual load and exercise:
 
 ```sh
 ./dejavu plugin -p <pkg> allow /data/user_de/0/<pkg>/files/libdejavu_hello.so

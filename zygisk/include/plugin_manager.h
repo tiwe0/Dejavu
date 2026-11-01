@@ -112,6 +112,7 @@ class PluginManager {
     bool whitelisted_path(const std::string &path) const;
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
+    void remove_plugin(size_t plugin_index);
     static bool valid_identifier(const std::string &value);
     static bool valid_namespace(const std::string &value);
     static bool allowed_path(const std::string &path);

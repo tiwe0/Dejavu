@@ -194,6 +194,8 @@ control channel into one command:
 ./dejavu native -p <process> list|stats|uninstall|clear
 ./dejavu native -p <process> install libc.so read replacement.c
 ./dejavu native -p <process> call libc.so getpid call.c
+./dejavu native -p <process> install-file libc.so read /data/.../hook.c
+./dejavu native -p <process> call-file libc.so getpid /data/.../call.c
 ./dejavu java -p <process> invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42
 ./dejavu java -p <process> new java.lang.StringBuilder '(Ljava/lang/String;)V' --arg abc
 ./dejavu java -p <process> release <handle>

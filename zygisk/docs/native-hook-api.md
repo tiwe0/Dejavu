@@ -77,6 +77,27 @@ int dejavu_native_target(int value) {
 }
 ```
 
+## File-based variants
+
+The Lua layer can read a C source file directly from the device instead of
+passing the source string through the control channel:
+
+```lua
+local id = native.install_file("libc.so", "read", "/data/.../hook.c")
+local pid = native.call_file("libc.so", "__getpid", "/data/.../call.c")
+```
+
+CLI equivalents:
+
+```sh
+./dejavu native -p <pkg> install-file libc.so read /data/.../hook.c
+./dejavu native -p <pkg> call-file libc.so __getpid /data/.../call.c
+```
+
+The file must be readable by the target process (app files dir is a good
+choice), regular, 1 MiB or smaller. The content still follows the same
+`dejavu_native_target` / `dejavu_native_call` contracts.
+
 ## Management
 
 | Call | Meaning |

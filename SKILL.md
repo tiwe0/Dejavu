@@ -300,8 +300,11 @@ plugin.unload('example')
   文件必须是普通文件、不可组/全局写、owner 为 root 或目标 uid。
 - `plugin.unload` 只允许 descriptor 标记 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE` 且
   无 in-flight 调用的插件；装 native hook 的插件必须自己摘 hook。
-- CLI：`./dejavu plugin -p <进程> list|load|jit|call|unload|skill|allow|autoload`；
+- CLI：`./dejavu plugin -p <进程> list|load|jit|install|call|unload|skill|allow|autoload`；
+  `install` 自动 push、chmod/chcon、装 SKILL sidecar、写 allowlist 并 load；
   `call` 参数沿用类型化转换（integer/float/bool/null/string）。
+- native 文件接口：`native.install_file(module,symbol,device_path)` /
+  `native.call_file(...)`；CLI `./dejavu native install-file|call-file`。
 - **JIT 插件**：`plugin.load_jit(<device.c>)` = 读文件 + TinyCC 编译 + 注册
   （`dejavu_engine_compile_file` 公共 API）；C-only、-nostdlib，需要 Lua 控制
   engine，示例 `plugins/hello/hello_jit.c`。
