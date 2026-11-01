@@ -7,6 +7,7 @@ ANDROID_API=${ANDROID_API:-26}
 MODULE_LIB=${MODULE_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_zygisk.so"}
 AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_agent.so"}
 DEJAVU_LIB=${DEJAVU_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
+ROOT_HELPER=${ROOT_HELPER:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavu-root-helper"}
 TARGETS_FILE=${TARGETS_FILE:-"${ROOT_DIR}/config/targets.txt"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
@@ -28,6 +29,11 @@ if [[ ! -f "${MODULE_LIB}" ]]; then
 fi
 if [[ ! -f "${AGENT_LIB}" ]]; then
     echo "error: Dejavu Agent library not found: ${AGENT_LIB}" >&2
+    exit 1
+fi
+if [[ ! -x "${ROOT_HELPER}" ]]; then
+    echo "error: root helper not found or not executable: ${ROOT_HELPER}" >&2
+    echo "build it with: make -C ${ROOT_DIR} build" >&2
     exit 1
 fi
 if [[ ! -f "${DEJAVU_LIB}" ]]; then
@@ -101,6 +107,9 @@ mkdir -p \
 
 cp "${ROOT_DIR}/module/module.prop" "${STAGE_DIR}/module.prop"
 cp "${ROOT_DIR}/module/customize.sh" "${STAGE_DIR}/customize.sh"
+cp "${ROOT_DIR}/module/service.sh" "${STAGE_DIR}/service.sh"
+cp "${ROOT_DIR}/module/root-watchdog.sh" "${STAGE_DIR}/root-watchdog.sh"
+cp "${ROOT_DIR}/module/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
 cp "${ROOT_DIR}/module/skip_mount" "${STAGE_DIR}/skip_mount"
 cp "${TARGETS_FILE}" "${STAGE_DIR}/config/targets.txt"
 {
@@ -111,6 +120,7 @@ cp "${TARGETS_FILE}" "${STAGE_DIR}/config/targets.txt"
 cp -R "${WEBROOT_DIR}/." "${STAGE_DIR}/webroot/"
 cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"
+cp "${ROOT_HELPER}" "${STAGE_DIR}/lib/arm64-v8a/dejavu-root-helper"
 cp "${DEJAVU_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
 cp "${LICENSE_FILE}" "${STAGE_DIR}/LICENSE"
 cp "${NOTICES_FILE}" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"

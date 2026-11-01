@@ -1,6 +1,7 @@
 #include "native_hook_manager.h"
 
 #include "art_elf_resolver.h"
+#include "root_helper_client.h"
 
 #include <android/log.h>
 #include <dlfcn.h>
@@ -419,15 +420,16 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
         *error = "target symbol is not in an executable mapping";
         return false;
     }
-    if (module_has_execute_only_mapping(module_name)) {
-        dlclose(module_handle);
-        *error = "module has execute-only text; native hooks are unsupported on this ROM";
-        return false;
-    }
-    if ((original_protection & PROT_READ) == 0) {
-        dlclose(module_handle);
-        *error = "target mapping is execute-only; native hooks are unsupported on this ROM";
-        return false;
+    bool root_unlocked = false;
+    size_t root_mapping_length = 0;
+    int root_original_protection = 0;
+    if (module_has_execute_only_mapping(module_name) || (original_protection & PROT_READ) == 0) {
+        if (!root_helper_unlock(target, &root_original_protection, &root_mapping_length, error)) {
+            dlclose(module_handle);
+            return false;
+        }
+        root_unlocked = true;
+        original_protection = root_original_protection;
     }
 
     std::string full_source = "#define DEJAVU_NATIVE_HOOK_ID ";
@@ -478,13 +480,25 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
     void *original = nullptr;
     const int hook_status = DobbyHook(target, replacement, &original);
     std::string restore_error;
-    const bool restored = set_mapping_protection(target, original_protection, &restore_error);
+    bool restored = false;
+    if (root_unlocked) {
+        restored =
+            root_helper_restore(target, root_mapping_length, original_protection, &restore_error);
+    } else {
+        restored = set_mapping_protection(target, original_protection, &restore_error);
+    }
     if (hook_status != 0 || !restored) {
         if (hook_status == 0) {
             std::string ignored;
-            set_mapping_protection(target, original_protection | PROT_READ | PROT_WRITE, &ignored);
+            if (root_unlocked) {
+                root_helper_restore(target, root_mapping_length, original_protection, &ignored);
+            }
             DobbyDestroy(target);
-            set_page_protection(target, original_protection, &ignored);
+            if (root_unlocked) {
+                root_helper_restore(target, root_mapping_length, original_protection, &ignored);
+            } else {
+                set_page_protection(target, original_protection, &ignored);
+            }
         }
         std::lock_guard<std::mutex> lock(mutex_);
         records_.erase(hook_id);
@@ -525,12 +539,26 @@ bool NativeHookManager::uninstall(unsigned long long id, std::string *error) {
     std::string protection_error;
     const bool have_protection =
         query_protection(record->target, &protection, &protection_error) == 0;
+    bool root_unlocked = false;
+    size_t root_mapping_length = 0;
+    int root_original_protection = 0;
     if (have_protection &&
-        !set_mapping_protection(record->target, protection | PROT_READ | PROT_WRITE, error)) {
+        (module_has_execute_only_mapping(record->module_name) || (protection & PROT_READ) == 0)) {
+        if (!root_helper_unlock(record->target, &root_original_protection, &root_mapping_length,
+                                error)) {
+            return false;
+        }
+        root_unlocked = true;
+    } else if (have_protection && !set_mapping_protection(
+                                      record->target, protection | PROT_READ | PROT_WRITE, error)) {
         return false;
     }
     const int destroy_status = DobbyDestroy(record->target);
-    if (have_protection) {
+    if (root_unlocked) {
+        std::string ignored;
+        root_helper_restore(record->target, root_mapping_length, root_original_protection,
+                            &ignored);
+    } else if (have_protection) {
         std::string restore_error;
         set_mapping_protection(record->target, protection, &restore_error);
     }

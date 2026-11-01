@@ -22,4 +22,8 @@ mkdir -p "$MODPATH/run"
 set_perm "$MODPATH/run" 0 0 0755
 set_perm "$MODPATH/zygisk/arm64-v8a.so" 0 0 0755
 set_perm "$MODPATH/lib/arm64-v8a/libdejavu_agent.so" 0 0 0755
+set_perm "$MODPATH/lib/arm64-v8a/dejavu-root-helper" 0 0 0755
+set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/root-watchdog.sh" 0 0 0755
+set_perm "$MODPATH/uninstall.sh" 0 0 0755
 chcon -R u:object_r:system_file:s0 "$MODPATH" || abort "Unable to label the module directory"

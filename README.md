@@ -241,6 +241,15 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   publishes the stable release, a matching `v*` tag publishes the stable
   release, and a manual `workflow_dispatch` run publishes a prerelease.
 
+## Root helper (execute-only pages)
+
+The module includes a root helper service for Android 15 execute-only APEX
+libraries. It starts from `service.sh`, publishes a random localhost endpoint
+(token/properties), and only mprotects executable mappings of allowlisted
+target processes. The in-app agent remains app-UID; it asks the helper for a
+temporary unlock before Dobby hook installation. See
+[zygisk/docs/root-helper-prototype.md](zygisk/docs/root-helper-prototype.md).
+
 ## Live capture streams
 
 Plugins can stream records to the host through the framework stream service

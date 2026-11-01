@@ -55,8 +55,8 @@ CAPTURE=/data/user_de/0/<pkg>/files/algorithm.log
 
 If the target has not loaded libcrypto yet, open/use a crypto API once first.
 On Android 15 some APEX BoringSSL libraries have **execute-only** text; Dobby
-cannot relocate those functions. The host can use the root helper prototype
-(`zygisk/docs/root-helper-prototype.md`) to temporarily unlock the mapping;
+cannot relocate those functions. The module's production root service (`zygisk/module/service.sh` and
+`zygisk/docs/root-helper-prototype.md`) can temporarily unlock the mapping;
 without that helper it reports "no libcrypto algorithm symbols were
 hookable" instead of crashing. `algorithm.selftest` invokes EVP digest
 directly through the hooked library to verify the hook path.

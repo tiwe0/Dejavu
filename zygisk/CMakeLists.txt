@@ -154,6 +154,29 @@ target_link_options(dejavu_zygisk PRIVATE
     -Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/config/exports.map
 )
 target_link_libraries(dejavu_zygisk PRIVATE log dl)
+add_executable(dejavu_root_helper
+    root_helper/root_helper.cpp
+)
+target_include_directories(dejavu_root_helper PRIVATE
+    include
+    ../include
+)
+target_compile_options(dejavu_root_helper PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+    -fvisibility=hidden
+)
+target_link_options(dejavu_root_helper PRIVATE
+    -Wl,--no-undefined
+    -Wl,-z,max-page-size=16384
+    -static-libstdc++
+)
+set_target_properties(dejavu_root_helper PROPERTIES
+    OUTPUT_NAME dejavu-root-helper
+    ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON
+)
+
 set_target_properties(dejavu_agent PROPERTIES
     OUTPUT_NAME dejavu_agent
     ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON
