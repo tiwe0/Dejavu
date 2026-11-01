@@ -158,7 +158,7 @@ release is published when a version is explicitly introduced:
 - bump the `version=` line in `zygisk/module/module.prop` and push to `main`:
   CI detects the change and publishes the stable `vX.Y.Z` release after all
   checks pass (the tag is created from that commit); or
-- push a matching `v*` tag, such as `v0.5.0`, to create the stable release; or
+- push a matching `v*` tag, such as `v0.6.0`, to create the stable release; or
 - run the workflow manually with `workflow_dispatch` to create a prerelease
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
@@ -235,7 +235,7 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **Zygisk module package version** (currently `0.5.0`). Module packaging,
+  **Zygisk module package version** (currently `0.6.0`). Module packaging,
   loader/agent behavior and documentation changes bump it independently.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`
   publishes the stable release, a matching `v*` tag publishes the stable

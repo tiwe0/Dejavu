@@ -147,7 +147,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 - 修改 `zygisk/module/module.prop` 的 `version=` 并推送到 `main`：CI 检测到
   版本变化后，在所有检查通过时从该提交创建稳定版 `vX.Y.Z` 并发布（自动创建
   标签）；
-- 推送与模块版本一致的 `v*` 标签（例如 `v0.5.0`）时创建正式版本；
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.6.0`）时创建正式版本；
 - 手动运行 `workflow_dispatch` 时，从所选分支创建
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
@@ -222,7 +222,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.5.0`）；模块打包、loader/agent 行为与文档更新独立递增。
+  版本**（当前 `0.6.0`）；模块打包、loader/agent 行为与文档更新独立递增。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
 
