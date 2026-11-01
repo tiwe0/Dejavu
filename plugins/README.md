@@ -37,5 +37,9 @@ next to the loaded library as `<plugin>.so.SKILL.md` (or a shared
 `plugin.skill(name)` and `./dejavu plugin skill <name>` so an agent can read the
 plugin-specific instructions without guessing the repo path.
 
+Example plugins are built separately from the module and uploaded as the
+`dejavu-example-plugins` CI artifact; they are **not** included in the release
+zip (the module remains framework-only).
+
 The ABI and host services are documented in
 [`zygisk/docs/plugin-api.md`](../zygisk/docs/plugin-api.md).

@@ -74,6 +74,9 @@ done
 
 "${OUT_DIR}/smoke"
 
+echo "== JIT ABI header compile"
+"${CC}" "${COMMON_FLAGS[@]}" -std=c11 -Wall -Wextra -Werror     -I"${ROOT_DIR}/include" -fsyntax-only "${ROOT_DIR}/tests/jit_abi_compile.c"
+
 if [[ "$(uname -s)" == "Linux" ]]; then
     # Simulate an execmem-restricted domain: deny PROT_EXEC mprotect calls and
     # verify the engine reports an error instead of exiting the process.

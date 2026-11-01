@@ -28,6 +28,8 @@ RPC_OK = 0
 RPC_EXECUTION_ERROR = 1
 RPC_UNAVAILABLE = 2
 RPC_PROTOCOL_ERROR = 3
+RETRY_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 0.35
 RPC_HEADER = struct.Struct("<IIIiQI")
 FRAME_HEADER = struct.Struct("<I")
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
@@ -601,11 +603,10 @@ def run_watch(session, file_path):
             return 1 if had_error else 0
 
 
-def main():
-    arguments = parse_arguments()
-    process_name = arguments.process_option or arguments.process_arg or DEFAULT_PROCESS
-    if PROCESS_PATTERN.fullmatch(process_name) is None:
-        raise ControlError(f"invalid process name: {process_name}")
+def run_single_command(arguments, process_name):
+    script = b"" if arguments.reconnect else load_script(arguments)
+    request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
+    response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
     with exclusive_cli_session():
         with ControlSession(
             arguments.serial,
@@ -613,13 +614,6 @@ def main():
             arguments.timeout,
             arguments.wait,
         ) as session:
-            if arguments.repl:
-                return run_repl(session)
-            if arguments.watch is not None:
-                return run_watch(session, arguments.watch)
-            script = b"" if arguments.reconnect else load_script(arguments)
-            request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
-            response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
             status, payload = execute_with_port(
                 session.port,
                 session.token,
@@ -641,12 +635,30 @@ def main():
             raise render_rpc_error(session.pid, status, payload)
 
 
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print(file=sys.stderr)
-        sys.exit(0)
-    except (ControlError, OSError, socket.error) as error:
-        print(f"dejavuctl: {error}", file=sys.stderr)
-        sys.exit(1)
+def main():
+    arguments = parse_arguments()
+    process_name = arguments.process_option or arguments.process_arg or DEFAULT_PROCESS
+    if PROCESS_PATTERN.fullmatch(process_name) is None:
+        raise ControlError(f"invalid process name: {process_name}")
+    if arguments.repl or arguments.watch is not None:
+        with exclusive_cli_session():
+            with ControlSession(
+                arguments.serial,
+                process_name,
+                arguments.timeout,
+                arguments.wait,
+            ) as session:
+                if arguments.repl:
+                    return run_repl(session)
+                return run_watch(session, arguments.watch)
+    last_error = None
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            return run_single_command(arguments, process_name)
+        except (ControlError, OSError, socket.error) as error:
+            last_error = error
+            if attempt + 1 >= RETRY_ATTEMPTS or not is_reconnectable_error(error):
+                raise
+            print_error(f"{error}; retrying ({attempt + 1}/{RETRY_ATTEMPTS})")
+            time.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+    raise last_error
