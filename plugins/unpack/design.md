@@ -1,11 +1,13 @@
+<!-- Example design notes; not a framework capability. -->
+
 # Hook 脱壳方案（dlopen → OpenCommon / RegisterDexFile）
 
 本文描述 Dejavu 的 hook 型 DEX 脱壳方案，入口是统一 CLI：
 
 ```sh
-./dejavu unpack -p <进程> --out <设备可写目录>
-./dejavu unpack -p <进程> --status
-./dejavu unpack -p <进程> --disable
+python3 plugins/unpack/cli.py -p <进程> --out <设备可写目录>
+python3 plugins/unpack/cli.py -p <进程> --status
+python3 plugins/unpack/cli.py -p <进程> --disable
 ```
 
 ## 架构
@@ -72,7 +74,7 @@
 - 从 dumped dex 批量触发：
 
 ```sh
-./dejavu unpack -p <进程> --active-invoke-dex <设备dex路径> [--class-filter 前缀]
+python3 plugins/unpack/cli.py -p <进程> --active-invoke-dex <设备dex路径> [--class-filter 前缀]
 ```
 
 当前类枚举来自调用方提供的类名列表/dumped DEX；后续可接 DexFile 类列表自动枚举。
@@ -90,7 +92,7 @@
   `dropped_budget`，避免 OOM。
 - 需要立即看到文件时：
   ```sh
-  ./dejavu unpack -p <进程> --flush
+  python3 plugins/unpack/cli.py -p <进程> --flush
   ```
   或 Lua `unpack.flush(120000)`。
 - status 字段：`pending_files/pending_bytes/written_files/dropped_budget`。

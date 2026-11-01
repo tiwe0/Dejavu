@@ -755,36 +755,6 @@ if ! wait_for_log "${RUN_TOKEN} mem-errors-ok" "${LOG_TIMEOUT}"; then
 fi
 pass "memory error handling"
 
-# FART-style extraction: hook ArtMethod::Invoke, trigger sentinel calls with
-# null thread through reflection and verify they are intercepted without
-# executing the target methods.
-echo "== FART invoke sentinel"
-write_script "local app = java.invoke('android.app.ActivityThread', 'currentApplication',
-    '()Landroid/app/Application;')
-local files = java.invoke(app, 'getFilesDir', '()Ljava/io/File;')
-local directory = java.invoke(files, 'getAbsolutePath', '()Ljava/lang/String;')
-java.release(files)
-java.release(app)
-local status = unpack.enable(directory .. '/dejavu-fart')
-local hook = unpack.hook_invoke()
-unpack.active_invoke_async('java.lang.Object,java.lang.StringBuilder', 10)
-local completed = unpack.active_invoke_wait(60000)
-local final_status = unpack.status()
-local hits = tonumber(final_status:match('active_invoke_hits=(%d+)')) or 0
-local done = tonumber(final_status:match('active_done=(%d+)')) or 0
-if final_status:find('invoke_hooked=yes', 1, true) == nil or hits <= 0 or
-    done < 2 then
-    error('${RUN_TOKEN} fart-sentinel-failed done=' .. tostring(done) ..
-          ' hits=' .. tostring(hits))
-end
-error('${RUN_TOKEN} fart-sentinel-ok hits=' .. tostring(hits))"
-if ! wait_for_log "${RUN_TOKEN} fart-sentinel-ok" "${LOG_TIMEOUT}"; then
-    logcat_dump | grep -iE 'Dejavu' | tail -n 20 >&2 || true
-    fail "FART invoke sentinel failed"
-fi
-[[ -n "$(target_pid)" ]] || fail "FART invoke sentinel: target died"
-pass "FART invoke sentinel"
-
 # Oversized control response: must be reported as an error, not by dropping
 # the connection; the following case proves the channel is still usable.
 echo "== oversized control response (M1 regression)"

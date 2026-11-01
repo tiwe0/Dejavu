@@ -18,20 +18,37 @@ Only hook/dump primitives are native (`unpack.enable`, `unpack.hook_invoke`,
 
 ```sh
 # capture DEX while the target runs (native hooks + deferred writer)
-./dejavu unpack -p <process> --out <device-dir>
+python3 plugins/unpack/cli.py -p <process> --out <device-dir>
 
 # Lua strategy: parse the manifest main-activity namespace from dumped dex,
 # then invoke classes slowly (40 ms between batches), then flush
-./dejavu unpack -p <process> --out <device-dir> --active-invoke-manifest \
-    [--class-filter substring]
+python3 plugins/unpack/cli.py -p <process> --out <device-dir> \
+    --active-invoke-manifest [--class-filter substring]
 ```
 
 For a specific dumped dex:
 
 ```sh
-./dejavu unpack -p <process> --out <device-dir> \
+python3 plugins/unpack/cli.py -p <process> --out <device-dir> \
     --active-invoke-dex /data/.../register_dexfile_000.dex
 ```
+
+## Plugin build
+
+The native support sources live in `src/` and are built as a **dynamically
+loaded plugin** (not compiled into the agent):
+
+```sh
+./plugins/unpack/build.sh
+# -> out/plugins/unpack/libdejavu_unpack.so
+```
+
+`cli.py` builds the plugin if needed, pushes it to the target app's files
+directory, applies `chmod 755` / a loadable SELinux label, sets
+`debug.dejavu.plugins` + `debug.dejavu.unpack.dir`, and restarts the target.
+The agent loads it through the generic `plugin.load`/`debug.dejavu.plugins`
+mechanism; the ABI is `include/dejavu_plugin.h` and framework docs are
+`zygisk/docs/plugin-api.md`.
 
 Advanced: concatenate `dex.lua`, `manifest.lua`, `main.lua` and call
 `run_unpack_example({dex_dir=..., class_filter=..., delay_ms=40,

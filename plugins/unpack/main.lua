@@ -5,7 +5,7 @@
 --   unpack.enable/hook_invoke/active_invoke/dump_revision/flush/sleep_ms
 --
 -- Usage (from CLI):
---   ./dejavu unpack -p <process> --out <device-dir> --active-invoke-manifest
+--   python3 plugins/unpack/cli.py -p <process> --out <device-dir> --active-invoke-manifest
 -- Advanced: concatenate dex.lua + manifest.lua + main.lua and call
 --   run_unpack_example({dex_dir=..., class_filter=..., delay_ms=40})
 

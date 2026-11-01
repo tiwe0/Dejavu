@@ -274,95 +274,22 @@ mem.protect(addr, size, 'rw-'|'r--'|...); mem.maps([filter])
   创建 W+X 或改代码页可能被 SELinux 拒绝，属于危险操作。
 - 完整说明见 `zygisk/docs/agent-helpers.md`。
 
-### 4.5 Hook 脱壳（dlopen → RegisterDexFile/OpenCommon）
-
-```sh
-./dejavu unpack -p <进程> --out /data/user_de/0/<pkg>/files/dejavu-unpack
-./dejavu unpack -p <进程> --status
-./dejavu unpack -p <进程> --disable
-```
-
-- CLI 通过 root 设置 `debug.dejavu.unpack.dir` 并重启目标，Agent 在早期初始化
-  读取属性后自动 `unpack.enable(dir)`：先装 `dlopen`/`android_dlopen_ext`
-  hook，再装 ART `ClassLinker::RegisterDexFile`（及 Locked / OpenCommon）。
-- hook 从 `DexFile` 对象重建内存 DEX 并写文件；ART 指针带 top-byte tag，访问
-  前统一清除。默认跳过 file-backed 系统 dex（避免启动 ANR），只 dump 匿名内存
-  中的解密 DEX；`unpack.include_file_backed(true)` 可放开过滤。
-- 已验证：手工 `DexClassLoader` 加载 30MB DEX，dump 与源文件逐字节一致；
-  Settings 自动捕获启动流程，默认过滤下稳定。
-- FART 抽取壳：`unpack.hook_invoke()` hook `ArtMethod::Invoke`；
-  `unpack.active_invoke_async('类名1,类名2'[, delay_ms])` 后台细水长流
-  （默认 40ms/类，`active_invoke_wait()` 等待），用反射枚举方法并直接以 `thread=nullptr`
-  调用 `ArtMethod::Invoke`，hook 命中后不执行原方法、只做 revision dump
-  （`active_revision_*.dex`）。`./dejavu unpack --active-invoke-dex <dex>` 可从
-  dumped DEX 提取类名并分批主动调用。
-- dump 先复制进内存队列、后台 writer 逐步落盘，避免 hook 阻塞主线程 ANR；
-  用 `./dejavu unpack --flush` 或 `unpack.flush()` 强制落盘后再拉取。
-- 详见 `zygisk/docs/unpack-guide.md` 与 `examples/unpack/README.md`。
-
-### 5. hookx 高层封装（推荐）
+### 4.5 Native plugin（动态加载）
 
 ```lua
-local trace_id   = hookx.trace("android.app.Activity", "onResume", "()V")
-local bypass_id  = hookx.force_return_bool("com.example.Guard", "isSafe", "()Z", true)
-local rewrite_id = hookx.replace_arg_int("com.example.Target", "compute", "(I)I", 0, 42)
-hook.log(hook.list())
+plugin.load('/data/user_de/0/<pkg>/files/libexample.so')
+plugin.list()
+plugin.call('example', 'namespace.function', ...)
+plugin.unload('example')
 ```
 
-可用：`hookx.trace`、`replace_arg_int`、`force_return_int/bool/void`、
-`log_string_arg`、`log_result_int`、`hookx.sig{args=...,ret=...}`。
-详见 `zygisk/docs/user-guide.md` 与 `zygisk/docs/cookbook.md`。
+- 插件是 arm64 `.so`，导出 `dejavu_plugin_entry`；ABI 见
+  `include/dejavu_plugin.h`，说明见 `zygisk/docs/plugin-api.md`。
+- `initialize(host)` 里通过 `host->register_function` 注册 Lua 函数；可读
+  `host->java_vm` / app ClassLoader，不链接 agent 私有符号。
+- 早期自动加载：`setprop debug.dejavu.plugins <path1>:<path2>`，Agent 在 app
+  代码前加载；Lua 注册会等控制会话建立后自动补注册。
+- 允许路径：module 目录、`/data/local/tmp/`、应用数据目录；应用数据目录里的
+  plugin 通常还需要 `chmod 755` + 可执行 SELinux label。
+- 示例：`plugins/unpack/`（编译为插件，`python3 plugins/unpack/cli.py ...`）。
 
-### 6. 免重启开发循环
-
-```sh
-./dejavu build                       # 改核心库/agent
-./dejavu deploy-agent -p com.android.settings   # 原子替换 agent + init.lua 并重启 App
-```
-
-Loader（`zygisk/arm64-v8a.so`）或模块安装变化才需要 `ksud soft-reboot`。
-
-### 7. 验证与排障
-
-```sh
-./dejavu test -p com.android.settings               # 设备验收 29 项（含 hang 为 30）
-./dejavu test -p com.android.settings --with-hang-test   # 含挂死/超时恢复（~40s）
-./dejavu log [-p 进程] [--dump] [--clear]
-```
-
-日志 tag：`DejavuZygisk`（loader/companion）、`DejavuAgent`（agent 生命周期）、
-`DejavuHook`（hook 回调/编译）、`DejavuLSPlant`（ART hook 初始化）。
-
-| 现象 | 处理 |
-|---|---|
-| `target process is not running` | 启动目标 App；确认 `pidof` 与 `targets.txt` 完全一致 |
-| `RPC endpoint is not ready` | Agent 尚未 attach；等待/重启目标进程，确认模块已启用 |
-| `target Agent did not respond in time` | 该进程 Lua 线程被长任务卡住；重启目标进程恢复 |
-| `control result exceeds the 1 MiB response limit` | 减少返回数据或改用 `hook.log()` |
-| `hook.install` 编译失败 | 检查 JNI 签名；设备端不能 `#include`，只用 preamble API |
-| 模块安装后无 Agent 日志 | 检查 root/provider、targets、API 26–35；软重启后再试 |
-| 直接覆盖运行中 `.so` 导致崩溃 | 用 `deploy-agent`/安装流程的“临时文件+mv”原子替换 |
-
-## 关键文件与文档
-
-- `dejavu` — 统一 CLI（status/build/package/install/targets/deploy-agent/exec/repl/watch/log/test）
-- `include/dejavu.h` — 核心 C ABI
-- `zygisk/include/dejavu_hook_api.h` — Hook C ABI v1（preamble 暴露的函数）
-- `zygisk/docs/user-guide.md` — 安装、部署、Lua API、真机开发循环
-- `zygisk/docs/hook-c-api.md` — Java hook 回调 ABI、结果通道、限制
-- `zygisk/docs/native-hook-api.md` — native 函数 hook/call API 与限制
-- `zygisk/docs/java-invoke-api.md` — Java 主动调用与类型转换协议
-- `zygisk/docs/agent-helpers.md` — 文件读写、加载 SO、符号枚举/解析
-- `zygisk/docs/unpack-guide.md` — hook 脱壳方案（dlopen/RegisterDexFile）
-- `zygisk/docs/cookbook.md` — hookx 常见任务
-- `zygisk/scripts/device-test.sh` — 自动化真机验收
-- `patches/README.md` — TinyCC 维护补丁说明
-- `THIRD_PARTY_NOTICES.md` — 第三方许可证
-
-## 修改仓库时
-
-- 构建：`make host-smoke`、`make android-arm64`、`make -C zygisk test`、`make -C zygisk package`。
-- 提交前：`git diff --check`；改动的 C/C++ 文件用 `clang-format`（CI 固定 18.1.8）格式化；
-  新增 shell 脚本通过 `bash -n`。
-- 不要修改 `extern/` 子模块；TinyCC 修复放在 `patches/` 并由构建脚本应用。
-- 设备端改动后优先跑 `./dejavu test`；涉及 Loader 变化才软重启。

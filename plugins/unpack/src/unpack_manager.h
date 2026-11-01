@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "dejavu.h"
-#include "dejavu_runtime.h"
+#include "dejavu_plugin.h"
 
 /*
  * Hook-based unpacking helpers.
@@ -39,8 +39,8 @@ class UnpackManager {
     UnpackManager(const UnpackManager &) = delete;
     UnpackManager &operator=(const UnpackManager &) = delete;
 
-    bool initialize(DejavuRuntime *runtime, JavaVM *vm, std::string *error);
-    bool register_lua(dejavu_control_session *session, std::string *error);
+    bool initialize(const DejavuPluginHost *host, std::string *error);
+    bool register_plugin_functions(const DejavuPluginHost *host, std::string *error);
     void shutdown();
     void enable_from_system_property();
     bool hook_invoke(std::string *error);
@@ -50,7 +50,7 @@ class UnpackManager {
     bool wait_active_invoke(unsigned long long timeout_ms, std::string *status, std::string *error);
     void stop_active_invoke();
     void on_active_invoke();
-    void set_app_class_loader(JNIEnv *env, jobject loader);
+    jobject current_app_class_loader();
     bool flush(unsigned long long timeout_ms, std::string *error);
 
     static UnpackManager *instance();
@@ -114,14 +114,13 @@ class UnpackManager {
 
     static UnpackManager *instance_;
 
-    DejavuRuntime *runtime_ = nullptr;
+    const DejavuPluginHost *host_ = nullptr;
     JavaVM *vm_ = nullptr;
     mutable std::mutex mutex_;
     std::vector<Image> images_;
     bool invoke_hooked_ = false;
     unsigned long invoke_address_ = 0;
     std::atomic<unsigned long long> active_invoke_hits_{0};
-    jobject app_class_loader_ = nullptr;
     std::thread writer_;
     mutable std::mutex queue_mutex_;
     std::condition_variable queue_cv_;

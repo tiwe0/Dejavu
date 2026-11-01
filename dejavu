@@ -587,102 +587,6 @@ def command_java(args: argparse.Namespace) -> int:
     fail(f"unsupported java action: {action}")
 
 
-def unpack_example_script(config_lua: str) -> str:
-    parts = []
-    for name in ("dex.lua", "manifest.lua", "main.lua"):
-        path = REPO_ROOT / "examples" / "unpack" / name
-        if not path.is_file():
-            fail(f"unpack example file not found: {path}")
-        content = path.read_text(encoding="utf-8")
-        content = re.sub(r"\nreturn [A-Za-z_][A-Za-z0-9_]*\s*$", "\n", content)
-        parts.append(content)
-    parts.append(f"\nreturn run_unpack_example({config_lua})\n")
-    return "\n".join(parts)
-
-
-def command_unpack(args: argparse.Namespace) -> int:
-    process = args.process
-    if args.active_invoke_manifest:
-        if not args.out:
-            fail("unpack --active-invoke-manifest requires --out <device-dir>")
-        filter_literal = lua_quote(args.class_filter) if args.class_filter else "nil"
-        config = (
-            "{dex_dir=" + lua_quote(args.out)
-            + ", class_filter=" + filter_literal
-            + ", delay_ms=" + str(args.delay_ms) + "}"
-        )
-        script = unpack_example_script(config)
-        with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
-            handle.write(script)
-            path = Path(handle.name)
-        try:
-            return delegate_dejavuctl(
-                args, ["-p", process, "--timeout", "180", str(path)]
-            )
-        finally:
-            path.unlink(missing_ok=True)
-    if args.active_invoke_dex:
-        filter_literal = lua_quote(args.class_filter) if args.class_filter else "nil"
-        config = (
-            "{dex_file=" + lua_quote(args.active_invoke_dex)
-            + ", class_filter=" + filter_literal
-            + ", delay_ms=" + str(args.delay_ms) + "}"
-        )
-        script = unpack_example_script(config)
-        with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as handle:
-            handle.write(script)
-            path = Path(handle.name)
-        try:
-            return delegate_dejavuctl(
-                args, ["-p", process, "--timeout", "180", str(path)]
-            )
-        finally:
-            path.unlink(missing_ok=True)
-    if args.flush:
-        return exec_inline(args, process, "return unpack.flush(120000)")
-    if args.status:
-        return exec_inline(args, process, "return unpack.status()")
-    if args.disable:
-        code = (
-            "local ok = pcall(unpack.disable); "
-            "return tostring(ok) .. ' ' .. tostring(unpack.status())"
-        )
-        exec_inline(args, process, code)
-        try:
-            root_shell(args, "setprop debug.dejavu.unpack.dir ''")
-            root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 0")
-        except CliError:
-            pass
-        print("unpack hooks disabled; system property cleared")
-        return 0
-    if not args.out:
-        fail("unpack requires --out <device-directory> (or use --status/--disable)")
-    if not re.fullmatch(r"[A-Za-z0-9_./-]+", args.out):
-        fail("--out may only contain letters, digits, '_', '.', '/' and '-'")
-    root_shell(args, f"setprop debug.dejavu.unpack.dir {shlex.quote(args.out)}")
-    if args.include_file_backed:
-        root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 1")
-    else:
-        root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 0")
-    if args.no_restart:
-        code = f"return unpack.enable({lua_quote(args.out)})"
-        result = exec_inline(args, process, code)
-    else:
-        print(f"enabling hook unpacking for {process} -> {args.out}")
-        restart_target(args, process, None)
-        time.sleep(3)
-        code = "return unpack.status()"
-        result = exec_inline(args, process, code)
-        if result != 0:
-            time.sleep(3)
-            result = exec_inline(args, process, code)
-    if result == 0:
-        print(f"dump directory: {args.out}")
-        print("pull results after the target loads its dex files, e.g.:")
-        print(f"  adb shell su -c 'cp -r {args.out} /sdcard/Download/'")
-    return result
-
-
 def command_log(args: argparse.Namespace) -> int:
     require_device(args)
     if args.clear:
@@ -733,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings install libc.so read hook.c\n"
             "  ./dejavu native -p com.android.settings call libc.so getpid call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
-            "  ./dejavu unpack -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-unpack\n"
+            "  python3 plugins/unpack/cli.py -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-plugin\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),
@@ -868,39 +772,6 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser = java_actions.add_parser("release", help="release a Java object handle")
     release_parser.add_argument("handle", type=int)
     release_parser.set_defaults(func=command_java)
-
-    sub = subparsers.add_parser("unpack", help="hook-based DEX unpacking")
-    sub.add_argument("-p", "--process", default="bin.mt.plus")
-    sub.add_argument("--out", help="device-writable output directory (persisted via property)")
-    sub.add_argument("--status", action="store_true", help="show current unpack status")
-    sub.add_argument(
-        "--active-invoke-dex",
-        help="trigger FART-style active invocation for classes in this device dex file",
-    )
-    sub.add_argument("--class-filter", help="only invoke classes whose name contains this text")
-    sub.add_argument("--delay-ms", type=int, default=40, help="pacing delay between active batches")
-    sub.add_argument(
-        "--flush",
-        action="store_true",
-        help="wait for deferred in-memory dumps to be written to disk",
-    )
-    sub.add_argument(
-        "--active-invoke-manifest",
-        action="store_true",
-        help="invoke classes in the Manifest main-activity namespace from dumped dex",
-    )
-    sub.add_argument(
-        "--include-file-backed",
-        action="store_true",
-        help="also capture file-backed system/app dex (default: memory-only dex)",
-    )
-    sub.add_argument("--disable", action="store_true", help="disable unpacking and clear the property")
-    sub.add_argument(
-        "--no-restart",
-        action="store_true",
-        help="enable hooks in the running process instead of restarting it",
-    )
-    sub.set_defaults(func=command_unpack)
 
     sub = subparsers.add_parser("log", help="show Dejavu logcat tags")
     sub.add_argument("-p", "--process", help="only show lines mentioning this process")

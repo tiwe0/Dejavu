@@ -292,13 +292,13 @@ UnpackManager *UnpackManager::instance() {
     return instance_;
 }
 
-bool UnpackManager::initialize(DejavuRuntime *runtime, JavaVM *vm, std::string *error) {
-    if (runtime == nullptr || vm == nullptr) {
-        *error = "invalid unpack manager initialization argument";
+bool UnpackManager::initialize(const DejavuPluginHost *host, std::string *error) {
+    if (host == nullptr || host->java_vm == nullptr) {
+        *error = "invalid unpack plugin initialization argument";
         return false;
     }
-    runtime_ = runtime;
-    vm_ = vm;
+    host_ = host;
+    vm_ = host->java_vm;
     instance_ = this;
     g_unpack = this;
     return true;
@@ -313,12 +313,12 @@ void UnpackManager::shutdown() {
     if (instance_ == this) {
         instance_ = nullptr;
     }
-    runtime_ = nullptr;
+    host_ = nullptr;
 }
 
-bool UnpackManager::register_lua(dejavu_control_session *session, std::string *error) {
-    if (runtime_ == nullptr || session == nullptr) {
-        *error = "unpack manager is not initialized";
+bool UnpackManager::register_plugin_functions(const DejavuPluginHost *host, std::string *error) {
+    if (host == nullptr || host->register_function == nullptr || host->host_context == nullptr) {
+        *error = "unpack plugin host cannot register Lua functions";
         return false;
     }
     struct Registration {
@@ -341,13 +341,13 @@ bool UnpackManager::register_lua(dejavu_control_session *session, std::string *e
         {"sleep_ms", UnpackManager::lua_sleep_ms},
         {"dump_revision", UnpackManager::lua_dump_revision},
     };
-    char runtime_error[512];
+    char register_error[512];
     for (const Registration &registration : registrations) {
-        const int status = runtime_->control_session_register(session, "unpack", registration.name,
-                                                              registration.function, this,
-                                                              runtime_error, sizeof(runtime_error));
+        const int status = host->register_function(host->host_context, "unpack", registration.name,
+                                                   registration.function, this, register_error,
+                                                   sizeof(register_error));
         if (status != DEJAVU_OK) {
-            *error = runtime_error;
+            *error = register_error;
             return false;
         }
     }
@@ -973,14 +973,11 @@ void UnpackManager::on_active_invoke() {
     active_invoke_hits_.fetch_add(1);
 }
 
-void UnpackManager::set_app_class_loader(JNIEnv *env, jobject loader) {
-    if (env == nullptr || loader == nullptr) {
-        return;
+jobject UnpackManager::current_app_class_loader() {
+    if (host_ != nullptr && host_->get_app_class_loader != nullptr) {
+        return host_->get_app_class_loader(host_->host_context);
     }
-    if (app_class_loader_ != nullptr) {
-        env->DeleteGlobalRef(app_class_loader_);
-    }
-    app_class_loader_ = env->NewGlobalRef(loader);
+    return nullptr;
 }
 
 bool UnpackManager::hook_invoke(std::string *error) {
@@ -1177,7 +1174,7 @@ bool UnpackManager::active_invoke(const std::string &class_names, std::string *s
             continue;
         }
         jclass clazz = static_cast<jclass>(env->CallStaticObjectMethod(
-            class_class, class_for_name, class_name, JNI_FALSE, app_class_loader_));
+            class_class, class_for_name, class_name, JNI_FALSE, current_app_class_loader()));
         env->DeleteLocalRef(class_name);
         if (env->ExceptionCheck() || clazz == nullptr) {
             env->ExceptionClear();
@@ -1635,7 +1632,7 @@ void UnpackManager::active_invoke_worker() {
             env->ExceptionClear();
         } else {
             jclass clazz = static_cast<jclass>(env->CallStaticObjectMethod(
-                class_class, class_for_name, class_name, JNI_FALSE, app_class_loader_));
+                class_class, class_for_name, class_name, JNI_FALSE, current_app_class_loader()));
             env->DeleteLocalRef(class_name);
             if (env->ExceptionCheck() || clazz == nullptr) {
                 env->ExceptionClear();
