@@ -19,5 +19,11 @@ Build both:
 ./plugins/unpack/build.sh
 ```
 
+Each plugin may ship a `SKILL.md` next to its source. At install time copy it
+next to the loaded library as `<plugin>.so.SKILL.md` (or a shared
+`SKILL.md` in the same directory); the running plugin then exposes it through
+`plugin.skill(name)` and `./dejavu plugin skill <name>` so an agent can read the
+plugin-specific instructions without guessing the repo path.
+
 The ABI and host services are documented in
 [`zygisk/docs/plugin-api.md`](../zygisk/docs/plugin-api.md).

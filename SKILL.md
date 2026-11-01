@@ -300,8 +300,10 @@ plugin.unload('example')
   文件必须是普通文件、不可组/全局写、owner 为 root 或目标 uid。
 - `plugin.unload` 只允许 descriptor 标记 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE` 且
   无 in-flight 调用的插件；装 native hook 的插件必须自己摘 hook。
-- CLI：`./dejavu plugin -p <进程> list|load|call|unload|allow|autoload`；
+- CLI：`./dejavu plugin -p <进程> list|load|call|unload|skill|allow|autoload`；
   `call` 参数沿用类型化转换（integer/float/bool/null/string）。
+- 每个插件可带 `SKILL.md`（frontmatter name/description），安装为
+  `<plugin>.so.SKILL.md`；用 `./dejavu plugin skill <name>` 读取，辅助 agent。
 - 示例：`plugins/hello`（host 服务/契约测试）、`plugins/unpack`（脱壳）。
   unpack CLI：`python3 plugins/unpack/cli.py ...`。
 

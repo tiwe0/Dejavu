@@ -192,6 +192,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 ./dejavu plugin -p <进程> load <设备plugin.so>
 ./dejavu plugin -p <进程> call <name> <namespace.function> [--arg 值]
 ./dejavu plugin -p <进程> unload <name>
+./dejavu plugin -p <进程> skill <name>   # 读取插件 SKILL.md
 
 
 ./dejavu repl -p <进程>

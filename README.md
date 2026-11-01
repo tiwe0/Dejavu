@@ -202,6 +202,7 @@ control channel into one command:
 ./dejavu plugin -p <process> load <device-plugin.so>
 ./dejavu plugin -p <process> call <name> <namespace.function> [--arg VALUE]
 ./dejavu plugin -p <process> unload <name>
+./dejavu plugin -p <process> skill <name>   # read per-plugin SKILL.md
 
 
 ./dejavu repl -p <process>

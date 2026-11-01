@@ -126,12 +126,19 @@ def command(args: argparse.Namespace) -> int:
     if os.environ.get("ADB_SERIAL"):
         adb_prefix.extend(["-s", os.environ["ADB_SERIAL"]])
     staged = "/data/local/tmp/dejavu_unpack_example.so"
+    staged_skill = staged + ".SKILL.md"
     _subprocess.run([*adb_prefix, "push", str(plugin), staged], check=True)
+    skill_file = EXAMPLE_DIR / "SKILL.md"
+    if skill_file.is_file():
+        _subprocess.run([*adb_prefix, "push", str(skill_file), staged_skill], check=True)
     plugin_destination = str(Path(args.out).parent / "libdejavu_unpack.so")
+    skill_destination = plugin_destination + ".SKILL.md"
     root_shell(
         args,
         f"cp {staged} {shlex.quote(plugin_destination)} && "
+        f"cp {staged_skill} {shlex.quote(skill_destination)} && "
         f"chmod 755 {shlex.quote(plugin_destination)} && "
+        f"chmod 644 {shlex.quote(skill_destination)} && "
         f"(chcon u:object_r:apk_data_file:s0 {shlex.quote(plugin_destination)} || true)",
     )
     root_shell(

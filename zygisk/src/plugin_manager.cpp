@@ -32,6 +32,7 @@ constexpr char kAllowedDataPrefix[] = "/data/data/";
 constexpr char kPluginManifest[] = "/data/adb/modules/dejavu_zygisk/config/plugins.txt";
 constexpr char kAllowedProperty[] = "debug.dejavu.plugins.allowed";
 constexpr size_t kPluginIndexNone = static_cast<size_t>(-1);
+constexpr size_t kMaximumSkillSize = 128 * 1024;
 
 thread_local size_t g_loading_plugin_index = kPluginIndexNone;
 
@@ -364,6 +365,40 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         return false;
     }
     plugins_[plugin_index]->loaded = true;
+    {
+        const std::string sidecar = path + ".SKILL.md";
+        std::string skill_path;
+        struct stat skill_stat = {};
+        if (lstat(sidecar.c_str(), &skill_stat) == 0 && S_ISREG(skill_stat.st_mode)) {
+            skill_path = sidecar;
+        } else {
+            const size_t slash = path.find_last_of('/');
+            const std::string directory = slash == std::string::npos ? "." : path.substr(0, slash);
+            const std::string fallback = directory + "/SKILL.md";
+            if (lstat(fallback.c_str(), &skill_stat) == 0 && S_ISREG(skill_stat.st_mode)) {
+                skill_path = fallback;
+            }
+        }
+        if (!skill_path.empty()) {
+            std::ifstream skill_file(skill_path, std::ios::binary);
+            if (skill_file.is_open()) {
+                std::ostringstream buffer;
+                char chunk[4096];
+                size_t total = 0;
+                while (skill_file && total < kMaximumSkillSize) {
+                    const size_t wanted = std::min(sizeof(chunk), kMaximumSkillSize - total);
+                    skill_file.read(chunk, static_cast<std::streamsize>(wanted));
+                    const size_t count = static_cast<size_t>(skill_file.gcount());
+                    if (count == 0) {
+                        break;
+                    }
+                    buffer.write(chunk, static_cast<std::streamsize>(count));
+                    total += count;
+                }
+                plugins_[plugin_index]->skill_text = buffer.str();
+            }
+        }
+    }
     if (session_ != nullptr && descriptor->on_control_ready != nullptr) {
         descriptor->on_control_ready(plugins_[plugin_index]->state);
         plugins_[plugin_index]->control_ready = true;
@@ -428,7 +463,7 @@ bool PluginManager::register_lua(dejavu_control_session *session, std::string *e
     const Registration registrations[] = {
         {"load", &PluginManager::lua_load},     {"list", &PluginManager::lua_list},
         {"status", &PluginManager::lua_status}, {"unload", &PluginManager::lua_unload},
-        {"call", &PluginManager::lua_call},
+        {"call", &PluginManager::lua_call},     {"skill", &PluginManager::lua_skill},
     };
     char runtime_error[512];
     for (const Registration &registration : registrations) {
@@ -635,7 +670,9 @@ std::string PluginManager::status() const {
         if (!plugin->version.empty()) {
             output << " " << plugin->version;
         }
-        output << " loaded=" << (plugin->loaded ? "yes" : "no") << " path=" << plugin->path << "]";
+        output << " loaded=" << (plugin->loaded ? "yes" : "no")
+               << " skill=" << (plugin->skill_text.empty() ? "no" : "yes")
+               << " path=" << plugin->path << "]";
     }
     return output.str();
 }
@@ -682,6 +719,35 @@ int PluginManager::lua_unload(dejavu_control_session *, void *context,
         return DEJAVU_ERROR_OUT_OF_MEMORY;
     }
     return DEJAVU_OK;
+}
+
+int PluginManager::lua_skill(dejavu_control_session *, void *context, const dejavu_value *arguments,
+                             size_t argument_count, dejavu_value *result, char *error,
+                             size_t error_size) {
+    auto *manager = static_cast<PluginManager *>(context);
+    std::string name;
+    if (manager == nullptr || argument_count != 1 ||
+        !lua_string_argument(arguments, argument_count, 0, &name)) {
+        std::snprintf(error, error_size, "plugin.skill expects a plugin name");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::lock_guard<std::recursive_mutex> lock(manager->mutex_);
+    for (const auto &plugin : manager->plugins_) {
+        if (plugin->name != name || !plugin->loaded) {
+            continue;
+        }
+        if (plugin->skill_text.empty()) {
+            std::snprintf(error, error_size, "plugin '%s' has no SKILL.md sidecar", name.c_str());
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        if (!make_string(plugin->skill_text, result)) {
+            std::snprintf(error, error_size, "unable to allocate plugin skill");
+            return DEJAVU_ERROR_OUT_OF_MEMORY;
+        }
+        return DEJAVU_OK;
+    }
+    std::snprintf(error, error_size, "plugin not loaded: %s", name.c_str());
+    return DEJAVU_ERROR_LUA_EXECUTE;
 }
 
 int PluginManager::lua_call(dejavu_control_session *session, void *context,

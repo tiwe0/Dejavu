@@ -53,6 +53,7 @@ class PluginManager {
         uint32_t flags = 0;
         bool loaded = false;
         bool control_ready = false;
+        std::string skill_text;
     };
 
     static int host_register_function(void *host_context, const char *namespace_name,
@@ -85,6 +86,8 @@ class PluginManager {
                           dejavu_value *, char *, size_t);
     static int lua_call(dejavu_control_session *, void *, const dejavu_value *, size_t,
                         dejavu_value *, char *, size_t);
+    static int lua_skill(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                         dejavu_value *, char *, size_t);
     static int lua_status(dejavu_control_session *, void *, const dejavu_value *, size_t,
                           dejavu_value *, char *, size_t);
 
