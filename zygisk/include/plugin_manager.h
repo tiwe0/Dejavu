@@ -35,12 +35,18 @@ class PluginManager {
                                void *function, void *function_context, char *error,
                                size_t error_size);
     bool unload_plugin(const std::string &name, std::string *status, std::string *error);
+    bool remember_hook(void *target);
+    void forget_hook(void *target);
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;
     }
 
   private:
+    struct HookRecord {
+        void *target = nullptr;
+        size_t plugin_index = 0;
+    };
     struct Entry {
         size_t plugin_index = 0;
         std::string namespace_name;
@@ -58,6 +64,7 @@ class PluginManager {
         std::string name;
         std::string version;
         uint32_t flags = 0;
+        uint32_t capabilities = 0;
         bool loaded = false;
         bool control_ready = false;
         bool jit = false;
@@ -113,6 +120,8 @@ class PluginManager {
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
     void remove_plugin(size_t plugin_index);
+    void remove_hooks_for(size_t plugin_index);
+    void remove_all_hooks();
     static bool valid_identifier(const std::string &value);
     static bool valid_namespace(const std::string &value);
     static bool allowed_path(const std::string &path);
@@ -131,5 +140,6 @@ class PluginManager {
     std::deque<std::unique_ptr<Entry>> entries_;
     std::vector<Entry *> pending_entries_;
     std::set<std::string> allowed_paths_;
+    std::vector<HookRecord> hooks_;
     bool registered_lua_ = false;
 };

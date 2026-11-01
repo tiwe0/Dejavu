@@ -36,6 +36,22 @@ constexpr size_t kPluginIndexNone = static_cast<size_t>(-1);
 constexpr size_t kMaximumSkillSize = 128 * 1024;
 
 thread_local size_t g_loading_plugin_index = kPluginIndexNone;
+thread_local size_t g_current_plugin_index = kPluginIndexNone;
+
+size_t active_plugin_index() {
+    return g_current_plugin_index != kPluginIndexNone ? g_current_plugin_index
+                                                      : g_loading_plugin_index;
+}
+
+struct PluginContextGuard {
+    size_t previous = g_current_plugin_index;
+    explicit PluginContextGuard(size_t index) {
+        g_current_plugin_index = index;
+    }
+    ~PluginContextGuard() {
+        g_current_plugin_index = previous;
+    }
+};
 
 constexpr char kJitPrelude[] = R"DEJAVU_JIT(
 #ifndef NULL
@@ -99,6 +115,7 @@ extern void dejavu_jit_return_string(DejavuJitValue *result, const char *text);
 const char *dejavu_jit_plugin_name(void);
 const char *dejavu_jit_plugin_version(void);
 int dejavu_jit_plugin_unload_safe(void);
+int dejavu_jit_plugin_capabilities(void);
 int dejavu_jit_plugin_init(void);
 void dejavu_jit_plugin_shutdown(void);
 )DEJAVU_JIT";
@@ -411,34 +428,36 @@ void PluginManager::shutdown() {
     if (g_jit_manager == this) {
         g_jit_manager = nullptr;
     }
-    for (auto &plugin : plugins_) {
-        if (!plugin->loaded) {
+    for (size_t index = 0; index < plugins_.size(); ++index) {
+        Plugin *plugin = plugins_[index].get();
+        if (plugin == nullptr || !plugin->loaded) {
             continue;
         }
-        if (plugin->jit) {
-            if (plugin->jit_shutdown != nullptr) {
-                plugin->jit_shutdown();
+        {
+            PluginContextGuard context_guard(index);
+            if (plugin->jit) {
+                if (plugin->jit_shutdown != nullptr) {
+                    plugin->jit_shutdown();
+                }
+            } else if (plugin->descriptor != nullptr && plugin->descriptor->shutdown != nullptr) {
+                plugin->descriptor->shutdown(plugin->state);
             }
+        }
+        remove_hooks_for(index);
+        if (plugin->jit) {
             if (plugin->jit_module != nullptr && runtime_ != nullptr) {
                 runtime_->module_destroy(plugin->jit_module);
                 plugin->jit_module = nullptr;
             }
-        } else if (plugin->descriptor != nullptr && plugin->descriptor->shutdown != nullptr) {
-            plugin->descriptor->shutdown(plugin->state);
-        }
-        for (auto &entry : entries_) {
-            if (entry->plugin_index < plugins_.size() &&
-                plugins_[entry->plugin_index].get() == plugin.get()) {
-                entry->valid = false;
-            }
-        }
-        plugin->loaded = false;
-        plugin->state = nullptr;
-        if (plugin->handle != nullptr) {
+        } else if (plugin->handle != nullptr) {
             dlclose(plugin->handle);
             plugin->handle = nullptr;
         }
+        invalidate_entries(index);
+        plugin->loaded = false;
+        plugin->state = nullptr;
     }
+    remove_all_hooks();
     plugins_.clear();
 }
 
@@ -588,11 +607,67 @@ void PluginManager::remove_plugin(size_t plugin_index) {
         return;
     }
     invalidate_entries(plugin_index);
+    remove_hooks_for(plugin_index);
     plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(plugin_index));
     for (auto &entry : entries_) {
         if (entry->plugin_index > plugin_index) {
             --entry->plugin_index;
         }
+    }
+}
+
+bool PluginManager::remember_hook(void *target) {
+    const size_t index = active_plugin_index();
+    if (index == kPluginIndexNone || target == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    hooks_.push_back(HookRecord{target, index});
+    return true;
+}
+
+void PluginManager::forget_hook(void *target) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    hooks_.erase(
+        std::remove_if(hooks_.begin(), hooks_.end(),
+                       [target](const HookRecord &record) { return record.target == target; }),
+        hooks_.end());
+}
+
+void PluginManager::remove_hooks_for(size_t plugin_index) {
+    std::vector<void *> targets;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (auto iterator = hooks_.begin(); iterator != hooks_.end();) {
+            if (iterator->plugin_index == plugin_index) {
+                targets.push_back(iterator->target);
+                iterator = hooks_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+    }
+    for (void *target : targets) {
+        const int status = DobbyDestroy(target);
+        if (status != 0) {
+            log_line(
+                ANDROID_LOG_WARN,
+                ("DobbyDestroy failed during plugin teardown: " + std::to_string(status)).c_str());
+        }
+    }
+}
+
+void PluginManager::remove_all_hooks() {
+    std::vector<void *> targets;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (const HookRecord &record : hooks_) {
+            targets.push_back(record.target);
+        }
+        hooks_.clear();
+    }
+    for (void *target : targets) {
+        DobbyDestroy(target);
     }
 }
 
@@ -680,6 +755,10 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     plugin->name = plugin_name;
     plugin->version = descriptor->version != nullptr ? descriptor->version : "";
     plugin->flags = descriptor->flags;
+    if (descriptor->struct_size >=
+        offsetof(DejavuPluginDescriptor, capabilities) + sizeof(descriptor->capabilities)) {
+        plugin->capabilities = descriptor->capabilities;
+    }
     const size_t plugin_index = plugins_.size();
     plugins_.push_back(std::move(plugin));
     char plugin_error[512] = {};
@@ -697,6 +776,7 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     plugins_[plugin_index]->loaded = true;
     read_skill_text(path, &plugins_[plugin_index]->skill_text);
     if (session_ != nullptr && descriptor->on_control_ready != nullptr) {
+        PluginContextGuard context_guard(plugin_index);
         descriptor->on_control_ready(plugins_[plugin_index]->state);
         plugins_[plugin_index]->control_ready = true;
     }
@@ -782,6 +862,8 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         reinterpret_cast<JitUnloadSafeFunction>(symbol("dejavu_jit_plugin_unload_safe"));
     auto *control_ready =
         reinterpret_cast<JitShutdownFunction>(symbol("dejavu_jit_plugin_control_ready"));
+    auto *capabilities_function =
+        reinterpret_cast<JitUnloadSafeFunction>(symbol("dejavu_jit_plugin_capabilities"));
     std::string plugin_name;
     if (name_function != nullptr && name_function() != nullptr) {
         plugin_name = name_function();
@@ -820,6 +902,8 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
                         ? DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE
                         : 0;
     plugin->jit = true;
+    plugin->capabilities =
+        capabilities_function != nullptr ? static_cast<uint32_t>(capabilities_function()) : 0;
     plugin->jit_module = module;
     plugin->jit_shutdown = shutdown;
     const size_t plugin_index = plugins_.size();
@@ -839,6 +923,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     plugins_[plugin_index]->loaded = true;
     read_skill_text(path, &plugins_[plugin_index]->skill_text);
     if (session_ != nullptr && control_ready != nullptr) {
+        PluginContextGuard context_guard(plugin_index);
         control_ready();
         plugins_[plugin_index]->control_ready = true;
     }
@@ -888,16 +973,22 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
             return false;
         }
     }
-    if (target->jit) {
-        if (target->jit_shutdown != nullptr) {
-            target->jit_shutdown();
+    {
+        PluginContextGuard context_guard(index);
+        if (target->jit) {
+            if (target->jit_shutdown != nullptr) {
+                target->jit_shutdown();
+            }
+        } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
+            target->descriptor->shutdown(target->state);
         }
+    }
+    remove_hooks_for(index);
+    if (target->jit) {
         if (target->jit_module != nullptr && runtime_ != nullptr) {
             runtime_->module_destroy(target->jit_module);
             target->jit_module = nullptr;
         }
-    } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
-        target->descriptor->shutdown(target->state);
     }
     if (!target->jit && target->handle != nullptr) {
         dlclose(target->handle);
@@ -1102,6 +1193,7 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
             entry->in_flight.fetch_sub(1, std::memory_order_release);
         }
     } guard(entry);
+    PluginContextGuard plugin_guard(entry->plugin_index);
     return entry->function(session, entry->context, arguments, argument_count, result, error,
                            error_size);
 }
@@ -1192,7 +1284,8 @@ std::string PluginManager::status() const {
             output << " " << plugin->version;
         }
         output << " loaded=" << (plugin->loaded ? "yes" : "no")
-               << " jit=" << (plugin->jit ? "yes" : "no")
+               << " jit=" << (plugin->jit ? "yes" : "no") << " caps=0x" << std::hex
+               << plugin->capabilities << std::dec
                << " skill=" << (plugin->skill_text.empty() ? "no" : "yes")
                << " path=" << plugin->path << "]";
     }
@@ -1313,8 +1406,8 @@ int PluginManager::lua_call(dejavu_control_session *session, void *context,
         if (!requested_namespace.empty() && entry->namespace_name != requested_namespace) {
             continue;
         }
-        return entry->function(session, entry->context, arguments + 2, argument_count - 2, result,
-                               error, error_size);
+        return trampoline(session, entry.get(), arguments + 2, argument_count - 2, result, error,
+                          error_size);
     }
     std::snprintf(error, error_size, "plugin function not found: %s", function_name.c_str());
     return DEJAVU_ERROR_LUA_EXECUTE;
@@ -1433,27 +1526,37 @@ void *PluginManagerHostModuleResolve(void *host_context, const char *library, co
     return address;
 }
 
-int PluginManagerHostHookInstall(void *, void *target, void *replacement, void **original,
-                                 char *error, size_t error_size) {
-    if (target == nullptr || replacement == nullptr || original == nullptr) {
+int PluginManagerHostHookInstall(void *host_context, void *target, void *replacement,
+                                 void **original, char *error, size_t error_size) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || target == nullptr || replacement == nullptr || original == nullptr) {
         std::snprintf(error, error_size, "hook.install requires target/replacement/original");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (!manager->remember_hook(target)) {
+        std::snprintf(error, error_size, "hook.install is only allowed from plugin code");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const int status = DobbyHook(target, replacement, original);
     if (status != 0) {
+        manager->forget_hook(target);
         std::snprintf(error, error_size, "DobbyHook failed with status %d", status);
         return DEJAVU_ERROR_LUA_EXECUTE;
     }
     return DEJAVU_OK;
 }
 
-int PluginManagerHostHookUninstall(void *, void *target, char *error, size_t error_size) {
-    if (target == nullptr) {
+int PluginManagerHostHookUninstall(void *host_context, void *target, char *error,
+                                   size_t error_size) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || target == nullptr) {
         std::snprintf(error, error_size, "hook.uninstall requires a target");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const int status = DobbyDestroy(target);
-    if (status != 0) {
+    if (status == 0) {
+        manager->forget_hook(target);
+    } else {
         std::snprintf(error, error_size, "DobbyDestroy failed with status %d", status);
         return DEJAVU_ERROR_LUA_EXECUTE;
     }

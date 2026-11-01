@@ -26,6 +26,13 @@
 /* Descriptor flags. */
 #define DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE 1u
 
+/* Optional capability bits reported through the descriptor (append-only ABI). */
+#define DEJAVU_PLUGIN_CAP_MEM 1u
+#define DEJAVU_PLUGIN_CAP_MODULE 2u
+#define DEJAVU_PLUGIN_CAP_HOOK 4u
+#define DEJAVU_PLUGIN_CAP_FS 8u
+#define DEJAVU_PLUGIN_CAP_JAVA 16u
+
 /* Host service interface versions. */
 #define DEJAVU_MEM_INTERFACE_VERSION 1u
 #define DEJAVU_MODULE_INTERFACE_VERSION 1u
@@ -102,6 +109,12 @@ typedef struct DejavuPluginDescriptor {
     void (*on_control_ready)(void *plugin_state);
 
     void (*shutdown)(void *plugin_state);
+
+    /*
+     * Optional and appended after the v1 fields; read it only when
+     * struct_size reaches offsetof(capabilities) + sizeof(uint32_t).
+     */
+    uint32_t capabilities;
 } DejavuPluginDescriptor;
 
 typedef const DejavuPluginDescriptor *(*DejaVuPluginEntry)(void);

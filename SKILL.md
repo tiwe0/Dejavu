@@ -291,6 +291,9 @@ plugin.unload('example')
 - host 服务：`host->get_interface("mem"/"module"/"hook")` 提供
   mem read/write/query、ELF symbol resolve、Dobby hook install/uninstall；
   `host->alloc/free` 用于结果内存。
+- host hook 归属：通过 host hook 接口安装的 hook 会记录到所属插件，unload 时
+  自动 `DobbyDestroy`（JIT/native 都适用）；绕过 host 自行 Dobby 的需自清理。
+- descriptor 可选 `capabilities` 位；`plugin.list()` 显示 `caps=0x...`。
 - `on_control_ready` 在控制会话建立后回调，需要 session/ClassLoader 的初始化
   放这里。
 - 早期自动加载：`setprop debug.dejavu.plugins <path1>:<path2>`；但 DEX/ART hook

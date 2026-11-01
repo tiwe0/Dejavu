@@ -62,7 +62,8 @@ int lua_info(dejavu_control_session *, void *context, const dejavu_value *, size
     text += state->hook != nullptr ? ",hook" : "";
     text += query == 0 ? " query=ok" : " query=failed";
     if (state->module != nullptr) {
-        void *getpid_symbol = state->module->resolve(state->host->host_context, "libc.so", "getpid");
+        void *getpid_symbol =
+            state->module->resolve(state->host->host_context, "libc.so", "getpid");
         text += getpid_symbol != nullptr ? " resolve=ok" : " resolve=failed";
     }
     char *copy = make_string(state, text);
@@ -81,8 +82,8 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
                       size_t error_size) {
     if (host == nullptr || plugin_state == nullptr ||
         host->abi_version != DEJAVU_PLUGIN_ABI_VERSION ||
-        host->struct_size < offsetof(DejavuPluginHost, get_interface) +
-                                sizeof(host->get_interface)) {
+        host->struct_size <
+            offsetof(DejavuPluginHost, get_interface) + sizeof(host->get_interface)) {
         std::snprintf(error, error_size, "incompatible plugin host ABI");
         return -1;
     }
@@ -105,9 +106,8 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
         {"info", lua_info},
     };
     for (const Registration &registration : registrations) {
-        const int status = host->register_function(host->host_context, "hello",
-                                                   registration.name, registration.function,
-                                                   state, error, error_size);
+        const int status = host->register_function(host->host_context, "hello", registration.name,
+                                                   registration.function, state, error, error_size);
         if (status != DEJAVU_OK) {
             delete state;
             return -1;
@@ -142,6 +142,7 @@ dejavu_plugin_entry(void) {
         plugin_initialize,
         plugin_control_ready,
         plugin_shutdown,
+        DEJAVU_PLUGIN_CAP_MEM | DEJAVU_PLUGIN_CAP_MODULE | DEJAVU_PLUGIN_CAP_HOOK,
     };
     return &descriptor;
 }

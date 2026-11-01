@@ -72,6 +72,10 @@ int dejavu_jit_plugin_unload_safe(void) {
     return 1;
 }
 
+int dejavu_jit_plugin_capabilities(void) {
+    return 3; /* DEJAVU_PLUGIN_CAP_MEM | DEJAVU_PLUGIN_CAP_MODULE */
+}
+
 int dejavu_jit_plugin_init(void) {
     char error[128];
     if (dejavu_jit_register("hellojit", "greet", greet, NULL, error, sizeof(error)) != 0) {

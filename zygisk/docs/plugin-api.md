@@ -27,6 +27,10 @@ append-only and must be validated with `struct_size`; v1 is frozen.
 - `get_interface(host, "mem"|"module"|"hook", version)` returns optional host
   services (see below).
 
+The descriptor may append optional `capabilities` bits
+(`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA`); `plugin.list()` prints them as
+`caps=0x...`. Read the field only when `struct_size` reaches its offset.
+
 `on_control_ready` is called once the Lua control session exists; plugins that
 need the control session/ClassLoader should defer that work there instead of
 doing it in `initialize`.
@@ -45,8 +49,11 @@ Through `host->get_interface`:
 - **module** (`DEJAVU_MODULE_INTERFACE_VERSION`): `resolve(library, symbol)`
   including non-dynamic `LOCAL` symbols (ELF symbol table).
 - **hook** (`DEJAVU_HOOK_INTERFACE_VERSION`): `install(target, replacement,
-  &original)` via Dobby and `uninstall(target)`; plugins that call install must
-  remove hooks before unload.
+  &original)` via Dobby and `uninstall(target)`. Hooks installed through this
+  interface are **owned by the calling plugin**: the host records them and
+  destroys any remaining hooks automatically on unload, before destroying the
+  plugin module. Plugins that install hooks outside this interface remain
+  responsible for their own teardown.
 
 Interface structs also carry `version` and `struct_size`; extend by appending
 fields and bumping the interface version.
@@ -100,6 +107,10 @@ hook state can be fully torn down.
 ## Example
 
 [`plugins/README.md`](../../plugins/README.md) indexes the examples.
+[`plugins/hello/hello_hook_jit.c`](../../plugins/hello/hello_hook_jit.c)
+demonstrates host-owned hook teardown: it installs an `atoi` hook and relies on
+`plugin.unload` to remove it.
+
 [`plugins/hello/`](../../plugins/hello/plugin_entry.cpp) is a small contract
 plugin that exercises host services (mem query, module resolve), plugin
 registration and safe unload. [`plugins/unpack/`](../../plugins/unpack/README.md)
