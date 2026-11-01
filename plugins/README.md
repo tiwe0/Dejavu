@@ -4,6 +4,8 @@ These shared objects are **examples and ABI contract tests**, not part of the
 framework. They are built separately from the agent and loaded through
 `plugin.load()` / `debug.dejavu.plugins`.
 
+- [`hello/hello_fs_jit.c`](hello/hello_fs_jit.c) — JIT plugin exercising the
+  host fs interface (read/write/exists/remove) without libc.
 - [`hello/hello_hook_jit.c`](hello/hello_hook_jit.c) — JIT plugin installing a
   host-tracked `atoi` hook and relying on host teardown at unload.
 - [`hello/hello_jit.c`](hello/hello_jit.c) — TinyCC JIT version: `plugin jit`

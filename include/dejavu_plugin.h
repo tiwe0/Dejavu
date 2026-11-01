@@ -37,6 +37,7 @@
 #define DEJAVU_MEM_INTERFACE_VERSION 1u
 #define DEJAVU_MODULE_INTERFACE_VERSION 1u
 #define DEJAVU_HOOK_INTERFACE_VERSION 1u
+#define DEJAVU_FS_INTERFACE_VERSION 1u
 
 typedef struct DejavuMemInterface {
     uint32_t version;
@@ -66,6 +67,19 @@ typedef struct DejavuHookInterface {
     int (*uninstall)(void *host_context, void *target, char *error, size_t error_size);
 } DejavuHookInterface;
 
+typedef struct DejavuFsInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Read up to capacity bytes; *size_read receives the bytes copied. */
+    int (*read_file)(void *host_context, const char *path, void *buffer, size_t capacity,
+                     size_t *size_read);
+    /* Create/truncate path and write data. */
+    int (*write_file)(void *host_context, const char *path, const void *data, size_t size);
+    int (*exists)(void *host_context, const char *path);
+    int (*file_size)(void *host_context, const char *path, unsigned long long *size);
+    int (*remove_file)(void *host_context, const char *path);
+} DejavuFsInterface;
+
 typedef struct DejavuPluginHost {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -90,7 +104,7 @@ typedef struct DejavuPluginHost {
 
     /*
      * Look up an optional host service interface by name and version
-     * ("mem", "module", "hook"). Returns NULL if unavailable.
+     * ("mem", "module", "hook", "fs"). Returns NULL if unavailable.
      */
     const void *(*get_interface)(void *host_context, const char *name, uint32_t version);
 } DejavuPluginHost;

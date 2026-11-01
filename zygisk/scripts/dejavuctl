@@ -662,3 +662,14 @@ def main():
             print_error(f"{error}; retrying ({attempt + 1}/{RETRY_ATTEMPTS})")
             time.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
     raise last_error
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        sys.exit(0)
+    except (ControlError, OSError, socket.error) as error:
+        print(f"dejavuctl: {error}", file=sys.stderr)
+        sys.exit(1)

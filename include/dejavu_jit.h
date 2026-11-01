@@ -53,6 +53,12 @@ extern void *dejavu_jit_module_resolve(const char *library, const char *symbol);
 extern int dejavu_jit_hook_install(void *target, void *replacement, void **original, char *error,
                                    unsigned long error_size);
 extern int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size);
+extern int dejavu_jit_fs_read(const char *path, void *buffer, unsigned long capacity,
+                              unsigned long *size_read);
+extern int dejavu_jit_fs_write(const char *path, const void *data, unsigned long size);
+extern int dejavu_jit_fs_exists(const char *path);
+extern int dejavu_jit_fs_size(const char *path, unsigned long long *size);
+extern int dejavu_jit_fs_remove(const char *path);
 
 extern void dejavu_jit_set_error(const char *message);
 extern int dejavu_jit_arg_type(const DejavuJitValue *arguments, unsigned long count,

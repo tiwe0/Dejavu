@@ -48,6 +48,10 @@ Through `host->get_interface`:
   (bit 1 read, 2 write, 4 execute).
 - **module** (`DEJAVU_MODULE_INTERFACE_VERSION`): `resolve(library, symbol)`
   including non-dynamic `LOCAL` symbols (ELF symbol table).
+- **fs** (`DEJAVU_FS_INTERFACE_VERSION`): `read_file`, `write_file`, `exists`,
+  `file_size`, `remove_file` for app-accessible paths. JIT plugins use
+  `dejavu_jit_fs_read/write/exists/size/remove`; file reads are capped at
+  16 MiB and paths at 4096 bytes.
 - **hook** (`DEJAVU_HOOK_INTERFACE_VERSION`): `install(target, replacement,
   &original)` via Dobby and `uninstall(target)`. Hooks installed through this
   interface are **owned by the calling plugin**: the host records them and

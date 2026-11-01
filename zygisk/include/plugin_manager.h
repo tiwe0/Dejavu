@@ -44,6 +44,11 @@ class PluginManager {
     }
 
   private:
+    struct JitCacheEntry {
+        dejavu_module *module = nullptr;
+        bool in_use = false;
+        unsigned long long stamp = 0;
+    };
     struct HookRecord {
         void *target = nullptr;
         size_t plugin_index = 0;
@@ -70,6 +75,8 @@ class PluginManager {
         bool control_ready = false;
         bool jit = false;
         dejavu_module *jit_module = nullptr;
+        bool jit_cache_owned = false;
+        std::string jit_cache_key;
         void (*jit_shutdown)() = nullptr;
         std::string skill_text;
     };
@@ -92,6 +99,12 @@ class PluginManager {
                                  void **original, char *error, size_t error_size);
     static int host_hook_uninstall(void *host_context, void *target, char *error,
                                    size_t error_size);
+    static int host_fs_read(void *host_context, const char *path, void *buffer, size_t capacity,
+                            size_t *size_read);
+    static int host_fs_write(void *host_context, const char *path, const void *data, size_t size);
+    static int host_fs_exists(void *host_context, const char *path);
+    static int host_fs_size(void *host_context, const char *path, unsigned long long *size);
+    static int host_fs_remove(void *host_context, const char *path);
     static int trampoline(dejavu_control_session *session, void *context,
                           const dejavu_value *arguments, size_t argument_count,
                           dejavu_value *result, char *error, size_t error_size);
@@ -120,6 +133,10 @@ class PluginManager {
     bool whitelisted_path(const std::string &path) const;
     std::string expected_hash_for(const std::string &path) const;
     bool verify_file_hash(const std::string &path, std::string *error) const;
+    dejavu_module *compile_jit_source(const std::string &hash, const std::string &source,
+                                      std::string *error);
+    void release_jit_module(const std::string &hash, bool owned);
+    void destroy_jit_cache();
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
     void remove_plugin(size_t plugin_index);
@@ -145,5 +162,7 @@ class PluginManager {
     std::set<std::string> allowed_paths_;
     std::map<std::string, std::string> allowed_hashes_;
     std::vector<HookRecord> hooks_;
+    std::map<std::string, JitCacheEntry> jit_cache_;
+    unsigned long long jit_cache_clock_ = 0;
     bool registered_lua_ = false;
 };

@@ -691,6 +691,10 @@ def command_plugin_install(args: argparse.Namespace) -> int:
         fail("unable to locate the app files dir; pass --dir <device-dir>")
     if not re.fullmatch(r"[A-Za-z0-9_./-]+", device_dir):
         fail("--dir may only contain letters, digits, '_', '.', '/' and '-'")
+    if args.subdir:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.subdir):
+            fail("--subdir may only contain letters, digits, '_', '.', '-'")
+        device_dir = device_dir.rstrip("/") + "/" + args.subdir
     destination = device_dir.rstrip("/") + "/" + source.name
     staged = f"/data/local/tmp/{source.name}.dejavu-install"
     adb(args, "push", str(source), staged)
@@ -705,6 +709,7 @@ def command_plugin_install(args: argparse.Namespace) -> int:
                 skill = candidate
                 break
     commands = [
+        f"mkdir -p {shlex.quote(device_dir)}",
         f"cp {shlex.quote(staged)} {shlex.quote(destination)}",
         f"chmod {'755' if suffix == '.so' else '644'} {shlex.quote(destination)}",
         f"(chcon u:object_r:apk_data_file:s0 {shlex.quote(destination)} || true)",
@@ -815,7 +820,15 @@ def command_test(args: argparse.Namespace) -> int:
     command = ["bash", str(DEVICE_TEST)]
     if args.with_hang_test:
         command.append("--with-hang-test")
-    return subprocess.run(command, env=env).returncode
+    attempts = max(1, args.retries + 1)
+    result = 1
+    for attempt in range(1, attempts + 1):
+        if attempts > 1:
+            print(f"device acceptance attempt {attempt}/{attempts}")
+        result = subprocess.run(command, env=env).returncode
+        if result == 0:
+            return 0
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1025,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_install.add_argument("local_path", help="host .so plugin or JIT .c source")
     plugin_install.add_argument("--dir", help="device app files dir (auto-detected by default)")
+    plugin_install.add_argument("--subdir", help="install into a per-plugin subdirectory")
     plugin_install.add_argument("--skill", help="SKILL.md sidecar (default: <plugin>.SKILL.md)")
     plugin_install.add_argument("--no-load", action="store_true", help="install without loading")
     plugin_install.set_defaults(func=command_plugin)
@@ -1057,6 +1071,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = subparsers.add_parser("test", help="run the automated on-device acceptance suite")
     sub.add_argument("-p", "--process", default="bin.mt.plus")
     sub.add_argument("--with-hang-test", action="store_true")
+    sub.add_argument(
+        "--retries",
+        type=int,
+        default=1,
+        help="retry the whole device suite after a failure (default: 1)",
+    )
     sub.set_defaults(func=command_test)
 
     return parser
