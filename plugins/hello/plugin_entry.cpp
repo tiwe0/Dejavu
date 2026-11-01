@@ -143,6 +143,7 @@ dejavu_plugin_entry(void) {
         plugin_control_ready,
         plugin_shutdown,
         DEJAVU_PLUGIN_CAP_MEM | DEJAVU_PLUGIN_CAP_MODULE | DEJAVU_PLUGIN_CAP_HOOK,
+        nullptr,
     };
     return &descriptor;
 }

@@ -28,8 +28,6 @@ RPC_OK = 0
 RPC_EXECUTION_ERROR = 1
 RPC_UNAVAILABLE = 2
 RPC_PROTOCOL_ERROR = 3
-RETRY_ATTEMPTS = 3
-RETRY_DELAY_SECONDS = 0.35
 RPC_HEADER = struct.Struct("<IIIiQI")
 FRAME_HEADER = struct.Struct("<I")
 PROCESS_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
@@ -549,6 +547,17 @@ def execute_with_reconnect(session, script):
         session.reconnect()
 
 
+def execute_with_status_reconnect(session, script):
+    while True:
+        status, payload = session.execute(script)
+        if not is_reconnectable_status(status, payload):
+            return status, payload
+        print_error(
+            f"{render_rpc_error(session.pid, status, payload)}; reconnecting Agent and retrying"
+        )
+        session.reconnect()
+
+
 def run_repl(session):
     had_error = False
     while True:
@@ -604,9 +613,6 @@ def run_watch(session, file_path):
 
 
 def run_single_command(arguments, process_name):
-    script = b"" if arguments.reconnect else load_script(arguments)
-    request_type = RPC_RECONNECT_REQUEST if arguments.reconnect else RPC_EXECUTE_REQUEST
-    response_type = RPC_RECONNECT_RESPONSE if arguments.reconnect else RPC_EXECUTE_RESPONSE
     with exclusive_cli_session():
         with ControlSession(
             arguments.serial,
@@ -614,21 +620,12 @@ def run_single_command(arguments, process_name):
             arguments.timeout,
             arguments.wait,
         ) as session:
-            status, payload = execute_with_port(
-                session.port,
-                session.token,
-                request_type,
-                response_type,
-                script,
-                arguments.timeout,
-                arguments.wait,
-            )
-            if arguments.reconnect and status == RPC_OK:
-                status, probe = session.execute(b"return true")
-                if status != RPC_OK or probe != b"true":
-                    raise ControlError("Agent reconnect probe failed")
-                payload = b"Agent reconnected"
-                status = RPC_OK
+            if arguments.reconnect:
+                session.reconnect()
+                print_payload(b"Agent reconnected")
+                return 0
+            script = load_script(arguments)
+            status, payload = execute_with_status_reconnect(session, script)
             if status == RPC_OK:
                 print_payload(payload)
                 return 0
@@ -651,17 +648,7 @@ def main():
                 if arguments.repl:
                     return run_repl(session)
                 return run_watch(session, arguments.watch)
-    last_error = None
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            return run_single_command(arguments, process_name)
-        except (ControlError, OSError, socket.error) as error:
-            last_error = error
-            if attempt + 1 >= RETRY_ATTEMPTS or not is_reconnectable_error(error):
-                raise
-            print_error(f"{error}; retrying ({attempt + 1}/{RETRY_ATTEMPTS})")
-            time.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-    raise last_error
+    return run_single_command(arguments, process_name)
 
 
 if __name__ == "__main__":

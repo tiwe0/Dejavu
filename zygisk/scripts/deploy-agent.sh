@@ -2,12 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+PROJECT_DIR=$(cd -- "${ROOT_DIR}/.." && pwd)
 ANDROID_API=${ANDROID_API:-26}
 ADB_SERIAL=${ADB_SERIAL:-}
 PROCESS=${PROCESS:-bin.mt.plus}
 ACTIVITY=${ACTIVITY:-bin.mt.plus/.MainLightIcon}
 AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_agent.so"}
-CORE_LIB=${CORE_LIB:-"${ROOT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
+CORE_LIB=${CORE_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
 
@@ -67,5 +68,5 @@ remote_core_tmp="/data/local/tmp/libdejavu.so.${remote_suffix}"
 "${adb_command[@]}" push "${AGENT_LIB}" "${remote_tmp}"
 "${adb_command[@]}" push "${CORE_LIB}" "${remote_core_tmp}"
 "${adb_command[@]}" push "${rendered_init}" "${remote_init_tmp}"
-"${adb_command[@]}" shell "su -c 'cp /data/local/tmp/libdejavu_agent.so.${remote_suffix} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so && cp /data/local/tmp/libdejavu.so.${remote_suffix} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so && cp /data/local/tmp/dejavu-init.lua.${remote_suffix} /data/adb/modules/dejavu_zygisk/config/init.lua.new && mv -f /data/adb/modules/dejavu_zygisk/config/init.lua.new /data/adb/modules/dejavu_zygisk/config/init.lua && rm -f /data/local/tmp/libdejavu_agent.so.${remote_suffix} /data/local/tmp/libdejavu.so.${remote_suffix} /data/local/tmp/dejavu-init.lua.${remote_suffix}'"
+"${adb_command[@]}" shell "su -c 'cp /data/local/tmp/libdejavu_agent.so.${remote_suffix} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu_agent.so && cp /data/local/tmp/libdejavu.so.${remote_suffix} /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && chmod 0755 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new && mv -f /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so.new /data/adb/modules/dejavu_zygisk/lib/arm64-v8a/libdejavu.so && cp /data/local/tmp/dejavu-init.lua.${remote_suffix} /data/adb/modules/dejavu_zygisk/config/init.lua.new && chmod 0644 /data/adb/modules/dejavu_zygisk/config/init.lua.new && chcon u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/config/init.lua.new && mv -f /data/adb/modules/dejavu_zygisk/config/init.lua.new /data/adb/modules/dejavu_zygisk/config/init.lua && rm -f /data/local/tmp/libdejavu_agent.so.${remote_suffix} /data/local/tmp/libdejavu.so.${remote_suffix} /data/local/tmp/dejavu-init.lua.${remote_suffix}'"
 "${adb_command[@]}" shell "am force-stop '${PROCESS}'; sleep 1; am start -W -n '${ACTIVITY}'"

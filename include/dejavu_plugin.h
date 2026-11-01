@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * Dejavu native plugin ABI (v1, append-only).
+ * Dejavu native plugin ABI (v2, append-only).
  *
  * A plugin is an arm64 shared object exporting:
  *
@@ -20,7 +20,7 @@
 
 #include <dejavu.h>
 
-#define DEJAVU_PLUGIN_ABI_VERSION 1u
+#define DEJAVU_PLUGIN_ABI_VERSION 2u
 #define DEJAVU_PLUGIN_ENTRY_SYMBOL "dejavu_plugin_entry"
 
 /* Descriptor flags. */
@@ -125,10 +125,16 @@ typedef struct DejavuPluginDescriptor {
     void (*shutdown)(void *plugin_state);
 
     /*
-     * Optional and appended after the v1 fields; read it only when
+     * Optional and appended after the original fields; read it only when
      * struct_size reaches offsetof(capabilities) + sizeof(uint32_t).
      */
     uint32_t capabilities;
+
+    /*
+     * Optional pre-unload hook (read via struct_size): remove owned native
+     * hooks here so unload can verify quiescence before shutdown/dlclose.
+     */
+    void (*on_unload_prepare)(void *plugin_state);
 } DejavuPluginDescriptor;
 
 typedef const DejavuPluginDescriptor *(*DejaVuPluginEntry)(void);

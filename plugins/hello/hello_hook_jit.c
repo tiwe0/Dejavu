@@ -1,6 +1,7 @@
 /* JIT plugin that installs a host-tracked native hook and is unload-safe. */
 
 static int (*original_atoi)(const char *value);
+static void *hooked_target;
 
 static int hook_atoi(const char *value) {
     return original_atoi(value);
@@ -26,6 +27,7 @@ static int install_hook(void *session, void *context, const DejavuJitValue *argu
         dejavu_jit_return_string(result, "hook install failed");
         return 2;
     }
+    hooked_target = target;
     dejavu_jit_return_boolean(result, 1);
     return 0;
 }
@@ -70,6 +72,14 @@ int dejavu_jit_plugin_init(void) {
         return 1;
     }
     return 0;
+}
+
+void dejavu_jit_plugin_unload_prepare(void) {
+    char error[128];
+    if (hooked_target != NULL) {
+        dejavu_jit_hook_uninstall(hooked_target, error, sizeof(error));
+        hooked_target = NULL;
+    }
 }
 
 void dejavu_jit_plugin_shutdown(void) {

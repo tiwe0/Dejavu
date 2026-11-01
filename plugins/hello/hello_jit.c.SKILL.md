@@ -36,5 +36,6 @@ Expected `hellojit.info` returns `JIT plugin: mem=ok module=ok`.
   functions such as `dejavu_jit_alloc`, `dejavu_jit_mem_*`,
   `dejavu_jit_module_resolve`, `dejavu_jit_hook_*` are provided by the prelude.
 - JIT plugins require the Lua control engine; load them after startup.
-- Use `dejavu_engine_compile_file()` / `plugin.load_jit()` for the
-  read-file-and-compile path.
+- `plugin.load_jit()` reads the file, prepends the generated prelude and calls
+  `dejavu_engine_compile()` internally. `dejavu_engine_compile_file()` is a
+  separate public convenience API used by host tooling, not by this loader.

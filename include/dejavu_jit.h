@@ -77,5 +77,7 @@ const char *dejavu_jit_plugin_name(void);
 const char *dejavu_jit_plugin_version(void);
 int dejavu_jit_plugin_unload_safe(void);
 int dejavu_jit_plugin_capabilities(void);
+void dejavu_jit_plugin_control_ready(void);
+void dejavu_jit_plugin_unload_prepare(void);
 int dejavu_jit_plugin_init(void);
 void dejavu_jit_plugin_shutdown(void);

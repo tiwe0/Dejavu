@@ -38,6 +38,8 @@ class PluginManager {
     bool unload_plugin(const std::string &name, std::string *status, std::string *error);
     bool remember_hook(void *target);
     void forget_hook(void *target);
+    bool uninstall_owned_hook(void *target, char *error, size_t error_size);
+    size_t hook_count_for(size_t plugin_index) const;
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;
@@ -46,7 +48,7 @@ class PluginManager {
   private:
     struct JitCacheEntry {
         dejavu_module *module = nullptr;
-        bool in_use = false;
+        unsigned int refs = 0;
         unsigned long long stamp = 0;
     };
     struct HookRecord {
@@ -78,6 +80,7 @@ class PluginManager {
         bool jit_cache_owned = false;
         std::string jit_cache_key;
         void (*jit_shutdown)() = nullptr;
+        void (*jit_prepare)() = nullptr;
         std::string skill_text;
     };
 
@@ -136,6 +139,7 @@ class PluginManager {
     dejavu_module *compile_jit_source(const std::string &hash, const std::string &source,
                                       std::string *error);
     void release_jit_module(const std::string &hash, bool owned);
+    void discard_jit_module(const std::string &hash, dejavu_module *module, bool cache_owned);
     void destroy_jit_cache();
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
@@ -144,7 +148,6 @@ class PluginManager {
     void remove_all_hooks();
     static bool valid_identifier(const std::string &value);
     static bool valid_namespace(const std::string &value);
-    static bool allowed_path(const std::string &path);
     static bool make_string(const std::string &value, dejavu_value *result);
     static bool lua_string_argument(const dejavu_value *arguments, size_t count, size_t index,
                                     std::string *value);

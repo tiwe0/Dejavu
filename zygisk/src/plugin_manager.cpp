@@ -25,11 +25,6 @@ namespace {
 
 constexpr char kLogTag[] = "DejavuPlugin";
 constexpr char kAutoLoadProperty[] = "debug.dejavu.plugins";
-constexpr char kAllowedModulePrefix[] = "/data/adb/modules/dejavu_zygisk/";
-constexpr char kAllowedTmpPrefix[] = "/data/local/tmp/";
-constexpr char kAllowedUserPrefix[] = "/data/user/";
-constexpr char kAllowedUserDePrefix[] = "/data/user_de/";
-constexpr char kAllowedDataPrefix[] = "/data/data/";
 constexpr char kPluginManifest[] = "/data/adb/modules/dejavu_zygisk/config/plugins.txt";
 constexpr char kAllowedProperty[] = "debug.dejavu.plugins.allowed";
 constexpr char kAllowedHashProperty[] = "debug.dejavu.plugins.sha256";
@@ -560,13 +555,6 @@ void PluginManager::autoload_from_property() {
     }
 }
 
-bool PluginManager::allowed_path(const std::string &path) {
-    return path.size() > 1 && path[0] == '/' &&
-           (path.rfind(kAllowedModulePrefix, 0) == 0 || path.rfind(kAllowedTmpPrefix, 0) == 0 ||
-            path.rfind(kAllowedUserPrefix, 0) == 0 || path.rfind(kAllowedUserDePrefix, 0) == 0 ||
-            path.rfind(kAllowedDataPrefix, 0) == 0);
-}
-
 bool PluginManager::load_plugin(const std::string &path, std::string *status, std::string *error) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     refresh_allowed_paths();
@@ -695,6 +683,11 @@ void PluginManager::remove_plugin(size_t plugin_index) {
             --entry->plugin_index;
         }
     }
+    for (auto &hook : hooks_) {
+        if (hook.plugin_index > plugin_index) {
+            --hook.plugin_index;
+        }
+    }
 }
 
 bool PluginManager::remember_hook(void *target) {
@@ -703,16 +696,66 @@ bool PluginManager::remember_hook(void *target) {
         return false;
     }
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    for (const HookRecord &record : hooks_) {
+        if (record.target == target) {
+            return false;
+        }
+    }
     hooks_.push_back(HookRecord{target, index});
     return true;
 }
 
 void PluginManager::forget_hook(void *target) {
+    const size_t index = active_plugin_index();
+    if (index == kPluginIndexNone) {
+        return;
+    }
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    hooks_.erase(
-        std::remove_if(hooks_.begin(), hooks_.end(),
-                       [target](const HookRecord &record) { return record.target == target; }),
-        hooks_.end());
+    hooks_.erase(std::remove_if(hooks_.begin(), hooks_.end(),
+                                [target, index](const HookRecord &record) {
+                                    return record.target == target && record.plugin_index == index;
+                                }),
+                 hooks_.end());
+}
+
+size_t PluginManager::hook_count_for(size_t plugin_index) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    size_t count = 0;
+    for (const HookRecord &record : hooks_) {
+        if (record.plugin_index == plugin_index) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool PluginManager::uninstall_owned_hook(void *target, char *error, size_t error_size) {
+    const size_t index = active_plugin_index();
+    if (index == kPluginIndexNone || target == nullptr) {
+        std::snprintf(error, error_size, "hook.uninstall is only allowed from plugin code");
+        return false;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        bool owned = false;
+        for (const HookRecord &record : hooks_) {
+            if (record.target == target && record.plugin_index == index) {
+                owned = true;
+                break;
+            }
+        }
+        if (!owned) {
+            std::snprintf(error, error_size, "hook target is not owned by this plugin");
+            return false;
+        }
+    }
+    const int status = DobbyDestroy(target);
+    if (status != 0) {
+        std::snprintf(error, error_size, "DobbyDestroy failed with status %d", status);
+        return false;
+    }
+    forget_hook(target);
+    return true;
 }
 
 void PluginManager::remove_hooks_for(size_t plugin_index) {
@@ -875,7 +918,7 @@ dejavu_module *PluginManager::compile_jit_source(const std::string &hash, const 
                                                  std::string *error) {
     const auto cached = jit_cache_.find(hash);
     if (cached != jit_cache_.end() && cached->second.module != nullptr) {
-        cached->second.in_use = true;
+        ++cached->second.refs;
         cached->second.stamp = ++jit_cache_clock_;
         log_line(ANDROID_LOG_DEBUG, "JIT cache hit");
         return cached->second.module;
@@ -896,7 +939,7 @@ dejavu_module *PluginManager::compile_jit_source(const std::string &hash, const 
     if (jit_cache_.size() >= kMaximumCacheEntries) {
         auto victim = jit_cache_.end();
         for (auto iterator = jit_cache_.begin(); iterator != jit_cache_.end(); ++iterator) {
-            if (!iterator->second.in_use &&
+            if (iterator->second.refs == 0 &&
                 (victim == jit_cache_.end() || iterator->second.stamp < victim->second.stamp)) {
                 victim = iterator;
             }
@@ -909,7 +952,7 @@ dejavu_module *PluginManager::compile_jit_source(const std::string &hash, const 
     if (jit_cache_.size() < kMaximumCacheEntries) {
         JitCacheEntry entry;
         entry.module = module;
-        entry.in_use = true;
+        entry.refs = 1;
         entry.stamp = ++jit_cache_clock_;
         jit_cache_[hash] = entry;
     }
@@ -921,8 +964,20 @@ void PluginManager::release_jit_module(const std::string &hash, bool owned) {
         return;
     }
     const auto iterator = jit_cache_.find(hash);
-    if (iterator != jit_cache_.end()) {
-        iterator->second.in_use = false;
+    if (iterator != jit_cache_.end() && iterator->second.refs > 0) {
+        --iterator->second.refs;
+    }
+}
+
+void PluginManager::discard_jit_module(const std::string &hash, dejavu_module *module,
+                                       bool cache_owned) {
+    if (module == nullptr) {
+        return;
+    }
+    if (cache_owned) {
+        release_jit_module(hash, true);
+    } else if (runtime_ != nullptr) {
+        runtime_->module_destroy(module);
     }
 }
 
@@ -969,8 +1024,11 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         *error = "JIT source size is invalid (limit 512 KiB)";
         return false;
     }
-    if (!verify_file_hash(path, error)) {
-        return false;
+    for (const auto &plugin : plugins_) {
+        if (plugin->path == path && plugin->loaded) {
+            *status = plugin->name + " already loaded from " + path;
+            return true;
+        }
     }
     std::ifstream source_file(path, std::ios::binary);
     if (!source_file.is_open()) {
@@ -985,6 +1043,11 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         return false;
     }
     const std::string source_hash = sha256_hex(source.data(), source.size());
+    const std::string expected_hash = expected_hash_for(path);
+    if (!expected_hash.empty() && source_hash != expected_hash) {
+        *error = "plugin hash mismatch: " + path;
+        return false;
+    }
     dejavu_module *module = compile_jit_source(source_hash, source, error);
     if (module == nullptr) {
         return false;
@@ -997,7 +1060,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     };
     auto *initialize = reinterpret_cast<JitInitFunction>(symbol("dejavu_jit_plugin_init"));
     if (initialize == nullptr) {
-        runtime_->module_destroy(module);
+        discard_jit_module(source_hash, module, cache_owned);
         *error = "JIT source must define int dejavu_jit_plugin_init(void)";
         return false;
     }
@@ -1009,6 +1072,8 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         reinterpret_cast<JitUnloadSafeFunction>(symbol("dejavu_jit_plugin_unload_safe"));
     auto *control_ready =
         reinterpret_cast<JitShutdownFunction>(symbol("dejavu_jit_plugin_control_ready"));
+    auto *prepare =
+        reinterpret_cast<JitShutdownFunction>(symbol("dejavu_jit_plugin_unload_prepare"));
     auto *capabilities_function =
         reinterpret_cast<JitUnloadSafeFunction>(symbol("dejavu_jit_plugin_capabilities"));
     std::string plugin_name;
@@ -1024,7 +1089,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         plugin_name = stem;
     }
     if (!valid_identifier(plugin_name)) {
-        runtime_->module_destroy(module);
+        discard_jit_module(source_hash, module, cache_owned);
         *error = "JIT plugin name must be a simple identifier";
         return false;
     }
@@ -1036,7 +1101,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         }
     }
     if (name_exists(plugin_name)) {
-        runtime_->module_destroy(module);
+        discard_jit_module(source_hash, module, cache_owned);
         *error = "plugin name already registered: " + plugin_name;
         return false;
     }
@@ -1055,6 +1120,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         capabilities_function != nullptr ? static_cast<uint32_t>(capabilities_function()) : 0;
     plugin->jit_module = module;
     plugin->jit_shutdown = shutdown;
+    plugin->jit_prepare = prepare;
     const size_t plugin_index = plugins_.size();
     plugins_.push_back(std::move(plugin));
     g_jit_last_error.clear();
@@ -1065,11 +1131,8 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     if (init_status != 0) {
         *error = !g_jit_last_error.empty() ? g_jit_last_error : "JIT plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        release_jit_module(source_hash, cache_owned);
+        discard_jit_module(source_hash, module, cache_owned);
         remove_plugin(plugin_index);
-        if (!cache_owned) {
-            runtime_->module_destroy(module);
-        }
         return false;
     }
     plugins_[plugin_index]->loaded = true;
@@ -1125,6 +1188,27 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
             return false;
         }
     }
+    {
+        PluginContextGuard context_guard(index);
+        if (target->jit) {
+            if (target->jit_prepare != nullptr) {
+                target->jit_prepare();
+            }
+        } else if (target->descriptor != nullptr &&
+                   target->descriptor->struct_size >=
+                       offsetof(DejavuPluginDescriptor, on_unload_prepare) +
+                           sizeof(target->descriptor->on_unload_prepare) &&
+                   target->descriptor->on_unload_prepare != nullptr) {
+            target->descriptor->on_unload_prepare(target->state);
+        }
+    }
+    const size_t owned_hooks = hook_count_for(index);
+    if (owned_hooks != 0) {
+        *error = "plugin still owns " + std::to_string(owned_hooks) +
+                 " host hook(s); uninstall them in on_unload_prepare before unload";
+        return false;
+    }
+    invalidate_entries(index);
     {
         PluginContextGuard context_guard(index);
         if (target->jit) {
@@ -1724,12 +1808,8 @@ int PluginManagerHostHookUninstall(void *host_context, void *target, char *error
         std::snprintf(error, error_size, "hook.uninstall requires a target");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    const int status = DobbyDestroy(target);
-    if (status == 0) {
-        manager->forget_hook(target);
-    } else {
-        std::snprintf(error, error_size, "DobbyDestroy failed with status %d", status);
-        return DEJAVU_ERROR_LUA_EXECUTE;
+    if (!manager->uninstall_owned_hook(target, error, error_size)) {
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     return DEJAVU_OK;
 }

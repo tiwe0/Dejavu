@@ -3,6 +3,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <sys/stat.h>
 
 namespace {
 
@@ -112,12 +113,25 @@ std::string sha256_hex(const void *data, size_t size) {
 }
 
 bool sha256_file_hex(const std::string &path, std::string *digest, std::string *error) {
+    constexpr size_t kMaximumHashSize = 64 * 1024 * 1024;
+    struct stat information = {};
+    if (path.empty() || lstat(path.c_str(), &information) != 0 || !S_ISREG(information.st_mode)) {
+        *error = "hash target must be a regular file";
+        return false;
+    }
+    if (information.st_size < 0 ||
+        static_cast<unsigned long long>(information.st_size) > kMaximumHashSize) {
+        *error = "hash target is too large";
+        return false;
+    }
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         *error = "unable to open file for hash verification";
         return false;
     }
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::string content;
+    content.reserve(static_cast<size_t>(information.st_size));
+    content.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     if (file.bad()) {
         *error = "unable to read file for hash verification";
         return false;

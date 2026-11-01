@@ -59,6 +59,7 @@ dejavu_plugin_entry(void) {
         nullptr,
         plugin_shutdown,
         DEJAVU_PLUGIN_CAP_HOOK,
+        nullptr,
     };
     return &descriptor;
 }
