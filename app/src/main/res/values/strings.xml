@@ -65,7 +65,7 @@
     <string name="target_process_example">com.example.app</string>
     <string name="add">Add</string>
     <string name="targets_empty_title">No targets yet</string>
-    <string name="targets_empty_detail">Add a process name above, then relaunch that app so the agent can attach.</string>
+    <string name="targets_empty_detail">Choose an app above, then relaunch it so the agent can attach.</string>
     <string name="target_selected">selected target</string>
     <string name="target_tap_select">tap to select</string>
     <string name="restart_target_desc">Restart target</string>
@@ -167,4 +167,7 @@
     <string name="root_step_2">Go to Superuser and select Dejavu Console.</string>
     <string name="root_step_3">Choose Allow, return here and request again.</string>
     <string name="root_retry_hint">Already granted root? Request again after returning to the app.</string>
+    <string name="choose_app">Choose app</string>
+    <string name="search_apps">Search apps</string>
+    <string name="no_apps">No apps found</string>
 </resources>

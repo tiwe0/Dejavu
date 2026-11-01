@@ -60,6 +60,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.ivory.dejavu.data.ConsoleViewModel
+import cafe.ivory.dejavu.ui.AppPickerSheet
 import cafe.ivory.dejavu.ui.ConsoleScreen
 import cafe.ivory.dejavu.ui.HomeScreen
 import cafe.ivory.dejavu.ui.LogsScreen
@@ -97,6 +98,11 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
     var showLanguage by remember { mutableStateOf(false) }
+    var showAppPicker by remember { mutableStateOf(false) }
+    val openAppPicker = {
+        showAppPicker = true
+        vm.loadInstalledApps()
+    }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -216,12 +222,13 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                     state = state,
                     onRefresh = { vm.refresh() },
                     onSelectTarget = { vm.selectTarget(it) },
+                    onPickApp = openAppPicker,
                     onNavigate = { tabIndex = it },
                     onRestartTarget = { vm.restartTarget(it) },
                 )
                 1 -> TargetsScreen(
                     state = state,
-                    onAdd = { vm.addTarget(it) },
+                    onPickApp = openAppPicker,
                     onRemove = { vm.removeTarget(it) },
                     onSelect = { vm.selectTarget(it) },
                     onRestart = { vm.restartTarget(it) },
@@ -230,6 +237,7 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                     state = state,
                     onRefresh = { vm.refreshPlugins() },
                     onSelectTarget = { vm.selectTarget(it) },
+                    onPickApp = openAppPicker,
                     onUnload = { vm.unloadPlugin(it) },
                     onLoad = { vm.loadPlugin(it) },
                     skillLoader = { vm.pluginSkill(it) },
@@ -243,6 +251,7 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                 else -> ConsoleScreen(
                     state = state,
                     onSelectTarget = { vm.selectTarget(it) },
+                    onPickApp = openAppPicker,
                     runner = { vm.runScript(it) },
                 )
             }
@@ -251,6 +260,14 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
 
     if (showLanguage) {
         LanguageDialog(onDismiss = { showLanguage = false })
+    }
+
+    if (showAppPicker) {
+        AppPickerSheet(
+            state = state,
+            onPick = { vm.addTarget(it) },
+            onDismiss = { showAppPicker = false },
+        )
     }
 }
 

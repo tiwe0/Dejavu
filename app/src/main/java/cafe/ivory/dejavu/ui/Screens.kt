@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -56,6 +57,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.DropdownMenu
@@ -86,6 +88,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.ConsoleUiState
+import cafe.ivory.dejavu.data.InstalledApp
 import cafe.ivory.dejavu.data.PluginInfo
 import kotlinx.coroutines.launch
 
@@ -215,6 +218,7 @@ fun HomeScreen(
     state: ConsoleUiState,
     onRefresh: () -> Unit,
     onSelectTarget: (String) -> Unit,
+    onPickApp: () -> Unit,
     onNavigate: (Int) -> Unit,
     onRestartTarget: (String) -> Unit,
 ) {
@@ -282,6 +286,7 @@ fun HomeScreen(
                 subtitle = stringResource(R.string.active_target_subtitle),
             ) {
                 if (state.targets.isEmpty()) {
+                    TargetPicker(onClick = onPickApp)
                     Text(
                         stringResource(R.string.target_none_hint),
                         style = MaterialTheme.typography.bodySmall,
@@ -292,6 +297,7 @@ fun HomeScreen(
                         targets = state.targets,
                         selected = state.selectedTarget,
                         onSelect = onSelectTarget,
+                        onPickApp = onPickApp,
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -369,26 +375,12 @@ private fun RuntimeRow(
 @Composable
 fun TargetsScreen(
     state: ConsoleUiState,
-    onAdd: (String) -> Unit,
+    onPickApp: () -> Unit,
     onRemove: (String) -> Unit,
     onSelect: (String) -> Unit,
     onRestart: (String) -> Unit,
 ) {
-    var input by rememberSaveable { mutableStateOf("") }
-    var inputError by remember { mutableStateOf(false) }
     var pendingRemove by remember { mutableStateOf<String?>(null) }
-    val focus = androidx.compose.ui.platform.LocalFocusManager.current
-    val submit = {
-        val name = input.trim()
-        if (!name.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
-            inputError = true
-        } else {
-            onAdd(name)
-            input = ""
-            inputError = false
-            focus.clearFocus()
-        }
-    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 104.dp),
@@ -410,43 +402,7 @@ fun TargetsScreen(
             }
         }
         item {
-            Card(
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = {
-                            input = it
-                            inputError = false
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(stringResource(R.string.target_process)) },
-                        placeholder = { Text(stringResource(R.string.target_process_example)) },
-                        singleLine = true,
-                        isError = inputError,
-                        supportingText = if (inputError) {
-                            { Text(stringResource(R.string.msg_invalid_process)) }
-                        } else {
-                            null
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = submit, enabled = input.isNotBlank()) {
-                                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.add))
-                            }
-                        },
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                            imeAction = androidx.compose.ui.text.input.ImeAction.Done,
-                        ),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                            onDone = { submit() },
-                        ),
-                        shape = MaterialTheme.shapes.medium,
-                    )
-                }
-            }
+            TargetPicker(onClick = onPickApp)
         }
         if (state.targets.isEmpty()) {
             item {
@@ -573,6 +529,7 @@ fun PluginsScreen(
     state: ConsoleUiState,
     onRefresh: () -> Unit,
     onSelectTarget: (String) -> Unit,
+    onPickApp: () -> Unit,
     onUnload: (String) -> Unit,
     onLoad: (String) -> Unit,
     skillLoader: suspend (String) -> Result<String>,
@@ -597,21 +554,13 @@ fun PluginsScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (state.targets.isEmpty()) {
-                Text(
-                    stringResource(R.string.target_none_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                TargetMenu(
-                    targets = state.targets,
-                    selected = state.selectedTarget,
-                    onSelect = onSelectTarget,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            TargetMenu(
+                targets = state.targets,
+                selected = state.selectedTarget,
+                onSelect = onSelectTarget,
+                onPickApp = onPickApp,
+                modifier = Modifier.weight(1f),
+            )
             IconButton(onClick = onRefresh, enabled = state.selectedTarget != null && !state.pluginsLoading) {
                 Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh_plugins))
             }
@@ -1008,6 +957,7 @@ fun LogsScreen(
 fun ConsoleScreen(
     state: ConsoleUiState,
     onSelectTarget: (String) -> Unit,
+    onPickApp: () -> Unit,
     runner: suspend (String) -> Result<String>,
 ) {
     var script by rememberSaveable { mutableStateOf("return plugin.list()") }
@@ -1036,19 +986,12 @@ fun ConsoleScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            if (state.targets.isEmpty()) {
-                Text(
-                    stringResource(R.string.target_none_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                TargetMenu(
-                    targets = state.targets,
-                    selected = state.selectedTarget,
-                    onSelect = onSelectTarget,
-                )
-            }
+            TargetMenu(
+                targets = state.targets,
+                selected = state.selectedTarget,
+                onSelect = onSelectTarget,
+                onPickApp = onPickApp,
+            )
         }
         item {
             Card(
@@ -1194,6 +1137,135 @@ fun ConsoleScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppPickerSheet(
+    state: ConsoleUiState,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val apps = remember(state.installedApps, query) {
+        state.installedApps.filter {
+            query.isBlank() ||
+                it.label.contains(query, ignoreCase = true) ||
+                it.packageName.contains(query, ignoreCase = true)
+        }
+    }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.choose_app),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    state.installedApps.size.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                placeholder = { Text(stringResource(R.string.search_apps)) },
+                singleLine = true,
+                shape = MaterialTheme.shapes.medium,
+            )
+            if (state.appsLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (apps.isEmpty() && !state.appsLoading) {
+                EmptyState(
+                    title = stringResource(R.string.no_apps),
+                    detail = stringResource(R.string.search_apps),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                ) {
+                    items(apps, key = { it.packageName }) { app ->
+                        AppRow(
+                            app = app,
+                            selected = app.packageName == state.selectedTarget,
+                            onClick = {
+                                onPick(app.packageName)
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppRow(app: InstalledApp, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                app.label.take(1).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                app.label,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                app.packageName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (selected) {
+            Icon(
+                Icons.Rounded.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

@@ -65,7 +65,7 @@
     <string name="target_process_example">com.example.app</string>
     <string name="add">添加</string>
     <string name="targets_empty_title">还没有目标</string>
-    <string name="targets_empty_detail">在上方添加进程名，然后重新打开该应用，让 agent 可以注入。</string>
+    <string name="targets_empty_detail">点击上方选择应用，然后重新打开该应用，让 agent 可以注入。</string>
     <string name="target_selected">当前目标</string>
     <string name="target_tap_select">点击选择</string>
     <string name="restart_target_desc">重启目标</string>
@@ -167,4 +167,7 @@
     <string name="root_step_2">进入超级用户，找到 Dejavu Console。</string>
     <string name="root_step_3">选择允许，返回此页再次请求。</string>
     <string name="root_retry_hint">已经授权？返回应用后再次请求即可。</string>
+    <string name="choose_app">选择应用</string>
+    <string name="search_apps">搜索应用</string>
+    <string name="no_apps">没有找到应用</string>
 </resources>

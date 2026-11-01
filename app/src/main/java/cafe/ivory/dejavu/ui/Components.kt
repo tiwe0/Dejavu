@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -157,6 +158,7 @@ fun TargetMenu(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
     label: String? = null,
+    onPickApp: (() -> Unit)? = null,
 ) {
     val resolvedLabel = label ?: stringResource(R.string.target_process)
     var expanded by remember { mutableStateOf(false) }
@@ -209,6 +211,46 @@ fun TargetMenu(
                     },
                 )
             }
+            if (onPickApp != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.choose_app)) },
+                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
+                    onClick = {
+                        expanded = false
+                        onPickApp()
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TargetPicker(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.target_process),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    stringResource(R.string.choose_app),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
         }
     }
 }

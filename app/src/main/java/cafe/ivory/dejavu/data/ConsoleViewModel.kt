@@ -2,6 +2,7 @@ package cafe.ivory.dejavu.data
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.annotation.StringRes
 import cafe.ivory.dejavu.R
 import androidx.lifecycle.AndroidViewModel
@@ -24,6 +25,11 @@ private const val PREFERENCES = "dejavu-console"
 private const val SELECTED_TARGET = "selected-target"
 private const val LOG_TAGS =
     "DejavuZygisk:V DejavuAgent:V DejavuPlugin:V DejavuHook:V DejavuNative:V"
+
+data class InstalledApp(
+    val label: String,
+    val packageName: String,
+)
 
 data class PluginInfo(
     val name: String,
@@ -48,6 +54,8 @@ data class ConsoleUiState(
     val selectedTarget: String? = null,
     val pluginsRaw: String = "",
     val plugins: List<PluginInfo> = emptyList(),
+    val installedApps: List<InstalledApp> = emptyList(),
+    val appsLoading: Boolean = false,
     val logText: String = "",
     val logcatRunning: Boolean = false,
     val lastMessage: String? = null,
@@ -62,6 +70,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     private var refreshJob: Job? = null
     private var pluginJob: Job? = null
     private var pluginRequestSerial = 0
+    private var appsLoaded = false
     private var logProcess: Process? = null
     private var logJob: Job? = null
     private val logBuilder = StringBuilder()
@@ -136,6 +145,33 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                     pluginsRaw = if (it.selectedTarget == selected) it.pluginsRaw else "",
                 )
             }
+        }
+    }
+
+    fun loadInstalledApps(force: Boolean = false) {
+        if (appsLoaded && !force) return
+        viewModelScope.launch {
+            _state.update { it.copy(appsLoading = true) }
+            val apps = withContext(Dispatchers.IO) {
+                val app = getApplication<Application>()
+                val manager = app.packageManager
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                manager.queryIntentActivities(intent, 0)
+                    .asSequence()
+                    .mapNotNull { info ->
+                        val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
+                        if (packageName == app.packageName) return@mapNotNull null
+                        InstalledApp(
+                            label = info.loadLabel(manager).toString().ifBlank { packageName },
+                            packageName = packageName,
+                        )
+                    }
+                    .distinctBy { it.packageName }
+                    .sortedBy { it.label.lowercase() }
+                    .toList()
+            }
+            appsLoaded = true
+            _state.update { it.copy(installedApps = apps, appsLoading = false) }
         }
     }
 
