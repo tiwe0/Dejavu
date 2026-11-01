@@ -219,8 +219,39 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
   版本**（当前 `0.5.0`）；模块打包、loader/agent 行为与文档更新独立递增。
-- CI 对 `main` 的 push 只构建与测试；只有推送匹配的 `v*` tag（正式版本）或
-  手动 `workflow_dispatch`（预发布）才会创建 Release。
+- CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
+  匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
+
+## AI agent 接入（MCP）
+
+CLI 内置 MCP stdio server，AI agent 可以通过工具调用控制目标进程，而不是
+拼 ADB shell 文本：
+
+```sh
+./dejavu mcp -p com.android.settings
+```
+
+MCP 客户端配置示例：
+
+```json
+{
+  "mcpServers": {
+    "dejavu": {
+      "command": "/absolute/path/to/Dejavu/dejavu",
+      "args": ["mcp", "-p", "com.android.settings"]
+    }
+  }
+}
+```
+
+当前提供 20 个工具：status/state、目标列表、Lua exec、插件
+install/load/JIT/call/unload/skill/allow、native list/call、Java invoke/new、
+日志 tail、设备验收套件、agent 部署，以及 `dejavu_cli` 通用逃生口。工具结果通过 MCP text content 返回；
+协议面见 [tests/mcp_server_test.py](tests/mcp_server_test.py)。
+
+目标进程存活期间 Lua 会话是持久的：Lua 全局变量、已加载插件和 hook 会跨
+工具调用保留。多步操作前先调 `dejavu_state`，结束后及时 unload 插件。
+插件 SKILL.md 仅在按需读取时返回，仍按不可信文档处理。
 
 ## 测试
 

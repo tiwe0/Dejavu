@@ -386,7 +386,7 @@ jobs:
             bash -n "${script}"
           done < <(find . -path ./extern -prune -o -path ./zygisk/third_party -prune \
             -o -name '*.sh' -type f -print)
-          python3 -m py_compile dejavu zygisk/scripts/dejavuctl plugins/unpack/cli.py
+          python3 -m py_compile dejavu dejavu_mcp.py tests/mcp_server_test.py zygisk/scripts/dejavuctl plugins/unpack/cli.py
 
       - name: Check for TODO/FIXME comments
         run: |

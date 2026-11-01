@@ -416,6 +416,25 @@ def command_deploy_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_mcp(args: argparse.Namespace) -> int:
+    module_path = REPO_ROOT / "dejavu_mcp.py"
+    if not module_path.is_file():
+        fail(f"MCP server module not found: {module_path}")
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("dejavu_mcp", module_path)
+    if spec is None or spec.loader is None:
+        fail("unable to load MCP server module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_stdio(
+        process=args.process,
+        serial=args.serial,
+        adb=args.adb,
+        timeout=args.timeout,
+    )
+
+
 def delegate_dejavuctl(args: argparse.Namespace, extra: list[str]) -> int:
     if not DEJAVUCTL.is_file():
         fail(f"dejavuctl not found: {DEJAVUCTL}")
@@ -871,6 +890,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu native -p com.android.settings install-file libc.so read /data/local/tmp/hook.c\n"
             "  ./dejavu native -p com.android.settings call-file libc.so getpid /data/local/tmp/call.c\n"
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
+            "  ./dejavu mcp -p com.android.settings   # MCP stdio server for AI agents\n"
             "  ./dejavu plugin -p com.android.settings list\n"
             "  ./dejavu plugin -p com.android.settings allow /data/user_de/0/com.android.settings/files/libdemo.so\n"
             "  ./dejavu plugin -p com.android.settings load /data/user_de/0/com.android.settings/files/libdemo.so\n"
@@ -1088,6 +1108,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--dump", action="store_true", help="dump and exit instead of following")
     sub.add_argument("--clear", action="store_true", help="clear logcat before showing")
     sub.set_defaults(func=command_log)
+
+    sub = subparsers.add_parser(
+        "mcp",
+        help="run the MCP stdio server for AI-agent tool access",
+    )
+    sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="default tool timeout in seconds (default: 120)",
+    )
+    sub.set_defaults(func=command_mcp)
 
     sub = subparsers.add_parser("test", help="run the automated on-device acceptance suite")
     sub.add_argument("-p", "--process", default="bin.mt.plus")

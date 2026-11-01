@@ -84,6 +84,9 @@ echo "== SHA-256 known answers"
     -o "${OUT_DIR}/sha256_test"
 "${OUT_DIR}/sha256_test"
 
+echo "== MCP protocol"
+PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT_DIR}/tests/mcp_server_test.py"
+
 if [[ "$(uname -s)" == "Linux" ]]; then
     # Simulate an execmem-restricted domain: deny PROT_EXEC mprotect calls and
     # verify the engine reports an error instead of exiting the process.

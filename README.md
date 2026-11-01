@@ -237,6 +237,39 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   publishes the stable release, a matching `v*` tag publishes the stable
   release, and a manual `workflow_dispatch` run publishes a prerelease.
 
+## AI agent interface (MCP)
+
+The CLI includes an MCP stdio server so an AI agent can control a target
+process through tools instead of ad-hoc shell text:
+
+```sh
+./dejavu mcp -p com.android.settings
+```
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "dejavu": {
+      "command": "/absolute/path/to/Dejavu/dejavu",
+      "args": ["mcp", "-p", "com.android.settings"]
+    }
+  }
+}
+```
+
+The server exposes 20 tools covering status/state, measured targets, Lua exec,
+plugin install/load/JIT/call/unload/skill/allow, native list/call, Java
+invoke/new, log tail, the device acceptance suite, agent deployment, and a `dejavu_cli` escape hatch for the remaining CLI surface. Tool
+results are MCP text content; `./dejavu mcp --help` and
+[tests/mcp_server_test.py](tests/mcp_server_test.py) show the protocol surface.
+
+The agent's Lua session is persistent for the lifetime of the target process:
+Lua globals, loaded plugins and hooks survive across tool calls. Use
+`dejavu_state` before multi-step work and unload plugins when done. Plugin
+SKILL.md text is exposed only on demand and remains untrusted documentation.
+
 ## Testing
 
 - Host: `make host-smoke` runs the engine/Lua tests plus regressions for
