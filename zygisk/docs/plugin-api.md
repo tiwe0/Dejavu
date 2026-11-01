@@ -62,6 +62,13 @@ Through `host->get_interface`:
   `file_size`, `remove_file` for app-accessible paths. JIT plugins use
   `dejavu_jit_fs_read/write/exists/size/remove`; file reads are capped at
   16 MiB and paths at 4096 bytes.
+- **stream** (`DEJAVU_STREAM_INTERFACE_VERSION`): `open(transport, endpoint)`,
+  `write(handle, data, size)`, `close(handle)`. Transports are
+  `DEJAVU_STREAM_TRANSPORT_TCP/UDP/KCP` (1/2/3); endpoint is `host:port`.
+  Each write is one framed record; viewers receive the payload. Handles are
+  owned by the plugin and closed automatically on unload. JIT plugins use
+  `dejavu_jit_stream_open/write/close`; the `stream` capability bit must be
+  declared (`DEJAVU_PLUGIN_CAP_STREAM`, 0x20).
 - **hook** (`DEJAVU_HOOK_INTERFACE_VERSION`): `install(target, replacement,
   &original)` via Dobby and `uninstall(target)`. Hooks installed through this
   interface are owned by the calling plugin; duplicate targets and
@@ -144,7 +151,8 @@ void dejavu_jit_plugin_shutdown(void);
 
 The prelude exposes `dejavu_jit_register`, alloc/free/log/classloader helpers,
 `dejavu_jit_mem_*`, `dejavu_jit_module_resolve`, `dejavu_jit_hook_*`,
-`dejavu_jit_fs_*`, and the typed arg/return helpers. Compiled modules are
+`dejavu_jit_fs_*`, `dejavu_jit_stream_*` (TCP/UDP/KCP) and the typed
+arg/return helpers. Compiled modules are
 cached by source SHA-256 (up to four entries); unload releases the reference and
 reload of the same source hits the cache (`JIT cache hit`), so JIT static/global
 state can survive reload until PluginManager shutdown. Example:

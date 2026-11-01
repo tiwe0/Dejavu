@@ -2,6 +2,7 @@
 /out/
 /third_party/*
 !/third_party/README.md
+!/third_party/kcp/
 
 __pycache__/
 *.pyc

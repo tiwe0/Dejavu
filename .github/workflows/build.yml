@@ -29,6 +29,9 @@ jobs:
       - name: Run host smoke tests
         run: |
           make host-smoke
+
+      - name: Build host stream receiver
+        run: make stream-receiver
       
       - name: Upload smoke test logs
         if: always()

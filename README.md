@@ -241,6 +241,20 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   publishes the stable release, a matching `v*` tag publishes the stable
   release, and a manual `workflow_dispatch` run publishes a prerelease.
 
+## Live capture streams
+
+Plugins can stream records to the host through the framework stream service
+(`DEJAVU_STREAM_INTERFACE_VERSION`):
+
+```sh
+./dejavu stream --transport tcp --port 39001
+# TCP uses adb reverse; UDP/KCP use the host LAN address directly.
+```
+
+Transports are TCP, UDP and KCP; the example `plugins/capture` writes SSL
+plaintext records to both a file and an optional stream. See
+[plugins/capture/SKILL.md](plugins/capture/SKILL.md).
+
 ## AI agent interface (MCP)
 
 The CLI includes an MCP stdio server so an AI agent can control a target

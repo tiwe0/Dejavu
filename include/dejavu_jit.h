@@ -60,6 +60,12 @@ extern int dejavu_jit_fs_exists(const char *path);
 extern int dejavu_jit_fs_size(const char *path, unsigned long long *size);
 extern int dejavu_jit_fs_remove(const char *path);
 
+/* Framework stream service (TCP/UDP/KCP); requires DEJAVU_PLUGIN_CAP_STREAM. */
+int dejavu_jit_stream_open(unsigned int transport, const char *endpoint, char *error,
+                           unsigned long error_size);
+int dejavu_jit_stream_write(int handle, const void *data, unsigned long size);
+int dejavu_jit_stream_close(int handle);
+
 extern void dejavu_jit_set_error(const char *message);
 extern int dejavu_jit_arg_type(const DejavuJitValue *arguments, unsigned long count,
                                unsigned long index);

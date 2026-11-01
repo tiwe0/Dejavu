@@ -98,6 +98,10 @@ int PluginManagerHostFsWrite(void *host_context, const char *path, const void *d
 int PluginManagerHostFsExists(void *host_context, const char *path);
 int PluginManagerHostFsSize(void *host_context, const char *path, unsigned long long *size);
 int PluginManagerHostFsRemove(void *host_context, const char *path);
+int PluginManagerHostStreamOpen(void *host_context, uint32_t transport, const char *endpoint,
+                                char *error, size_t error_size);
+int PluginManagerHostStreamWrite(void *host_context, int handle, const void *data, size_t size);
+int PluginManagerHostStreamClose(void *host_context, int handle);
 
 const DejavuMemInterface g_mem_interface = {
     DEJAVU_MEM_INTERFACE_VERSION, sizeof(DejavuMemInterface), &PluginManagerHostMemRead,
@@ -121,6 +125,12 @@ const DejavuFsInterface g_fs_interface = {
     DEJAVU_FS_INTERFACE_VERSION, sizeof(DejavuFsInterface),  &PluginManagerHostFsRead,
     &PluginManagerHostFsWrite,   &PluginManagerHostFsExists, &PluginManagerHostFsSize,
     &PluginManagerHostFsRemove,
+};
+
+const DejavuStreamInterface g_stream_interface = {
+    DEJAVU_STREAM_INTERFACE_VERSION,   sizeof(DejavuStreamInterface),
+    &PluginManager::host_stream_open,  &PluginManager::host_stream_write,
+    &PluginManager::host_stream_close,
 };
 
 bool valid_identifier_text(const char *value) {
@@ -405,6 +415,32 @@ extern "C" int dejavu_jit_fs_remove(const char *path) {
     return PluginManagerHostFsRemove(g_jit_manager, path);
 }
 
+extern "C" int dejavu_jit_stream_open(unsigned int transport, const char *endpoint, char *error,
+                                      unsigned long error_size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
+        std::snprintf(error, error_size, "plugin lacks stream capability");
+        return 0;
+    }
+    return PluginManagerHostStreamOpen(g_jit_manager, transport, endpoint, error, error_size);
+}
+
+extern "C" int dejavu_jit_stream_write(int handle, const void *data, unsigned long size) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
+        return -1;
+    }
+    return PluginManagerHostStreamWrite(g_jit_manager, handle, data, size);
+}
+
+extern "C" int dejavu_jit_stream_close(int handle) {
+    if (g_jit_manager == nullptr ||
+        !g_jit_manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
+        return -1;
+    }
+    return PluginManagerHostStreamClose(g_jit_manager, handle);
+}
+
 extern "C" void dejavu_jit_set_error(const char *message) {
     g_jit_last_error = message != nullptr ? message : "";
 }
@@ -490,7 +526,8 @@ extern "C" void dejavu_jit_return_string(JitValueLayout *result, const char *tex
     result->string_size = size;
 }
 
-PluginManager::PluginManager() = default;
+PluginManager::PluginManager() : streams_(std::make_unique<StreamService>()) {
+}
 
 PluginManager::~PluginManager() {
     shutdown();
@@ -526,6 +563,9 @@ void PluginManager::shutdown() {
             }
         }
         remove_hooks_for(index);
+        if (plugin->stream_owner_token != 0) {
+            streams_->close_owner(plugin->stream_owner_token);
+        }
         if (plugin->jit) {
             if (plugin->jit_module != nullptr) {
                 if (plugin->jit_cache_owned) {
@@ -1015,6 +1055,7 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         offsetof(DejavuPluginDescriptor, capabilities) + sizeof(descriptor->capabilities)) {
         plugin->capabilities = descriptor->capabilities;
     }
+    plugin->stream_owner_token = next_stream_owner_++;
     const size_t plugin_index = plugins_.size();
     plugins_.push_back(std::move(plugin));
     char plugin_error[512] = {};
@@ -1025,6 +1066,7 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     if (init_status != 0) {
         *error = plugin_error[0] != '\0' ? plugin_error : "plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        streams_->close_owner(plugins_[plugin_index]->stream_owner_token);
         remove_plugin(plugin_index);
         dlclose(handle);
         return false;
@@ -1243,6 +1285,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
                         ? DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE
                         : 0;
     plugin->jit = true;
+    plugin->stream_owner_token = next_stream_owner_++;
     plugin->jit_cache_owned = cache_owned;
     plugin->jit_cache_key = source_hash;
     plugin->capabilities =
@@ -1267,6 +1310,7 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     if (init_status != 0) {
         *error = !g_jit_last_error.empty() ? g_jit_last_error : "JIT plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        streams_->close_owner(plugins_[plugin_index]->stream_owner_token);
         discard_jit_module(source_hash, module, cache_owned);
         remove_plugin(plugin_index);
         return false;
@@ -1355,6 +1399,9 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
         }
     }
     remove_hooks_for(index);
+    if (target->stream_owner_token != 0) {
+        streams_->close_owner(target->stream_owner_token);
+    }
     if (target->jit) {
         if (target->jit_module != nullptr) {
             if (target->jit_cache_owned) {
@@ -1437,6 +1484,9 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
             {"dejavu_jit_fs_exists", reinterpret_cast<const void *>(&dejavu_jit_fs_exists)},
             {"dejavu_jit_fs_size", reinterpret_cast<const void *>(&dejavu_jit_fs_size)},
             {"dejavu_jit_fs_remove", reinterpret_cast<const void *>(&dejavu_jit_fs_remove)},
+            {"dejavu_jit_stream_open", reinterpret_cast<const void *>(&dejavu_jit_stream_open)},
+            {"dejavu_jit_stream_write", reinterpret_cast<const void *>(&dejavu_jit_stream_write)},
+            {"dejavu_jit_stream_close", reinterpret_cast<const void *>(&dejavu_jit_stream_close)},
             {"dejavu_jit_set_error", reinterpret_cast<const void *>(&dejavu_jit_set_error)},
             {"dejavu_jit_arg_type", reinterpret_cast<const void *>(&dejavu_jit_arg_type)},
             {"dejavu_jit_arg_int", reinterpret_cast<const void *>(&dejavu_jit_arg_int)},
@@ -1831,6 +1881,10 @@ const void *PluginManager::host_get_interface(void *host_context, const char *na
         manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return &g_fs_interface;
     }
+    if (interface_name == "stream" && version == DEJAVU_STREAM_INTERFACE_VERSION &&
+        manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
+        return &g_stream_interface;
+    }
     return nullptr;
 }
 
@@ -1922,6 +1976,19 @@ void *PluginManagerHostModuleResolve(void *host_context, const char *library, co
     return address;
 }
 
+int PluginManagerHostStreamOpen(void *host_context, uint32_t transport, const char *endpoint,
+                                char *error, size_t error_size) {
+    return PluginManager::host_stream_open(host_context, transport, endpoint, error, error_size);
+}
+
+int PluginManagerHostStreamWrite(void *host_context, int handle, const void *data, size_t size) {
+    return PluginManager::host_stream_write(host_context, handle, data, size);
+}
+
+int PluginManagerHostStreamClose(void *host_context, int handle) {
+    return PluginManager::host_stream_close(host_context, handle);
+}
+
 int PluginManagerHostHookInstall(void *host_context, void *target, void *replacement,
                                  void **original, char *error, size_t error_size) {
     auto *manager = static_cast<PluginManager *>(host_context);
@@ -1956,3 +2023,51 @@ int PluginManagerHostHookUninstall(void *host_context, void *target, char *error
 }
 
 } // namespace
+
+int PluginManager::host_stream_open(void *host_context, uint32_t transport, const char *endpoint,
+                                    char *error, size_t error_size) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || endpoint == nullptr) {
+        std::snprintf(error, error_size, "stream.open requires an endpoint");
+        return 0;
+    }
+    if (!manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
+        std::snprintf(error, error_size, "plugin lacks stream capability");
+        return 0;
+    }
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(manager->mutex_);
+        const size_t index = active_plugin_index();
+        if (index == kPluginIndexNone || index >= manager->plugins_.size() ||
+            manager->plugins_[index]->stream_owner_token == 0) {
+            std::snprintf(error, error_size, "stream.open is only allowed from loaded plugin code");
+            return 0;
+        }
+        token = manager->plugins_[index]->stream_owner_token;
+    }
+    std::string stream_error;
+    const int handle = manager->streams_->open(token, transport, endpoint, &stream_error);
+    if (handle == 0) {
+        std::snprintf(error, error_size, "%s",
+                      stream_error.empty() ? "unable to open stream" : stream_error.c_str());
+    }
+    return handle;
+}
+
+int PluginManager::host_stream_write(void *host_context, int handle, const void *data,
+                                     size_t size) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || handle <= 0 || (data == nullptr && size != 0)) {
+        return -1;
+    }
+    return manager->streams_->write(handle, data, size);
+}
+
+int PluginManager::host_stream_close(void *host_context, int handle) {
+    auto *manager = static_cast<PluginManager *>(host_context);
+    if (manager == nullptr || handle <= 0) {
+        return -1;
+    }
+    return manager->streams_->close(handle);
+}

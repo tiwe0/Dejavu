@@ -81,6 +81,7 @@ add_library(dejavu_agent SHARED
     src/java_invoker.cpp
     src/plugin_manager.cpp
     src/sha256.cpp
+    src/stream_service.cpp
     src/agent_helpers.cpp
 )
 
@@ -90,13 +91,19 @@ add_library(dejavu_zygisk SHARED
     src/target_config.cpp
 )
 
+add_library(kcp_static STATIC third_party/kcp/ikcp.c)
+target_include_directories(kcp_static PRIVATE third_party/kcp)
+target_compile_options(kcp_static PRIVATE -w)
+
 target_include_directories(dejavu_agent PRIVATE
     include
     ../include
+    third_party/kcp
     ${HOOK_BRIDGE_GENERATED_DIR}
     ${JIT_PRELUDE_GENERATED_DIR}
 )
 add_dependencies(dejavu_agent jit_prelude_generated)
+target_link_libraries(dejavu_agent PRIVATE kcp_static)
 target_include_directories(dejavu_zygisk PRIVATE
     include
     ../include

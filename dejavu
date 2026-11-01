@@ -416,6 +416,58 @@ def command_deploy_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_stream(args: argparse.Namespace) -> int:
+    receiver = REPO_ROOT / "out" / "host-stream" / "stream_receiver"
+    if not receiver.is_file():
+        print("building host stream receiver...")
+        built = subprocess.run(["make", "stream-receiver"], cwd=REPO_ROOT)
+        if built.returncode != 0 or not receiver.is_file():
+            fail("unable to build out/host-stream/stream_receiver")
+    command = [
+        str(receiver),
+        "--transport",
+        args.transport,
+        "--port",
+        str(args.port),
+        "--bind",
+        args.bind,
+    ]
+    reversed_port = False
+    if args.transport == "tcp" and not args.no_adb_reverse:
+        result = adb(
+            args,
+            "reverse",
+            f"tcp:{args.port}",
+            f"tcp:{args.port}",
+            capture=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            reversed_port = True
+            print(f"device endpoint: 127.0.0.1:{args.port} (adb reverse active)")
+        else:
+            print(f"warning: adb reverse failed; configure the device endpoint manually", file=sys.stderr)
+    else:
+        print(
+            f"listening on {args.bind}:{args.port}; device endpoint: <host-lan-ip>:{args.port}",
+            file=sys.stderr,
+        )
+    try:
+        return subprocess.run(command).returncode
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if reversed_port:
+            adb(
+                args,
+                "reverse",
+                "--remove",
+                f"tcp:{args.port}",
+                capture=True,
+                check=False,
+            )
+
+
 def command_mcp(args: argparse.Namespace) -> int:
     module_path = REPO_ROOT / "dejavu_mcp.py"
     if not module_path.is_file():
@@ -896,6 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu java -p com.android.settings invoke java.lang.String valueOf '(I)Ljava/lang/String;' --arg 42\n"
             "  ./dejavu java -p com.android.settings load-dex /data/user_de/0/com.android.settings/files/probe.dex\n"
             "  ./dejavu mcp -p com.android.settings   # MCP stdio server for AI agents\n"
+            "  ./dejavu stream --transport tcp --port 39001\n"
             "  ./dejavu plugin -p com.android.settings list\n"
             "  ./dejavu plugin -p com.android.settings allow /data/user_de/0/com.android.settings/files/libdemo.so\n"
             "  ./dejavu plugin -p com.android.settings load /data/user_de/0/com.android.settings/files/libdemo.so\n"
@@ -1118,6 +1171,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--dump", action="store_true", help="dump and exit instead of following")
     sub.add_argument("--clear", action="store_true", help="clear logcat before showing")
     sub.set_defaults(func=command_log)
+
+    sub = subparsers.add_parser(
+        "stream",
+        help="receive a live framework plugin stream (tcp/udp/kcp)",
+    )
+    sub.add_argument("--transport", choices=["tcp", "udp", "kcp"], default="tcp")
+    sub.add_argument("--port", type=int, default=39001)
+    sub.add_argument("--bind", default="0.0.0.0")
+    sub.add_argument(
+        "--no-adb-reverse",
+        action="store_true",
+        help="do not configure adb reverse for TCP",
+    )
+    sub.set_defaults(func=command_stream)
 
     sub = subparsers.add_parser(
         "mcp",

@@ -3,8 +3,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <mutex>
 #include <string>
 
@@ -16,8 +18,10 @@ struct CaptureState {
     const DejavuPluginHost *host = nullptr;
     const DejavuModuleInterface *module = nullptr;
     const DejavuHookInterface *hook = nullptr;
+    const DejavuStreamInterface *stream = nullptr;
     std::mutex mutex;
     int fd = -1;
+    int stream_handle = 0;
     std::string path;
     void *write_target = nullptr;
     void *read_target = nullptr;
@@ -91,7 +95,12 @@ void capture_record(CaptureState *state, char direction, const void *buffer, int
     if (state->fd < 0) {
         return;
     }
-    write_all(state->fd, line, offset);
+    if (state->fd >= 0) {
+        write_all(state->fd, line, offset);
+    }
+    if (state->stream_handle > 0 && state->stream != nullptr) {
+        state->stream->write(state->host->host_context, state->stream_handle, line, offset);
+    }
     if (direction == 'O') {
         ++state->write_calls;
         state->write_bytes += static_cast<unsigned long long>(length);
@@ -160,6 +169,10 @@ bool stop_capture(CaptureState *state, std::string *error) {
             close(state->fd);
             state->fd = -1;
         }
+        if (state->stream_handle > 0 && state->stream != nullptr) {
+            state->stream->close(state->host->host_context, state->stream_handle);
+            state->stream_handle = 0;
+        }
         state->path.clear();
     }
     return true;
@@ -167,24 +180,53 @@ bool stop_capture(CaptureState *state, std::string *error) {
 
 std::string status_text(CaptureState *state) {
     std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->fd < 0) {
+    if (state->fd < 0 && state->stream_handle <= 0) {
         return "capture idle";
     }
-    return "capture " + state->path + " out=" + std::to_string(state->write_calls) + "/" +
-           std::to_string(state->write_bytes) + "B in=" + std::to_string(state->read_calls) + "/" +
-           std::to_string(state->read_bytes) + "B";
+    std::string text = "capture ";
+    text += state->path.empty() ? std::string("stream") : state->path;
+    if (state->stream_handle > 0) {
+        text += " stream=" + std::to_string(state->stream_handle);
+    }
+    text += " out=" + std::to_string(state->write_calls) + "/" +
+            std::to_string(state->write_bytes) + "B in=" + std::to_string(state->read_calls) + "/" +
+            std::to_string(state->read_bytes) + "B";
+    return text;
 }
 
 int lua_start(dejavu_control_session *, void *context, const dejavu_value *arguments,
               size_t argument_count, dejavu_value *result, char *error, size_t error_size) {
     auto *state = static_cast<CaptureState *>(context);
-    if (state == nullptr || argument_count != 1 || arguments[0].type != DEJAVU_VALUE_STRING ||
-        arguments[0].string_value == nullptr || arguments[0].string_size == 0) {
-        std::snprintf(error, error_size, "capture.start expects a device output path");
+    if (state == nullptr || (argument_count != 1 && argument_count != 3) ||
+        arguments[0].type != DEJAVU_VALUE_STRING || arguments[0].string_value == nullptr) {
+        std::snprintf(error, error_size,
+                      "capture.start expects <path> or <path>, <1=tcp|2=udp|3=kcp>, <endpoint>");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const std::string path(arguments[0].string_value, arguments[0].string_size);
-    if (state->fd >= 0) {
+    uint32_t transport = 0;
+    std::string endpoint;
+    if (argument_count == 3) {
+        if (arguments[1].type != DEJAVU_VALUE_INTEGER ||
+            arguments[1].integer_value < DEJAVU_STREAM_TRANSPORT_TCP ||
+            arguments[1].integer_value > DEJAVU_STREAM_TRANSPORT_KCP ||
+            arguments[2].type != DEJAVU_VALUE_STRING || arguments[2].string_value == nullptr) {
+            std::snprintf(error, error_size, "transport must be 1 (tcp), 2 (udp) or 3 (kcp)");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        transport = static_cast<uint32_t>(arguments[1].integer_value);
+        endpoint.assign(arguments[2].string_value, arguments[2].string_size);
+        if (endpoint.empty()) {
+            std::snprintf(error, error_size, "stream endpoint is required");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+    }
+    if (path.empty() && transport == 0) {
+        std::snprintf(error, error_size,
+                      "capture.start requires a file path or a stream transport");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (state->fd >= 0 || state->stream_handle > 0) {
         std::snprintf(error, error_size, "capture is already active");
         return DEJAVU_ERROR_LUA_EXECUTE;
     }
@@ -199,17 +241,43 @@ int lua_start(dejavu_control_session *, void *context, const dejavu_value *argum
         std::snprintf(error, error_size, "libssl.so SSL_write/SSL_read not found");
         return DEJAVU_ERROR_LUA_EXECUTE;
     }
-    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-    if (fd < 0) {
-        std::snprintf(error, error_size, "unable to open capture file: %s", path.c_str());
-        return DEJAVU_ERROR_LUA_EXECUTE;
+
+    int stream_handle = 0;
+    if (transport != 0) {
+        if (state->stream == nullptr) {
+            std::snprintf(error, error_size, "host stream interface is unavailable");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        stream_handle = state->stream->open(state->host->host_context, transport, endpoint.c_str(),
+                                            error, error_size);
+        if (stream_handle <= 0) {
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
     }
+
+    int fd = -1;
+    if (!path.empty()) {
+        fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+        if (fd < 0) {
+            if (stream_handle > 0) {
+                state->stream->close(state->host->host_context, stream_handle);
+            }
+            std::snprintf(error, error_size, "unable to open capture file: %s", path.c_str());
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+    }
+
     char hook_error[256] = {};
     void *original_write = nullptr;
     if (state->hook->install(state->host->host_context, write_target,
                              reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(&hook_write)),
                              &original_write, hook_error, sizeof(hook_error)) != 0) {
-        close(fd);
+        if (fd >= 0) {
+            close(fd);
+        }
+        if (stream_handle > 0) {
+            state->stream->close(state->host->host_context, stream_handle);
+        }
         std::snprintf(error, error_size, "%s",
                       hook_error[0] != '\0' ? hook_error : "unable to hook SSL_write");
         return DEJAVU_ERROR_LUA_EXECUTE;
@@ -220,7 +288,12 @@ int lua_start(dejavu_control_session *, void *context, const dejavu_value *argum
                              &original_read, hook_error, sizeof(hook_error)) != 0) {
         state->hook->uninstall(state->host->host_context, write_target, hook_error,
                                sizeof(hook_error));
-        close(fd);
+        if (fd >= 0) {
+            close(fd);
+        }
+        if (stream_handle > 0) {
+            state->stream->close(state->host->host_context, stream_handle);
+        }
         std::snprintf(error, error_size, "%s",
                       hook_error[0] != '\0' ? hook_error : "unable to hook SSL_read");
         return DEJAVU_ERROR_LUA_EXECUTE;
@@ -230,9 +303,17 @@ int lua_start(dejavu_control_session *, void *context, const dejavu_value *argum
     state->original_write = reinterpret_cast<int (*)(void *, const void *, int)>(original_write);
     state->original_read = reinterpret_cast<int (*)(void *, void *, int)>(original_read);
     state->fd = fd;
+    state->stream_handle = stream_handle;
     state->path = path;
     g_active = state;
-    set_result_string(state, result, "capture started: " + path);
+    std::string started = "capture started";
+    if (!path.empty()) {
+        started += ": " + path;
+    }
+    if (stream_handle > 0) {
+        started += " stream=" + std::to_string(stream_handle);
+    }
+    set_result_string(state, result, started);
     return DEJAVU_OK;
 }
 
@@ -255,6 +336,44 @@ int lua_status(dejavu_control_session *, void *context, const dejavu_value *, si
     return DEJAVU_OK;
 }
 
+int lua_probe(dejavu_control_session *, void *context, const dejavu_value *arguments,
+              size_t argument_count, dejavu_value *result, char *error, size_t error_size) {
+    auto *state = static_cast<CaptureState *>(context);
+    if (state == nullptr || argument_count != 2 || arguments[0].type != DEJAVU_VALUE_INTEGER ||
+        arguments[1].type != DEJAVU_VALUE_STRING || arguments[1].string_value == nullptr) {
+        std::snprintf(error, error_size, "capture.probe expects transport (1/2/3) and endpoint");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (state->stream == nullptr) {
+        std::snprintf(error, error_size, "host stream interface is unavailable");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    const uint32_t transport = static_cast<uint32_t>(arguments[0].integer_value);
+    if (transport < DEJAVU_STREAM_TRANSPORT_TCP || transport > DEJAVU_STREAM_TRANSPORT_KCP) {
+        std::snprintf(error, error_size, "invalid stream transport");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    const std::string endpoint(arguments[1].string_value, arguments[1].string_size);
+    const int handle = state->stream->open(state->host->host_context, transport, endpoint.c_str(),
+                                           error, error_size);
+    if (handle <= 0) {
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    const char message[] = "dejavu-stream-probe\n";
+    const int status =
+        state->stream->write(state->host->host_context, handle, message, sizeof(message) - 1);
+    if (transport == DEJAVU_STREAM_TRANSPORT_KCP) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    state->stream->close(state->host->host_context, handle);
+    if (status != 0) {
+        std::snprintf(error, error_size, "stream probe write failed");
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    set_result_string(state, result, "stream probe sent");
+    return DEJAVU_OK;
+}
+
 int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *error,
                       size_t error_size) {
     if (host == nullptr || plugin_state == nullptr ||
@@ -271,6 +390,8 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
             host->get_interface(host->host_context, "module", DEJAVU_MODULE_INTERFACE_VERSION));
         state->hook = static_cast<const DejavuHookInterface *>(
             host->get_interface(host->host_context, "hook", DEJAVU_HOOK_INTERFACE_VERSION));
+        state->stream = static_cast<const DejavuStreamInterface *>(
+            host->get_interface(host->host_context, "stream", DEJAVU_STREAM_INTERFACE_VERSION));
     }
     if (state->module == nullptr || state->hook == nullptr) {
         std::snprintf(error, error_size, "capture requires module and hook host interfaces");
@@ -284,6 +405,7 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
         {"start", lua_start},
         {"stop", lua_stop},
         {"status", lua_status},
+        {"probe", lua_probe},
     };
     for (const auto &registration : registrations) {
         if (host->register_function(host->host_context, "capture", registration.name,
@@ -332,7 +454,7 @@ dejavu_plugin_entry(void) {
         plugin_initialize,
         nullptr,
         plugin_shutdown,
-        DEJAVU_PLUGIN_CAP_MODULE | DEJAVU_PLUGIN_CAP_HOOK,
+        DEJAVU_PLUGIN_CAP_MODULE | DEJAVU_PLUGIN_CAP_HOOK | DEJAVU_PLUGIN_CAP_STREAM,
         plugin_unload_prepare,
     };
     return &descriptor;

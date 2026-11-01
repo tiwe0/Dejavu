@@ -32,12 +32,19 @@
 #define DEJAVU_PLUGIN_CAP_HOOK 4u
 #define DEJAVU_PLUGIN_CAP_FS 8u
 #define DEJAVU_PLUGIN_CAP_JAVA 16u
+#define DEJAVU_PLUGIN_CAP_STREAM 32u
 
 /* Host service interface versions. */
 #define DEJAVU_MEM_INTERFACE_VERSION 1u
 #define DEJAVU_MODULE_INTERFACE_VERSION 1u
 #define DEJAVU_HOOK_INTERFACE_VERSION 1u
 #define DEJAVU_FS_INTERFACE_VERSION 1u
+#define DEJAVU_STREAM_INTERFACE_VERSION 1u
+
+/* Stream transports for DejavuStreamInterface.open(). */
+#define DEJAVU_STREAM_TRANSPORT_TCP 1u
+#define DEJAVU_STREAM_TRANSPORT_UDP 2u
+#define DEJAVU_STREAM_TRANSPORT_KCP 3u
 
 typedef struct DejavuMemInterface {
     uint32_t version;
@@ -80,6 +87,23 @@ typedef struct DejavuFsInterface {
     int (*remove_file)(void *host_context, const char *path);
 } DejavuFsInterface;
 
+typedef struct DejavuStreamInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /*
+     * Connect a stream to host:port using transport (TCP/UDP/KCP), returning a
+     * positive handle owned by the calling plugin, or 0 on failure.
+     */
+    int (*open)(void *host_context, uint32_t transport, const char *endpoint, char *error,
+                size_t error_size);
+    /*
+     * Send one framed record. The framework prefixes a 32-bit network-order
+     * length; the viewer delivers the payload as one record.
+     */
+    int (*write)(void *host_context, int handle, const void *data, size_t size);
+    int (*close)(void *host_context, int handle);
+} DejavuStreamInterface;
+
 typedef struct DejavuPluginHost {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -104,7 +128,7 @@ typedef struct DejavuPluginHost {
 
     /*
      * Look up an optional host service interface by name and version
-     * ("mem", "module", "hook", "fs"). Returns NULL if unavailable.
+     * ("mem", "module", "hook", "fs", "stream"). Returns NULL if unavailable.
      */
     const void *(*get_interface)(void *host_context, const char *name, uint32_t version);
 } DejavuPluginHost;

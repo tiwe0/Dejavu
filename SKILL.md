@@ -339,6 +339,9 @@ plugin.unload('example')
   等可能已执行请求的模糊错误不重放，避免非幂等 Lua 重复执行。
 - 插件/JIT 设备生命周期：`make plugin-device-test`（native load/call/unload、
   JIT 重复加载、hook 索引移位与 prepare 摘钩、atoi 恢复）。
+- 实时抓包流：框架 stream 服务支持 TCP/UDP/KCP；host 用
+  `./dejavu stream --transport tcp|udp|kcp --port N` 查看，插件通过
+  `host->get_interface("stream")` / `dejavu_jit_stream_*` 推送记录。
 - AI agent 接入口：`./dejavu mcp -p <pkg>` 启动 MCP stdio server；21 个工具
   覆盖 status/state、exec、插件生命周期/call/skill/allow、native、java、
   logs、验收套件、deploy-agent 和 `dejavu_cli` 通用逃生口；详见 README 的

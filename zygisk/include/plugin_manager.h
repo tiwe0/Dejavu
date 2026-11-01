@@ -13,6 +13,7 @@
 
 #include "dejavu.h"
 #include "dejavu_plugin.h"
+#include "stream_service.h"
 
 struct DejavuRuntime;
 
@@ -41,6 +42,10 @@ class PluginManager {
     bool uninstall_owned_hook(void *target, char *error, size_t error_size);
     size_t hook_count_for(size_t plugin_index) const;
     bool active_plugin_has_capability(uint32_t capability) const;
+    static int host_stream_open(void *host_context, uint32_t transport, const char *endpoint,
+                                char *error, size_t error_size);
+    static int host_stream_write(void *host_context, int handle, const void *data, size_t size);
+    static int host_stream_close(void *host_context, int handle);
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;
@@ -82,6 +87,7 @@ class PluginManager {
         std::string jit_cache_key;
         void (*jit_shutdown)() = nullptr;
         void (*jit_prepare)() = nullptr;
+        uint64_t stream_owner_token = 0;
         std::string skill_text;
     };
 
@@ -171,5 +177,7 @@ class PluginManager {
     std::vector<HookRecord> hooks_;
     std::map<std::string, JitCacheEntry> jit_cache_;
     unsigned long long jit_cache_clock_ = 0;
+    std::unique_ptr<StreamService> streams_;
+    uint64_t next_stream_owner_ = 1;
     bool registered_lua_ = false;
 };

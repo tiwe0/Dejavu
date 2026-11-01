@@ -226,6 +226,18 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
 
+## 实时抓包流
+
+插件的框架 stream 服务支持 TCP/UDP/KCP：
+
+```sh
+./dejavu stream --transport tcp --port 39001
+# TCP 自动 adb reverse；UDP/KCP 使用本机 LAN 地址直连。
+```
+
+示例 `plugins/capture` 可同时写文件和可选的实时 stream；用法见
+[plugins/capture/SKILL.md](plugins/capture/SKILL.md)。
+
 ## AI agent 接入（MCP）
 
 CLI 内置 MCP stdio server，AI agent 可以通过工具调用控制目标进程，而不是

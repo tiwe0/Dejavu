@@ -48,3 +48,10 @@ at most once per selected process. If that call is attempted, the Zygisk
 library remains resident even when initialization fails.
 
 Source: <https://github.com/LSPosed/LSPlant>
+
+## KCP
+
+`kcp/` vendors `ikcp.c` / `ikcp.h` from
+<https://github.com/skywind3000/kcp> under the MIT license. It backs the
+framework stream service's `KCP` transport; the host viewer compiles the same
+source for local decoding. See `kcp/LICENSE` and `kcp/README.md`.
