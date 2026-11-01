@@ -1,4 +1,4 @@
-package io.dejavu.console.data
+package cafe.ivory.dejavu.data
 
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -40,6 +40,12 @@ object RootShell {
         }
         reader.join(500)
         return ShellResult(if (finished) process.exitValue() else 124, output.toString())
+    }
+
+    fun getProp(name: String): String {
+        val result = run("getprop ${quote(name)}")
+        return if (result.exitCode == 0) result.output.trim().lineSequence().firstOrNull().orEmpty()
+        else ""
     }
 
     fun readFile(path: String): String? {

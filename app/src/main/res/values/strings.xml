@@ -155,4 +155,16 @@
     <string name="logs_no_matches">No matching lines</string>
     <string name="logs_filter_empty_detail">Clear the filter or wait for new Dejavu log lines.</string>
     <string name="choose_template">Choose template</string>
+    <string name="add_target">Add target</string>
+    <string name="permission_title">Permission</string>
+    <string name="root_required_title">Root access required</string>
+    <string name="root_required_body">Dejavu Console needs root to read the module, control targets and open the authenticated RPC channel.</string>
+    <string name="request_root">Request root access</string>
+    <string name="request_root_again">Request again</string>
+    <string name="open_manager">Open KernelSU</string>
+    <string name="root_steps_title">How to authorize</string>
+    <string name="root_step_1">Open KernelSU or Magisk manager.</string>
+    <string name="root_step_2">Go to Superuser and select Dejavu Console.</string>
+    <string name="root_step_3">Choose Allow, return here and request again.</string>
+    <string name="root_retry_hint">Already granted root? Request again after returning to the app.</string>
 </resources>

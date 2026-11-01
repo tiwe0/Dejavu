@@ -155,4 +155,16 @@
     <string name="logs_no_matches">没有匹配的日志</string>
     <string name="logs_filter_empty_detail">清除过滤条件，或等待新的 Dejavu 日志。</string>
     <string name="choose_template">选择模板</string>
+    <string name="add_target">添加目标</string>
+    <string name="permission_title">权限</string>
+    <string name="root_required_title">需要 root 权限</string>
+    <string name="root_required_body">Dejavu Console 需要 root 才能读取模块、控制目标进程并连接认证 RPC 通道。</string>
+    <string name="request_root">请求 root 权限</string>
+    <string name="request_root_again">再次请求</string>
+    <string name="open_manager">打开 KernelSU</string>
+    <string name="root_steps_title">如何授权</string>
+    <string name="root_step_1">打开 KernelSU 或 Magisk 管理器。</string>
+    <string name="root_step_2">进入超级用户，找到 Dejavu Console。</string>
+    <string name="root_step_3">选择允许，返回此页再次请求。</string>
+    <string name="root_retry_hint">已经授权？返回应用后再次请求即可。</string>
 </resources>

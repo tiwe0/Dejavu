@@ -1,4 +1,4 @@
-package io.dejavu.console.ui
+package cafe.ivory.dejavu.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -41,7 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import io.dejavu.console.R
+import cafe.ivory.dejavu.R
 
 @Composable
 fun StatusPill(

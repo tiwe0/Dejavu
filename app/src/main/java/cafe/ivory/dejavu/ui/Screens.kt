@@ -1,4 +1,4 @@
-package io.dejavu.console.ui
+package cafe.ivory.dejavu.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -83,10 +84,131 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import io.dejavu.console.R
-import io.dejavu.console.data.ConsoleUiState
-import io.dejavu.console.data.PluginInfo
+import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.data.ConsoleUiState
+import cafe.ivory.dejavu.data.PluginInfo
 import kotlinx.coroutines.launch
+
+@Composable
+fun RootRequiredScreen(
+    state: ConsoleUiState,
+    onRetry: () -> Unit,
+    onOpenManager: (() -> Unit)?,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.root_required_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+        Text(
+            stringResource(R.string.root_required_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = onRetry,
+            enabled = !state.loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.size(8.dp))
+            }
+            Text(
+                stringResource(
+                    if (state.loading) R.string.request_root_again
+                    else R.string.request_root,
+                ),
+            )
+        }
+        if (onOpenManager != null) {
+            OutlinedButton(
+                onClick = onOpenManager,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.open_manager)) }
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.root_steps_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                RootStep(1, stringResource(R.string.root_step_1))
+                RootStep(2, stringResource(R.string.root_step_2))
+                RootStep(3, stringResource(R.string.root_step_3))
+            }
+        }
+        Text(
+            stringResource(R.string.root_retry_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun RootStep(index: Int, text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                index.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(text, style = MaterialTheme.typography.bodySmall)
+    }
+}
 
 @Composable
 fun HomeScreen(
@@ -174,7 +296,12 @@ fun HomeScreen(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onNavigate(1) }) {
-                        Text(stringResource(R.string.edit_targets))
+                        Text(
+                            stringResource(
+                                if (state.targets.isEmpty()) R.string.add_target
+                                else R.string.edit_targets,
+                            ),
+                        )
                     }
                     if (state.selectedTarget != null) {
                         OutlinedButton(onClick = { onRestartTarget(state.selectedTarget) }) {
@@ -222,14 +349,18 @@ private fun RuntimeRow(
             label,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(0.9f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
             value,
             style = if (monoValue) MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
             else MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
+            modifier = Modifier.weight(1.1f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }

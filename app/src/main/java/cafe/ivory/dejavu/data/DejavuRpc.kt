@@ -1,4 +1,4 @@
-package io.dejavu.console.data
+package cafe.ivory.dejavu.data
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress

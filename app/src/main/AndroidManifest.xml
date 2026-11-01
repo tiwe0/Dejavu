@@ -17,4 +17,8 @@
             </intent-filter>
         </activity>
     </application>
+    <queries>
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="com.topjohnwu.magisk" />
+    </queries>
 </manifest>

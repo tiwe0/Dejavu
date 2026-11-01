@@ -1,9 +1,10 @@
-package io.dejavu.console
+package cafe.ivory.dejavu
 
 import android.app.LocaleManager
 import android.os.Build
 import android.os.Bundle
 import android.os.LocaleList
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -25,6 +26,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -57,13 +59,14 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import io.dejavu.console.data.ConsoleViewModel
-import io.dejavu.console.ui.ConsoleScreen
-import io.dejavu.console.ui.HomeScreen
-import io.dejavu.console.ui.LogsScreen
-import io.dejavu.console.ui.PluginsScreen
-import io.dejavu.console.ui.TargetsScreen
-import io.dejavu.console.ui.theme.DejavuTheme
+import cafe.ivory.dejavu.data.ConsoleViewModel
+import cafe.ivory.dejavu.ui.ConsoleScreen
+import cafe.ivory.dejavu.ui.HomeScreen
+import cafe.ivory.dejavu.ui.LogsScreen
+import cafe.ivory.dejavu.ui.PluginsScreen
+import cafe.ivory.dejavu.ui.RootRequiredScreen
+import cafe.ivory.dejavu.ui.TargetsScreen
+import cafe.ivory.dejavu.ui.theme.DejavuTheme
 import kotlinx.coroutines.launch
 
 private data class Tab(
@@ -103,7 +106,11 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
         vm.consumeMessage()
     }
 
-    LaunchedEffect(tabIndex, state.selectedTarget) {
+    LaunchedEffect(tabIndex, state.selectedTarget, state.rootGranted) {
+        if (!state.rootGranted) {
+            vm.stopLogs()
+            return@LaunchedEffect
+        }
         if (tabIndex == 3) vm.startLogs() else vm.stopLogs()
         if (tabIndex == 2 && state.selectedTarget != null) vm.refreshPlugins()
     }
@@ -125,7 +132,10 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                 TopAppBar(
                     title = {
                         Text(
-                            stringResource(tabs[tabIndex].title),
+                            stringResource(
+                                if (state.rootGranted) tabs[tabIndex].title
+                                else R.string.permission_title,
+                            ),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -137,14 +147,16 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                                 contentDescription = stringResource(R.string.language),
                             )
                         }
-                        IconButton(
-                            onClick = { vm.refresh() },
-                            enabled = !state.loading,
-                        ) {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = stringResource(R.string.refresh_status),
-                            )
+                        if (state.rootGranted) {
+                            IconButton(
+                                onClick = { vm.refresh() },
+                                enabled = !state.loading,
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Refresh,
+                                    contentDescription = stringResource(R.string.refresh_status),
+                                )
+                            }
                         }
                     },
                 )
@@ -154,6 +166,7 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
             }
         },
         bottomBar = {
+            if (!state.rootGranted) return@Scaffold
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 tabs.forEachIndexed { index, tab ->
                     NavigationBarItem(
@@ -172,6 +185,32 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            if (!state.rootGranted) {
+                if (state.loading) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    val context = LocalContext.current
+                    val manager = listOf("me.weishu.kernelsu", "com.topjohnwu.magisk").firstNotNullOfOrNull {
+                        context.packageManager.getLaunchIntentForPackage(it)
+                    }
+                    RootRequiredScreen(
+                        state = state,
+                        onRetry = { vm.refresh() },
+                        onOpenManager = manager?.let {
+                            {
+                                runCatching {
+                                    context.startActivity(
+                                        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+                return@Scaffold
+            }
             when (tabIndex) {
                 0 -> HomeScreen(
                     state = state,

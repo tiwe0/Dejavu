@@ -1,5 +1,7 @@
 # Dejavu Console (Android)
 
+Package: `cafe.ivory.dejavu` · version: `0.2.0`
+
 Kotlin + Jetpack Compose Material 3 control app for Dejavu.
 
 ## Build
@@ -73,3 +75,35 @@ talks to the agent through its authenticated local socket.
 - Live logs pause auto-scroll when the toggle is off; the filter is local-only.
 - The header progress bar reflects root-shell/RPC work in progress.
 - `./gradlew` wrapper is pinned to Gradle 9.4.1; use JDK 21 and Android SDK 36.
+
+
+## Release build
+
+A signed release build is configured but the keystore is intentionally not
+committed.
+
+```sh
+cp app/keystore.properties.example app/keystore.properties
+# create a local keystore:
+keytool -genkeypair -v -keystore out/tooling/dejavu-console.jks \
+  -alias dejavu-console -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass change-me -keypass change-me \
+  -dname "CN=Dejavu Console, O=Dejavu, C=CN"
+# edit app/keystore.properties to match
+./gradlew :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+Release uses R8 + resource shrinking. `versionName` is `0.2.0` (`versionCode` 2).
+The app is self-signed; for distribution replace the local keystore with a
+stable release key.
+
+
+## Root permission screen
+
+Until KernelSU/Magisk authorizes the app, the console replaces the dashboard
+with a dedicated permission screen. It requests root, offers a direct shortcut
+to KernelSU, and shows the authorization steps. The bottom navigation and
+normal dashboard are hidden in this state.
+
+![Permission screen](docs/permission.png)

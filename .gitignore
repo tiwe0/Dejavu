@@ -9,3 +9,6 @@ build/
 __pycache__/
 .omx/
 app/docs/*.png.tmp
+app/keystore.properties
+*.jks
+*.keystore

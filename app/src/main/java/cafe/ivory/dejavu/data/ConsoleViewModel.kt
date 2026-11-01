@@ -1,9 +1,9 @@
-package io.dejavu.console.data
+package cafe.ivory.dejavu.data
 
 import android.app.Application
 import android.content.Context
 import androidx.annotation.StringRes
-import io.dejavu.console.R
+import cafe.ivory.dejavu.R
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -75,6 +75,24 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         refreshJob = viewModelScope.launch {
             _state.update { it.copy(loading = true) }
             val root = withContext(Dispatchers.IO) { RootShell.isRoot() }
+            if (!root) {
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        rootGranted = false,
+                        moduleInstalled = false,
+                        moduleVersion = "",
+                        helperRunning = false,
+                        helperPort = "",
+                        helperPid = "",
+                        targets = emptyList(),
+                        selectedTarget = null,
+                        plugins = emptyList(),
+                        pluginsRaw = "",
+                    )
+                }
+                return@launch
+            }
             val prop = withContext(Dispatchers.IO) { RootShell.readFile("$MODULE_DIR/module.prop") }
             val version = prop?.lineSequence()
                 ?.firstOrNull { it.startsWith("version=") }
@@ -82,15 +100,17 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                 ?.trim()
                 .orEmpty()
             val targets = withContext(Dispatchers.IO) { readTargets() }
-            val helperPort = withContext(Dispatchers.IO) {
-                RootShell.run("getprop debug.dejavu.root.port").output.trim()
-            }
-            val helperToken = withContext(Dispatchers.IO) {
-                RootShell.run("getprop debug.dejavu.root.token").output.trim()
-            }
-            val helperPid = withContext(Dispatchers.IO) {
+            val helperPort = if (root) withContext(Dispatchers.IO) {
+                RootShell.getProp("debug.dejavu.root.port")
+            } else ""
+            val helperToken = if (root) withContext(Dispatchers.IO) {
+                RootShell.getProp("debug.dejavu.root.token")
+            } else ""
+            val helperPid = if (root) withContext(Dispatchers.IO) {
                 RootShell.run("pidof dejavu-root-helper").output.trim()
-            }
+            } else ""
+            val helperReady = helperPort.matches(Regex("\\d{1,5}")) &&
+                helperToken.matches(Regex("[0-9a-f]{64}"))
             val saved = preferences.getString(SELECTED_TARGET, null)
             val selected = _state.value.selectedTarget
                 ?.takeIf { it in targets }
@@ -107,7 +127,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                     rootGranted = root,
                     moduleInstalled = prop != null,
                     moduleVersion = version,
-                    helperRunning = helperPort.isNotEmpty() && helperToken.isNotEmpty(),
+                    helperRunning = helperReady,
                     helperPort = helperPort,
                     helperPid = helperPid,
                     targets = targets,
