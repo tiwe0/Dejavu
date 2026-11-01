@@ -1,0 +1,158 @@
+<resources>
+    <string name="app_name">Dejavu 控制台</string>
+
+    <string name="tab_home">首页</string>
+    <string name="tab_targets">目标</string>
+    <string name="tab_plugins">插件</string>
+    <string name="tab_logs">日志</string>
+    <string name="tab_console">控制台</string>
+
+    <string name="title_home">概览</string>
+    <string name="title_targets">目标进程</string>
+    <string name="title_plugins">插件</string>
+    <string name="title_logs">实时日志</string>
+    <string name="title_console">Lua 控制台</string>
+
+    <string name="status_root">ROOT</string>
+    <string name="status_helper">HELPER</string>
+    <string name="status_target">TARGET</string>
+    <string name="status_loaded">已加载</string>
+    <string name="status_idle">空闲</string>
+    <string name="status_running">运行中</string>
+    <string name="status_offline">离线</string>
+
+    <string name="hero_kicker">DEJAVU</string>
+    <string name="hero_title">控制平面</string>
+    <string name="hero_subtitle">面向目标进程、插件与 native 算法追踪的轻量控制台。</string>
+    <string name="banner_root_required">需要 root 权限。请允许 KernelSU/Magisk 授权提示，然后刷新。</string>
+
+    <string name="module_title">模块</string>
+    <string name="module_subtitle">Zygisk 运行时与模块包</string>
+    <string name="module_installed">已安装</string>
+    <string name="module_not_detected">未检测到</string>
+    <string name="module_version_format">Dejavu Zygisk %1$s</string>
+    <string name="module_missing_hint">请安装 v0.7.0+ 模块并软重启。</string>
+    <string name="root_shell_title">Root Shell</string>
+    <string name="root_shell_available">su -c 可用</string>
+    <string name="root_shell_unavailable">尚未获得 root</string>
+    <string name="refresh_status">刷新状态</string>
+
+    <string name="helper_title">Root 辅助服务</string>
+    <string name="helper_subtitle">为 native hook 临时解锁 execute-only 页面</string>
+    <string name="helper_pid_detail">pid %1$s · token 每次启动随机生成，由服务发布</string>
+    <string name="helper_scope">仅对白名单目标的可执行映射执行 mprotect。</string>
+
+    <string name="active_target_title">当前目标</string>
+    <string name="active_target_subtitle">选择插件、RPC 与日志使用的进程</string>
+    <string name="choose_target">选择目标</string>
+    <string name="target_process">目标进程</string>
+    <string name="not_selected">未选择</string>
+    <string name="no_targets_configured">未配置目标</string>
+    <string name="edit_targets">编辑目标</string>
+    <string name="restart">重启</string>
+
+    <string name="quick_actions_title">快捷操作</string>
+    <string name="quick_actions_subtitle">直接进入常用流程</string>
+    <string name="quick_plugins_detail">查看与卸载</string>
+    <string name="quick_logs_detail">Dejavu 标签</string>
+    <string name="quick_console_detail">控制通道</string>
+    <string name="quick_capture_detail">打开模板</string>
+    <string name="footer">Dejavu 控制台 · 设备端控制平面</string>
+
+    <string name="targets_intro_title">目标白名单</string>
+    <string name="targets_intro_subtitle">config/targets.txt · 精确进程名</string>
+    <string name="targets_intro_body">Agent 只会加载到这些应用。修改后请重启目标进程。</string>
+    <string name="target_process_example">com.example.app</string>
+    <string name="add">添加</string>
+    <string name="targets_empty_title">还没有目标</string>
+    <string name="targets_empty_detail">在上方添加进程名，然后重新打开该应用，让 agent 可以注入。</string>
+    <string name="target_selected">当前目标</string>
+    <string name="target_tap_select">点击选择</string>
+    <string name="restart_target_desc">重启目标</string>
+    <string name="remove_target_desc">移除目标</string>
+    <string name="select_target_desc">选择目标</string>
+
+    <string name="plugins_no_status_title">暂无插件状态</string>
+    <string name="plugins_no_status_detail">选择一个正在运行的目标并刷新。RPC 端点由应用内 agent 创建。</string>
+    <string name="refresh_plugins">刷新插件</string>
+    <string name="load_plugin">加载插件</string>
+    <string name="load">加载</string>
+    <string name="cancel">取消</string>
+    <string name="plugin_path_label">/data/user_de/0/…/libplugin.so</string>
+    <string name="plugin_caps_format">权限 %1$s</string>
+    <string name="skill">Skill</string>
+    <string name="unload">卸载</string>
+    <string name="skill_md">SKILL.md</string>
+
+    <string name="logs_filter">过滤日志</string>
+    <string name="logs_start">开始</string>
+    <string name="logs_stop">停止</string>
+    <string name="logs_clear">清空</string>
+    <string name="logs_empty_running_title">正在等待 Dejavu 日志</string>
+    <string name="logs_empty_title">实时 logcat</string>
+    <string name="logs_empty_detail">启动 DejavuZygisk、DejavuAgent、DejavuPlugin、DejavuHook 与 DejavuNative 的 logcat 流。</string>
+
+    <string name="console_subtitle">认证的抽象 socket RPC · 当前目标</string>
+    <string name="console_script_label">脚本</string>
+    <string name="run">运行</string>
+    <string name="running">运行中…</string>
+    <string name="clear_output">清空输出</string>
+    <string name="response">响应</string>
+    <string name="response_empty">运行一段脚本以查看响应。</string>
+    <string name="empty_response">（空响应）</string>
+    <string name="more_templates">更多模板</string>
+    <string name="more_templates_subtitle">Capture、算法与 native hook 示例</string>
+    <string name="template_plugin_list">plugin.list()</string>
+    <string name="template_algorithm_status">algorithm.status</string>
+    <string name="template_capture_status">capture.status</string>
+    <string name="template_native_list">native list</string>
+    <string name="template_root_helper">root helper</string>
+
+    <string name="msg_invalid_process">进程名无效</string>
+    <string name="msg_added_target">已添加 %1$s</string>
+    <string name="msg_unable_write_targets">无法写入目标列表（需要 root）</string>
+    <string name="msg_removed_target">已移除 %1$s</string>
+    <string name="msg_restarted_target">已重启 %1$s</string>
+    <string name="msg_restart_failed">重启失败：%1$s</string>
+    <string name="msg_select_target">请先选择目标</string>
+    <string name="msg_plugin_list_failed">插件列表失败：%1$s</string>
+    <string name="msg_unload_failed">卸载失败：%1$s</string>
+    <string name="msg_load_failed">加载失败：%1$s</string>
+    <string name="msg_plugin_call_failed">插件调用失败：%1$s</string>
+    <string name="msg_logcat_failed">无法启动 logcat：%1$s</string>
+    <string name="msg_error_prefix">错误：%1$s</string>
+    <string name="capture_title">抓取</string>
+    <string name="unknown">（未知）</string>
+    <string name="msg_skill_load_failed">无法加载 Skill</string>
+    <string name="language">语言</string>
+    <string name="language_title">应用语言</string>
+    <string name="language_system">跟随系统</string>
+    <string name="language_english">English</string>
+    <string name="language_chinese">简体中文</string>
+    <string name="language_unavailable">应用内语言切换需要 Android 13 或更高版本。</string>
+    <string name="overview_title">概览</string>
+    <string name="overview_subtitle">模块与控制通道的运行状态</string>
+    <string name="overview_module">模块</string>
+    <string name="overview_helper">Root 辅助服务</string>
+    <string name="overview_target">目标</string>
+    <string name="overview_root_granted">已授权</string>
+    <string name="overview_helper_running">运行中 · %1$s</string>
+    <string name="quick_targets_detail">管理白名单</string>
+    <string name="msg_invalid_plugin_path">插件路径必须是绝对 .so 路径</string>
+    <string name="action_remove">移除</string>
+    <string name="action_skill">Skill</string>
+    <string name="action_more">更多操作</string>
+    <string name="dialog_remove_target_title">移除目标？</string>
+    <string name="dialog_remove_target_body">Agent 将不再注入 %1$s。</string>
+    <string name="dialog_unload_plugin_title">卸载插件？</string>
+    <string name="dialog_unload_plugin_body">将从当前目标卸载 %1$s。</string>
+    <string name="plugins_count">已加载 %1$d 个</string>
+    <string name="plugins_empty_action">刷新插件</string>
+    <string name="logs_auto_scroll">自动滚动</string>
+    <string name="logs_lines">%1$d 行</string>
+    <string name="console_templates">模板</string>
+    <string name="target_none_hint">添加目标后才能使用插件与 RPC。</string>
+    <string name="logs_no_matches">没有匹配的日志</string>
+    <string name="logs_filter_empty_detail">清除过滤条件，或等待新的 Dejavu 日志。</string>
+    <string name="choose_template">选择模板</string>
+</resources>

@@ -250,6 +250,19 @@ target processes. The in-app agent remains app-UID; it asks the helper for a
 temporary unlock before Dobby hook installation. See
 [zygisk/docs/root-helper-prototype.md](zygisk/docs/root-helper-prototype.md).
 
+## Android Console
+
+A Kotlin + Material 3 device-side console lives in [app/](app/). It shows module,
+root-helper and target status, edits targets, streams Dejavu logs and drives the
+same authenticated Lua RPC channel as `dejavuctl`.
+
+```sh
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+See [app/README.md](app/README.md) for requirements and architecture.
+
 ## Live capture streams
 
 Plugins can stream records to the host through the framework stream service

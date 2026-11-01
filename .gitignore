@@ -1,6 +1,11 @@
-/.DS_Store
-/.omx/
+.gradle/
+.idea/
+local.properties
+app/build/
+build/
+*.iml
+.DS_Store
 /out/
-
 __pycache__/
-*.pyc
+.omx/
+app/docs/*.png.tmp
