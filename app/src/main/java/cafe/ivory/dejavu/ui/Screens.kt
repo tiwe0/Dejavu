@@ -1,5 +1,6 @@
 package cafe.ivory.dejavu.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -81,6 +82,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1230,20 +1232,30 @@ private fun AppRow(app: InstalledApp, selected: Boolean, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                app.label.take(1).uppercase(),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        if (app.icon != null) {
+            Image(
+                bitmap = app.icon.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp)),
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    app.label.take(1).uppercase(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Column(Modifier.weight(1f)) {
             Text(

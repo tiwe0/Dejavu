@@ -101,7 +101,7 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     var showAppPicker by remember { mutableStateOf(false) }
     val openAppPicker = {
         showAppPicker = true
-        vm.loadInstalledApps()
+        vm.loadInstalledApps(force = true)
     }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()

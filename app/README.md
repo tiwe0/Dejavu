@@ -1,6 +1,6 @@
 # Dejavu Console (Android)
 
-Package: `cafe.ivory.dejavu` · version: `0.2.1`
+Package: `cafe.ivory.dejavu` · version: `0.2.2`
 
 Kotlin + Jetpack Compose Material 3 control app for Dejavu.
 
@@ -71,7 +71,7 @@ talks to the agent through its authenticated local socket.
 
 Target selection is done by clicking the target process row and choosing an
 installed app from a searchable bottom sheet. The old free-form process field
-is gone; the selected package is added to `config/targets.txt` and becomes the
+is gone; each row shows the real launcher icon and package name, and the list is reloaded every time the picker opens so newly installed apps appear immediately; the selected package is added to `config/targets.txt` and becomes the
 active target.
 
 ![App picker](docs/app-picker.png)
@@ -103,7 +103,7 @@ keytool -genkeypair -v -keystore out/tooling/dejavu-console.jks \
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-Release uses R8 + resource shrinking. `versionName` is `0.2.1` (`versionCode` 3).
+Release uses R8 + resource shrinking. `versionName` is `0.2.2` (`versionCode` 4).
 The app is self-signed; for distribution replace the local keystore with a
 stable release key.
 
