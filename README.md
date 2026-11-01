@@ -151,16 +151,20 @@ LSPlant compatibility validation.
 
 ### Automated releases
 
-Pushes to `main` and pull requests run the full build and test pipeline but do
-**not** publish releases. A release is published only when explicitly
-requested:
+Pushes to `main` and pull requests run the full build and test pipeline. A
+release is published when a version is explicitly introduced:
 
+- bump the `version=` line in `zygisk/module/module.prop` and push to `main`:
+  CI detects the change and publishes the stable `vX.Y.Z` release after all
+  checks pass (the tag is created from that commit); or
 - push a matching `v*` tag, such as `v0.4.0`, to create the stable release; or
 - run the workflow manually with `workflow_dispatch` to create a prerelease
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
 A release is created only after the host tests, Android API 26 baseline,
-compatibility builds, Zygisk package, and code-quality checks all pass.
+compatibility builds, Zygisk package, and code-quality checks all pass. A push
+that does not change the module version only builds artifacts and never
+publishes a release.
 
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports
@@ -229,8 +233,9 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
   **Zygisk module package version** (currently `0.4.0`). Module packaging,
   loader/agent behavior and documentation changes bump it independently.
-- CI builds and tests pushes to `main`, but only publishes a release from a
-  matching `v*` tag (stable) or a manual `workflow_dispatch` run (prerelease).
+- CI builds and tests pushes to `main`; a version bump in `module.prop`
+  publishes the stable release, a matching `v*` tag publishes the stable
+  release, and a manual `workflow_dispatch` run publishes a prerelease.
 
 ## Testing
 
