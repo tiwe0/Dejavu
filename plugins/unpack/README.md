@@ -36,7 +36,9 @@ python3 plugins/unpack/cli.py -p <process> --out <device-dir> \
 ## Plugin build
 
 The native support sources live in `src/` and are built as a **dynamically
-loaded plugin** (not compiled into the agent):
+loaded plugin** (not compiled into the agent). It uses the host hook interface
+(`host->get_interface("hook")`) instead of linking Dobby directly, and is not
+marked unload-safe because its installed native hooks are not removed:
 
 ```sh
 ./plugins/unpack/build.sh

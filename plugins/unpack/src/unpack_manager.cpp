@@ -17,8 +17,6 @@
 #include <string>
 #include <vector>
 
-#include <dobby.h>
-
 #include "art_elf_resolver.h"
 
 extern "C" void dejavu_unpack_invoke_with_arg_array(void *soa, void *method, void *argument_array,
@@ -220,20 +218,17 @@ bool set_page_permissions(void *address, int protection, std::string *error) {
     return true;
 }
 
-bool hook_function(void *target, void *replacement, void **original, std::string *error) {
-    int original_protection = 0;
-    if (!page_permissions(target, &original_protection)) {
-        *error = "unable to query target page permissions";
+bool host_install_hook(const DejavuHookInterface *interface, void *host_context, void *target,
+                       void *replacement, void **original, std::string *error) {
+    if (interface == nullptr || interface->install == nullptr) {
+        *error = "plugin host hook interface is unavailable";
         return false;
     }
-    if (!set_page_permissions(target, original_protection | PROT_WRITE | PROT_EXEC, error)) {
-        return false;
-    }
-    const int status = DobbyHook(target, replacement, original);
-    std::string restore_error;
-    set_page_permissions(target, original_protection, &restore_error);
-    if (status != 0) {
-        *error = "DobbyHook failed with status " + std::to_string(status);
+    char hook_error[256] = {};
+    const int status = interface->install(host_context, target, replacement, original, hook_error,
+                                          sizeof(hook_error));
+    if (status != DEJAVU_OK) {
+        *error = hook_error[0] != '\0' ? hook_error : "host hook install failed";
         return false;
     }
     return true;
@@ -269,6 +264,12 @@ bool looks_like_dex(const unsigned char *header, size_t available, size_t *image
 
 } // namespace
 
+bool UnpackManager::install_hook(void *target, void *replacement, void **original,
+                                 std::string *error) {
+    return host_install_hook(hook_interface_, host_ != nullptr ? host_->host_context : nullptr,
+                             target, replacement, original, error);
+}
+
 extern "C" void *dejavu_unpack_dlopen(const char *filename, int flags);
 extern "C" void *dejavu_unpack_android_dlopen_ext(const char *filename, int flags,
                                                   const void *info);
@@ -299,6 +300,14 @@ bool UnpackManager::initialize(const DejavuPluginHost *host, std::string *error)
     }
     host_ = host;
     vm_ = host->java_vm;
+    if (host->get_interface != nullptr) {
+        hook_interface_ = static_cast<const DejavuHookInterface *>(
+            host->get_interface(host->host_context, "hook", DEJAVU_HOOK_INTERFACE_VERSION));
+    }
+    if (hook_interface_ == nullptr || hook_interface_->install == nullptr) {
+        *error = "unpack plugin requires the host hook interface";
+        return false;
+    }
     instance_ = this;
     g_unpack = this;
     return true;
@@ -419,15 +428,15 @@ bool UnpackManager::install_dlopen_hooks(std::string *error) {
         *error = "dlopen symbol is unavailable";
         return false;
     }
-    if (!hook_function(dlopen_address, reinterpret_cast<void *>(dejavu_unpack_dlopen),
-                       &g_dlopen_original, error)) {
+    if (!install_hook(dlopen_address, reinterpret_cast<void *>(dejavu_unpack_dlopen),
+                      &g_dlopen_original, error)) {
         return false;
     }
     if (android_ext_address != nullptr && android_ext_address != dlopen_address) {
         std::string ext_error;
-        if (!hook_function(android_ext_address,
-                           reinterpret_cast<void *>(dejavu_unpack_android_dlopen_ext),
-                           &g_android_dlopen_ext_original, &ext_error)) {
+        if (!install_hook(android_ext_address,
+                          reinterpret_cast<void *>(dejavu_unpack_android_dlopen_ext),
+                          &g_android_dlopen_ext_original, &ext_error)) {
             LOGE("android_dlopen_ext hook failed: %s", ext_error.c_str());
         }
     }
@@ -478,9 +487,9 @@ bool UnpackManager::install_art_hooks(std::string *error) {
     }
     std::string hook_error;
     if (register_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(register_address),
-                          reinterpret_cast<void *>(dejavu_unpack_register_dex_file),
-                          &g_register_dexfile_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(register_address),
+                         reinterpret_cast<void *>(dejavu_unpack_register_dex_file),
+                         &g_register_dexfile_original, &hook_error)) {
             register_dexfile_address_ = register_address;
             LOGD("ART RegisterDexFile hook installed: %s @0x%llx", register_name.c_str(),
                  register_address);
@@ -489,9 +498,9 @@ bool UnpackManager::install_art_hooks(std::string *error) {
         }
     }
     if (register_locked_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(register_locked_address),
-                          reinterpret_cast<void *>(dejavu_unpack_register_dex_file_locked),
-                          &g_register_dexfile_locked_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(register_locked_address),
+                         reinterpret_cast<void *>(dejavu_unpack_register_dex_file_locked),
+                         &g_register_dexfile_locked_original, &hook_error)) {
             register_dexfile_locked_address_ = register_locked_address;
             LOGD("ART RegisterDexFileLocked hook installed: %s @0x%llx",
                  register_locked_name.c_str(), register_locked_address);
@@ -500,9 +509,9 @@ bool UnpackManager::install_art_hooks(std::string *error) {
         }
     }
     if (opencommon_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(opencommon_address),
-                          reinterpret_cast<void *>(dejavu_unpack_open_common),
-                          &g_opencommon_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(opencommon_address),
+                         reinterpret_cast<void *>(dejavu_unpack_open_common),
+                         &g_opencommon_original, &hook_error)) {
             opencommon_address_ = opencommon_address;
             LOGD("ART OpenCommon hook installed: %s @0x%llx", opencommon_name.c_str(),
                  opencommon_address);
@@ -1008,9 +1017,9 @@ bool UnpackManager::hook_invoke(std::string *error) {
     std::string hook_error;
     bool installed = false;
     if (art_method_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(art_method_address),
-                          reinterpret_cast<void *>(dejavu_unpack_art_method_invoke),
-                          &g_art_method_invoke_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(art_method_address),
+                         reinterpret_cast<void *>(dejavu_unpack_art_method_invoke),
+                         &g_art_method_invoke_original, &hook_error)) {
             g_art_method_invoke_target = reinterpret_cast<void *>(art_method_address);
             invoke_address_ = static_cast<unsigned long>(art_method_address);
             invoke_hooked_ = true;
@@ -1041,9 +1050,9 @@ bool UnpackManager::hook_invoke(std::string *error) {
         }
     }
     if (jvalues_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(jvalues_address),
-                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_jvalues),
-                          &g_invoke_with_jvalues_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(jvalues_address),
+                         reinterpret_cast<void *>(dejavu_unpack_invoke_with_jvalues),
+                         &g_invoke_with_jvalues_original, &hook_error)) {
             invoke_address_ = static_cast<unsigned long>(jvalues_address);
             installed = true;
             LOGD("InvokeWithJValues hook installed: %s @0x%llx", jvalues_name.c_str(),
@@ -1053,9 +1062,9 @@ bool UnpackManager::hook_invoke(std::string *error) {
         }
     }
     if (varargs_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(varargs_address),
-                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_varargs),
-                          &g_invoke_with_varargs_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(varargs_address),
+                         reinterpret_cast<void *>(dejavu_unpack_invoke_with_varargs),
+                         &g_invoke_with_varargs_original, &hook_error)) {
             if (!installed) {
                 invoke_address_ = static_cast<unsigned long>(varargs_address);
                 installed = true;
@@ -1067,9 +1076,9 @@ bool UnpackManager::hook_invoke(std::string *error) {
         }
     }
     if (argarray_address != 0) {
-        if (hook_function(reinterpret_cast<void *>(argarray_address),
-                          reinterpret_cast<void *>(dejavu_unpack_invoke_with_arg_array),
-                          &g_invoke_with_arg_array_original, &hook_error)) {
+        if (install_hook(reinterpret_cast<void *>(argarray_address),
+                         reinterpret_cast<void *>(dejavu_unpack_invoke_with_arg_array),
+                         &g_invoke_with_arg_array_original, &hook_error)) {
             if (!installed) {
                 invoke_address_ = static_cast<unsigned long>(argarray_address);
                 installed = true;

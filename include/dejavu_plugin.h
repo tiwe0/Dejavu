@@ -1,17 +1,17 @@
 #pragma once
 
 /*
- * Dejavu native plugin ABI.
+ * Dejavu native plugin ABI (v1, append-only).
  *
- * A plugin is a shared object exporting:
+ * A plugin is an arm64 shared object exporting:
  *
  *   extern "C" __attribute__((visibility("default")))
  *   const DejavuPluginDescriptor *dejavu_plugin_entry(void);
  *
- * The agent dlopen()s the library, validates the ABI version, calls
- * initialize() and later shutdown().  Plugins receive a host table with stable
- * function pointers and can register Lua functions; they never link against
- * the agent's private symbols.
+ * The agent dlopen()s the library, validates abi_version + struct_size, calls
+ * initialize(), invokes on_control_ready() once the Lua control session exists
+ * (if provided), and later shutdown(). Plugins never link against agent
+ * private symbols; all services are passed through DejavuPluginHost.
  */
 
 #include <jni.h>
@@ -21,18 +21,52 @@
 #include <dejavu.h>
 
 #define DEJAVU_PLUGIN_ABI_VERSION 1u
-
-typedef struct DejavuPluginDescriptor DejavuPluginDescriptor;
-typedef const DejavuPluginDescriptor *(*DejavuPluginEntry)(void);
 #define DEJAVU_PLUGIN_ENTRY_SYMBOL "dejavu_plugin_entry"
+
+/* Descriptor flags. */
+#define DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE 1u
+
+/* Host service interface versions. */
+#define DEJAVU_MEM_INTERFACE_VERSION 1u
+#define DEJAVU_MODULE_INTERFACE_VERSION 1u
+#define DEJAVU_HOOK_INTERFACE_VERSION 1u
+
+typedef struct DejavuMemInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Safe same-process read/write. Returns 0 on success, -1 on failure. */
+    int (*read)(void *host_context, uintptr_t address, void *buffer, size_t size);
+    int (*write)(void *host_context, uintptr_t address, const void *buffer, size_t size);
+    /* Look up the mapping containing address; start/end/prot may be NULL. */
+    int (*query)(void *host_context, uintptr_t address, uintptr_t *start, uintptr_t *end,
+                 uint32_t *prot);
+} DejavuMemInterface;
+
+typedef struct DejavuModuleInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Resolve a symbol in a loaded library, including non-dynamic symbols. */
+    void *(*resolve)(void *host_context, const char *library, const char *symbol);
+} DejavuModuleInterface;
+
+typedef struct DejavuHookInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Inline-hook target to replacement; original receives the trampoline. */
+    int (*install)(void *host_context, void *target, void *replacement, void **original,
+                   char *error, size_t error_size);
+    /* Remove a hook previously installed through this interface. */
+    int (*uninstall)(void *host_context, void *target, char *error, size_t error_size);
+} DejavuHookInterface;
 
 typedef struct DejavuPluginHost {
     uint32_t abi_version;
+    uint32_t struct_size;
     void *runtime; /* opaque DejaVu runtime */
     JavaVM *java_vm;
     void *host_context;
 
-    /* Register function_name inside a Lua namespace ("unpack", ...). */
+    /* Register function_name inside a Lua namespace. */
     int (*register_function)(void *host_context, const char *namespace_name,
                              const char *function_name, dejavu_host_function function,
                              void *function_context, char *error, size_t error_size);
@@ -42,16 +76,35 @@ typedef struct DejavuPluginHost {
 
     /* Current app ClassLoader global ref, or NULL before control init. */
     jobject (*get_app_class_loader)(void *host_context);
+
+    /* Result/string allocation helpers owned by the agent allocator. */
+    void *(*alloc)(size_t size);
+    void (*free)(void *pointer);
+
+    /*
+     * Look up an optional host service interface by name and version
+     * ("mem", "module", "hook"). Returns NULL if unavailable.
+     */
+    const void *(*get_interface)(void *host_context, const char *name, uint32_t version);
 } DejavuPluginHost;
 
-struct DejavuPluginDescriptor {
+typedef struct DejavuPluginDescriptor {
     uint32_t abi_version;
+    uint32_t struct_size;
     const char *name;
     const char *version;
+    uint32_t flags; /* DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE */
+
     int (*initialize)(const DejavuPluginHost *host, void **plugin_state, char *error,
                       size_t error_size);
+
+    /* Called once the Lua control session is ready (may be NULL). */
+    void (*on_control_ready)(void *plugin_state);
+
     void (*shutdown)(void *plugin_state);
-};
+} DejavuPluginDescriptor;
+
+typedef const DejavuPluginDescriptor *(*DejaVuPluginEntry)(void);
 
 #ifdef __cplusplus
 extern "C" {

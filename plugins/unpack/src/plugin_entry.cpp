@@ -1,5 +1,7 @@
 #include "dejavu_plugin.h"
 
+#include <cstddef>
+#include <cstdio>
 #include <string>
 
 #include "unpack_manager.h"
@@ -9,6 +11,12 @@ namespace {
 int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *error,
                       size_t error_size) {
     if (host == nullptr || plugin_state == nullptr) {
+        return -1;
+    }
+    if (host->abi_version != DEJAVU_PLUGIN_ABI_VERSION ||
+        host->struct_size <
+            offsetof(DejavuPluginHost, get_interface) + sizeof(host->get_interface)) {
+        std::snprintf(error, error_size, "incompatible plugin host ABI");
         return -1;
     }
     auto *manager = new UnpackManager();
@@ -42,7 +50,14 @@ void plugin_shutdown(void *plugin_state) {
 extern "C" __attribute__((visibility("default"))) const DejavuPluginDescriptor *
 dejavu_plugin_entry(void) {
     static DejavuPluginDescriptor descriptor = {
-        DEJAVU_PLUGIN_ABI_VERSION, "unpack", "1.0.0", plugin_initialize, plugin_shutdown,
+        DEJAVU_PLUGIN_ABI_VERSION,
+        sizeof(DejavuPluginDescriptor),
+        "unpack",
+        "1.0.0",
+        0, // not unload-safe: this example does not remove its native hooks
+        plugin_initialize,
+        nullptr,
+        plugin_shutdown,
     };
     return &descriptor;
 }

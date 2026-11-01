@@ -31,6 +31,7 @@ PLUGIN_BUILD = EXAMPLE_DIR / "build.sh"
 DEFAULT_PLUGIN = REPO_ROOT / "out" / "plugins" / "unpack" / "libdejavu_unpack.so"
 MODULE_DIR = "/data/adb/modules/dejavu_zygisk"
 MODULE_PLUGIN = MODULE_DIR + "/plugins/libdejavu_unpack.so"
+PLUGIN_MANIFEST = MODULE_DIR + "/config/plugins.txt"
 examples = runpy.run_path(str(REPO_ROOT / "dejavu"))
 fail = examples["fail"]
 root_shell = examples["root_shell"]
@@ -102,6 +103,7 @@ def command(args: argparse.Namespace) -> int:
         try:
             root_shell(args, "setprop debug.dejavu.unpack.dir ''")
             root_shell(args, "setprop debug.dejavu.plugins ''")
+            root_shell(args, "setprop debug.dejavu.plugins.allowed ''")
             root_shell(args, "setprop debug.dejavu.unpack.include_file_backed 0")
         except CliError:
             pass
@@ -132,11 +134,18 @@ def command(args: argparse.Namespace) -> int:
         f"chmod 755 {shlex.quote(plugin_destination)} && "
         f"(chcon u:object_r:apk_data_file:s0 {shlex.quote(plugin_destination)} || true)",
     )
+    root_shell(
+        args,
+        f"mkdir -p {MODULE_DIR}/config && touch {PLUGIN_MANIFEST} && "
+        f"(grep -qxF {shlex.quote(plugin_destination)} {PLUGIN_MANIFEST} || "
+        f"echo {shlex.quote(plugin_destination)} >> {PLUGIN_MANIFEST})",
+    )
     # Default path: load the plugin on demand in the running process, after
     # startup.  This avoids installing ART hooks during early app init (which
     # can ANR); the debug.dejavu.plugins property remains available for the
     # explicit early-autoload workflow.
     root_shell(args, "setprop debug.dejavu.plugins ''")
+    root_shell(args, "setprop debug.dejavu.plugins.allowed ''")
     root_shell(args, "setprop debug.dejavu.unpack.dir ''")
     include_literal = "true" if args.include_file_backed else "false"
     if not args.no_restart:

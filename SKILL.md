@@ -283,13 +283,23 @@ plugin.call('example', 'namespace.function', ...)
 plugin.unload('example')
 ```
 
-- 插件是 arm64 `.so`，导出 `dejavu_plugin_entry`；ABI 见
-  `include/dejavu_plugin.h`，说明见 `zygisk/docs/plugin-api.md`。
-- `initialize(host)` 里通过 `host->register_function` 注册 Lua 函数；可读
-  `host->java_vm` / app ClassLoader，不链接 agent 私有符号。
-- 早期自动加载：`setprop debug.dejavu.plugins <path1>:<path2>`，Agent 在 app
-  代码前加载；Lua 注册会等控制会话建立后自动补注册。
-- 允许路径：module 目录、`/data/local/tmp/`、应用数据目录；应用数据目录里的
-  plugin 通常还需要 `chmod 755` + 可执行 SELinux label。
-- 示例：`plugins/unpack/`（编译为插件，`python3 plugins/unpack/cli.py ...`）。
+- 插件是 arm64 `.so`，导出 `dejavu_plugin_entry`；ABI v1 已冻结（带
+  `struct_size`），说明见 `include/dejavu_plugin.h` 与
+  `zygisk/docs/plugin-api.md`。
+- `initialize(host)` 通过 `host->register_function` 注册 Lua 函数；命名空间
+  不能使用框架保留名，重复注册会被拒绝；可读 JavaVM/app ClassLoader。
+- host 服务：`host->get_interface("mem"/"module"/"hook")` 提供
+  mem read/write/query、ELF symbol resolve、Dobby hook install/uninstall；
+  `host->alloc/free` 用于结果内存。
+- `on_control_ready` 在控制会话建立后回调，需要 session/ClassLoader 的初始化
+  放这里。
+- 早期自动加载：`setprop debug.dejavu.plugins <path1>:<path2>`；但 DEX/ART hook
+  这类重初始化建议运行中按需 `plugin.load`，避免启动 ANR。
+- 信任清单：`debug.dejavu.plugins.allowed`（root 设置、每次 load 刷新）或
+  `config/plugins.txt`（路径可从 app 命名空间访问时）；只允许列出的路径，
+  文件必须是普通文件、不可组/全局写、owner 为 root 或目标 uid。
+- `plugin.unload` 只允许 descriptor 标记 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE` 且
+  无 in-flight 调用的插件；装 native hook 的插件必须自己摘 hook。
+- 示例：`plugins/hello`（host 服务/契约测试）、`plugins/unpack`（脱壳）。
+  unpack CLI：`python3 plugins/unpack/cli.py ...`。
 

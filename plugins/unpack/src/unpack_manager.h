@@ -44,6 +44,7 @@ class UnpackManager {
     void shutdown();
     void enable_from_system_property();
     bool hook_invoke(std::string *error);
+    bool install_hook(void *target, void *replacement, void **original, std::string *error);
     bool active_invoke(const std::string &filter, std::string *stats, std::string *error);
     bool start_active_invoke(const std::string &class_names, unsigned long long delay_ms,
                              std::string *status, std::string *error);
@@ -115,6 +116,7 @@ class UnpackManager {
     static UnpackManager *instance_;
 
     const DejavuPluginHost *host_ = nullptr;
+    const DejavuHookInterface *hook_interface_ = nullptr;
     JavaVM *vm_ = nullptr;
     mutable std::mutex mutex_;
     std::vector<Image> images_;

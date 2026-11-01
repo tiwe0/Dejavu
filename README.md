@@ -50,8 +50,11 @@ symbols/resolve` for loading shared libraries, enumerating ELF symbols and
 resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
 to the ELF symbol table for non-exported symbols. A native **plugin** mechanism
 (`plugin.load/list/call/unload`, C ABI in `include/dejavu_plugin.h`, see
-`zygisk/docs/plugin-api.md`) lets a shared object register Lua functions, and
-can auto-load plugins from `debug.dejavu.plugins` before app code runs. Memory helpers
+`zygisk/docs/plugin-api.md`) lets a shared object register Lua functions, use
+host mem/module/hook services, and auto-load plugins from
+`debug.dejavu.plugins` before app code runs. A trusted allowlist
+(`debug.dejavu.plugins.allowed` / `config/plugins.txt`) and unload-safety flags
+bound what may load. Memory helpers
 (`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
 `mem.protect`, `mem.maps`) provide guarded access to the target address space.
 See `zygisk/docs/agent-helpers.md`.

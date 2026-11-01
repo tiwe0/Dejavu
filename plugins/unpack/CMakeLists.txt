@@ -15,14 +15,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 get_filename_component(DEJAVU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
-add_library(dobby_static STATIC IMPORTED GLOBAL)
-set_target_properties(dobby_static PROPERTIES
-    IMPORTED_LOCATION
-        ${DEJAVU_ROOT}/zygisk/third_party/DobbyPrefab/prefab/modules/dobby/libs/android.arm64-v8a/libdobby.a
-    INTERFACE_INCLUDE_DIRECTORIES
-        ${DEJAVU_ROOT}/zygisk/third_party/DobbyPrefab/prefab/modules/dobby/include
-)
-
 add_library(dejavu_unpack SHARED
     src/unpack_manager.cpp
     src/plugin_entry.cpp
@@ -42,7 +34,6 @@ target_link_options(dejavu_unpack PRIVATE
     -Wl,--no-undefined
 )
 target_link_libraries(dejavu_unpack PRIVATE
-    dobby_static
     log
     dl
 )
