@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "unpack",
+  "name": "unpack",
+  "version": "1.0.0",
+  "description": "DEX capture and active invocation tools.",
+  "kind": "native",
+  "entry": "libdejavu_unpack.so",
+  "files": [
+    "libdejavu_unpack.so",
+    "SKILL.md"
+  ]
+}

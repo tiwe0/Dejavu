@@ -1,4 +1,4 @@
-.PHONY: android-arm64 host-smoke plugin-device-test stream-receiver root-helper smoke clean
+.PHONY: android-arm64 host-smoke plugin-device-test stream-receiver stream-test root-helper smoke clean
 
 android-arm64:
 	./scripts/build-android-arm64.sh
@@ -18,6 +18,9 @@ stream-receiver:
 	mkdir -p out/host-stream
 	$(CC) -O2 -I zygisk/third_party/kcp -c zygisk/third_party/kcp/ikcp.c -o out/host-stream/ikcp.o
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -I zygisk/third_party/kcp tools/stream_receiver.cpp out/host-stream/ikcp.o -o out/host-stream/stream_receiver
+
+stream-test: stream-receiver
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/stream_receiver_test.py out/host-stream/stream_receiver
 
 plugin-device-test:
 	plugins/hello/device-test.sh

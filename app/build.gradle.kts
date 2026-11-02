@@ -22,6 +22,7 @@ android {
         targetSdk = 36
         versionCode = 4
         versionName = "0.2.2"
+        manifestPlaceholders["dejavuAppLabel"] = "@string/app_name"
     }
 
     signingConfigs {
@@ -36,6 +37,16 @@ android {
     }
 
     buildTypes {
+        debug {
+            if (providers.gradleProperty("dejavuSideBySide").orNull == "true") {
+                applicationIdSuffix = ".debug"
+                versionNameSuffix = "-dev"
+                manifestPlaceholders["dejavuAppLabel"] = "Dejavu Dev"
+                signingConfig = signingConfigs.getByName("debug").apply {
+                    storeFile = rootProject.file("out/tooling/android-user/debug.keystore")
+                }
+            }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

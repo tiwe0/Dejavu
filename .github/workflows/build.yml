@@ -30,8 +30,8 @@ jobs:
         run: |
           make host-smoke
 
-      - name: Build host stream receiver
-        run: make stream-receiver
+      - name: Test host stream receiver
+        run: make stream-test
       
       - name: Upload smoke test logs
         if: always()

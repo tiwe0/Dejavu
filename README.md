@@ -323,6 +323,8 @@ SKILL.md text is exposed only on demand and remains untrusted documentation.
   simulated execmem denial; `make android-arm64` validates the Android
   artifact.
 - Zygisk: `make -C zygisk test` runs the host-side C/C++/Lua/CLI tests.
+- Streams: `make stream-test` checks TCP framing and reconnect on Linux/macOS;
+  Zygisk host tests also cover bounded TCP writes and concurrent close.
 - Device: `TARGET_PROCESS=<package> ./zygisk/scripts/device-test.sh` automates
   the on-device acceptance flow against a rooted device with a Zygisk provider
   and this module installed (see `zygisk/README.md`). It uses the file control

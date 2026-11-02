@@ -93,6 +93,8 @@ object DejavuRpc {
 
     fun listPluginStatus(process: String): String = execute(process, "return plugin.list()")
 
+    fun processPid(process: String): Int = readMetadata(process).pid
+
     fun luaString(value: String): String =
         "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
@@ -110,8 +112,10 @@ object DejavuRpc {
     fun pluginSkill(process: String, name: String): String =
         execute(process, "return plugin.skill(${luaString(name)})")
 
-    fun loadPlugin(process: String, path: String): String =
-        execute(process, "return plugin.load(${luaString(path)})")
+    fun loadPlugin(process: String, path: String): String {
+        val function = if (path.endsWith(".c")) "load_jit" else "load"
+        return execute(process, "return plugin.$function(${luaString(path)})")
+    }
 
     private fun readMetadata(process: String): RpcMetadata {
         if (!process.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
@@ -121,11 +125,9 @@ object DejavuRpc {
         if (listing.exitCode != 0) {
             throw RpcException("unable to list Dejavu runtime metadata")
         }
-        val metadataName = listing.output.lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.startsWith("$process.") && it.endsWith(".rpc") }
+        val endpoint = selectRpcEndpoint(process, listing.output.lineSequence().map { it.trim() })
             ?: throw RpcException("no RPC endpoint for $process; is the app running with the agent?")
-        val raw = RootShell.readFile("$MODULE_DIR/run/$metadataName")
+        val raw = RootShell.readFile("$MODULE_DIR/run/${endpoint.fileName}")
             ?: throw RpcException("unable to read RPC metadata")
         val json = try {
             JSONObject(raw)
@@ -135,13 +137,16 @@ object DejavuRpc {
         if (json.optInt("version") != VERSION) {
             throw RpcException("unsupported RPC metadata version")
         }
+        if (json.optInt("pid") != endpoint.pid) {
+            throw RpcException("RPC metadata PID does not match its filename")
+        }
         val tokenText = json.optString("token")
         val token = tokenText.chunked(2).mapNotNull { it.toIntOrNull(16)?.toByte() }.toByteArray()
         if (token.size != 32) {
             throw RpcException("invalid RPC token")
         }
         return RpcMetadata(
-            pid = json.optInt("pid"),
+            pid = endpoint.pid,
             socket = json.optString("socket"),
             token = token,
         )

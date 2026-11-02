@@ -138,7 +138,7 @@
     <string name="overview_root_granted">已授权</string>
     <string name="overview_helper_running">运行中 · %1$s</string>
     <string name="quick_targets_detail">管理白名单</string>
-    <string name="msg_invalid_plugin_path">插件路径必须是绝对 .so 路径</string>
+    <string name="msg_invalid_plugin_path">请输入设备上的绝对路径，以 .so 或 .c 结尾</string>
     <string name="action_remove">移除</string>
     <string name="action_skill">Skill</string>
     <string name="action_more">更多操作</string>

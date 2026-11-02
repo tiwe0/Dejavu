@@ -38,6 +38,16 @@ mkdir -p "${OUT_DIR}"
 
 "${OUT_DIR}/control_channel_test"
 
+"${CC}" -std=c11 -O2 \
+    -I"${ROOT_DIR}/third_party/kcp" \
+    -c "${ROOT_DIR}/third_party/kcp/ikcp.c" -o "${OUT_DIR}/ikcp.o"
+"${CXX}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread \
+    -I"${ROOT_DIR}/include" -I"${ROOT_DIR}/third_party/kcp" \
+    "${ROOT_DIR}/src/stream_service.cpp" \
+    "${ROOT_DIR}/tests/stream_service_test.cpp" \
+    "${OUT_DIR}/ikcp.o" -o "${OUT_DIR}/stream_service_test"
+"${OUT_DIR}/stream_service_test"
+
 "${CXX}" \
     -std=c++17 \
     -Wall -Wextra -Werror \

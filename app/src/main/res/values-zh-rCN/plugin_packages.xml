@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="package_directory_title">目录插件</string>
+    <string name="package_directory_description">导入插件文件夹后，可在所选进程中启动。</string>
+    <string name="package_import_folder">导入文件夹</string>
+    <string name="package_scan">扫描目录</string>
+    <string name="package_importing">正在校验并导入插件…</string>
+    <string name="package_scanning">正在扫描插件并检查运行状态…</string>
+    <string name="package_empty_title">还没有目录插件</string>
+    <string name="package_empty_detail">选择包含 manifest.json 的插件文件夹，或放入默认目录后重新扫描。每个插件都需要独立文件夹和清单。</string>
+    <string name="package_state_unknown">尚未检查运行状态</string>
+    <string name="package_state_stopped">已停止</string>
+    <string name="package_state_running">运行中</string>
+    <string name="package_state_error">需要清理</string>
+    <string name="package_working">正在执行插件操作…</string>
+    <string name="package_check_status">检查状态</string>
+    <string name="package_start">启动</string>
+    <string name="package_stop">停止</string>
+    <string name="package_retry_stop">重试停止</string>
+    <string name="package_live_events">实时事件</string>
+    <string name="package_close_events">关闭</string>
+    <string name="package_events_memory_only">仅实时显示，不保存记录；关闭此面板即清空消息。</string>
+    <string name="package_events_listening">正在监听新事件</string>
+    <string name="package_events_connecting">正在连接事件流</string>
+    <string name="package_events_disconnected">事件流已断开</string>
+    <string name="package_events_empty_title">等待新事件</string>
+    <string name="package_events_empty_detail">此面板打开期间的新事件会显示在这里，不会加载历史记录。</string>
+    <string name="package_import_failed">插件导入失败：%1$s</string>
+    <string name="package_import_success">已导入 %1$s，选择目标后可手动启动。</string>
+    <string name="package_scan_failed">插件扫描失败：%1$s</string>
+    <string name="package_replace_running">请先停止该插件并检查运行状态，再替换文件夹。</string>
+    <string name="package_no_target">请选择目标进程，以检查或控制此插件。</string>
+    <string name="package_start_failed">插件启动失败：%1$s</string>
+    <string name="package_stop_failed">插件停止失败：%1$s</string>
+    <string name="package_events_failed">事件流读取失败：%1$s</string>
+    <string name="package_invalid_snapshot">目标返回的插件状态无效，请刷新后重试。</string>
+    <string name="package_native_title">原生与 JIT 插件</string>
+    <string name="package_device_path">加载设备路径</string>
+</resources>

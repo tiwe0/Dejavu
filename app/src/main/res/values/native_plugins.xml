@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="native_library_title">Available native and JIT plugins (%1$d)</string>
+    <string name="native_library_description">Plugins found in the default directory. Select a target, then load a plugin.</string>
+    <string name="native_library_empty_title">No native or JIT plugins found</string>
+    <string name="native_library_empty_detail">Import a native/JIT plugin folder containing manifest.json, or place it in the default directory and scan again.</string>
+    <string name="native_library_other_runtime_title">Other plugins registered in the target</string>
+    <string name="native_library_not_loaded">Not loaded in this target</string>
+    <string name="native_library_kind_native">Native</string>
+    <string name="native_library_kind_jit">JIT</string>
+</resources>

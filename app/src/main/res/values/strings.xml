@@ -138,7 +138,7 @@
     <string name="overview_root_granted">Granted</string>
     <string name="overview_helper_running">Running · %1$s</string>
     <string name="quick_targets_detail">Manage allowlist</string>
-    <string name="msg_invalid_plugin_path">Plugin path must be an absolute .so path</string>
+    <string name="msg_invalid_plugin_path">Use an absolute device path ending in .so or .c</string>
     <string name="action_remove">Remove</string>
     <string name="action_skill">Skill</string>
     <string name="action_more">More actions</string>

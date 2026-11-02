@@ -30,6 +30,8 @@ class StreamService {
 
     int open(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
              std::string *error);
+    // TCP writes have a 100 ms deadline, including waiting for another writer.
+    // A failed TCP transmission retires the stream; close it and open a new one.
     int write(int handle, const void *data, size_t size);
     int close(int handle);
     size_t close_owner(uint64_t owner_token);

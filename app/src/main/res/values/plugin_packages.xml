@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="package_directory_title">Directory plugins</string>
+    <string name="package_directory_description">Import a plugin folder, then start it in the selected process.</string>
+    <string name="package_import_folder">Import folder</string>
+    <string name="package_scan">Scan directory</string>
+    <string name="package_importing">Validating and importing plugin…</string>
+    <string name="package_scanning">Scanning plugins and checking runtime state…</string>
+    <string name="package_empty_title">No directory plugins</string>
+    <string name="package_empty_detail">Choose a plugin folder containing manifest.json, or place it in the default directory and scan again. Each plugin needs its own folder and manifest.</string>
+    <string name="package_state_unknown">Runtime state not checked</string>
+    <string name="package_state_stopped">Stopped</string>
+    <string name="package_state_running">Running</string>
+    <string name="package_state_error">Cleanup required</string>
+    <string name="package_working">Applying plugin action…</string>
+    <string name="package_check_status">Check status</string>
+    <string name="package_start">Start</string>
+    <string name="package_stop">Stop</string>
+    <string name="package_retry_stop">Retry stop</string>
+    <string name="package_live_events">Live events</string>
+    <string name="package_close_events">Close</string>
+    <string name="package_events_memory_only">Live display only. Nothing is saved; closing this view clears its messages.</string>
+    <string name="package_events_listening">Listening for new events</string>
+    <string name="package_events_connecting">Connecting to event stream</string>
+    <string name="package_events_disconnected">Event stream disconnected</string>
+    <string name="package_events_empty_title">Waiting for new events</string>
+    <string name="package_events_empty_detail">Events appear here while this view is open. History is not loaded.</string>
+    <string name="package_import_failed">Plugin import failed: %1$s</string>
+    <string name="package_import_success">Imported %1$s. Select a target and start when ready.</string>
+    <string name="package_scan_failed">Plugin scan failed: %1$s</string>
+    <string name="package_replace_running">Stop this plugin and check its runtime state before replacing its folder.</string>
+    <string name="package_no_target">Select a target process to check or control this plugin.</string>
+    <string name="package_start_failed">Plugin start failed: %1$s</string>
+    <string name="package_stop_failed">Plugin stop failed: %1$s</string>
+    <string name="package_events_failed">Event stream failed: %1$s</string>
+    <string name="package_invalid_snapshot">The target returned an invalid plugin state. Refresh and try again.</string>
+    <string name="package_native_title">Native and JIT plugins</string>
+    <string name="package_device_path">Load device path</string>
+</resources>

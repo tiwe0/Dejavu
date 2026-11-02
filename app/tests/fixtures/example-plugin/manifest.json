@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "example-plugin",
+  "name": "Example test plugin",
+  "version": "1.0.0",
+  "description": "Self-contained lifecycle and declared-resource fixture.",
+  "kind": "lua",
+  "entry": "entry.lua",
+  "files": ["entry.lua", "helper.lua", "hook.c"]
+}

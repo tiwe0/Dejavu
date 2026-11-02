@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
+from functools import wraps
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
+import selectors
 import shlex
 import subprocess
 import sys
@@ -499,7 +503,7 @@ def delegate_dejavuctl(args: argparse.Namespace, extra: list[str]) -> int:
 
 
 def command_exec(args: argparse.Namespace) -> int:
-    extra = ["-p", args.process]
+    extra = ["-p", args.process, "--timeout", str(args.timeout)]
     if args.code is not None:
         extra.extend(["-e", args.code])
     else:
@@ -714,6 +718,75 @@ def plugin_allowlist_read(args: argparse.Namespace) -> list[str]:
     return plugin_allowlist_state(args)[0]
 
 
+@contextmanager
+def plugin_trust_lock(args: argparse.Namespace):
+    """Serialize App/CLI trust updates with a device-held advisory file lock."""
+    if getattr(args, "_plugin_trust_lock_held", False):
+        yield
+        return
+    command = """set -e
+umask 077
+[ -d /data/adb ] && [ ! -L /data/adb ]
+[ ! -L /data/adb/dejavu ]
+mkdir -p /data/adb/dejavu
+[ ! -L /data/adb/dejavu/.plugin-trust.lock ]
+[ ! -e /data/adb/dejavu/.plugin-trust.lock ] || [ -f /data/adb/dejavu/.plugin-trust.lock ]
+exec 9>>/data/adb/dejavu/.plugin-trust.lock
+flock -n 9 9>&9 || { echo 'Plugin trust configuration is busy; retry loading'; exit 1; }
+echo DEJAVU_PLUGIN_TRUST_READY
+cat >/dev/null
+"""
+    process = subprocess.Popen(
+        [*adb_base(args), "shell", "su -c " + shlex.quote(command)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    try:
+        pending = b""
+        ready = False
+        deadline = time.monotonic() + 10
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while time.monotonic() < deadline and len(pending) <= 4096:
+                if not selector.select(min(0.2, max(0, deadline - time.monotonic()))):
+                    continue
+                data = os.read(process.stdout.fileno(), 4096)
+                if not data:
+                    break
+                pending += data
+                if b"DEJAVU_PLUGIN_TRUST_READY" in pending.splitlines():
+                    ready = True
+                    break
+        if not ready:
+            fail("unable to lock plugin trust configuration: " +
+                 (pending.decode(errors="replace").strip() or "root helper timed out"))
+        args._plugin_trust_lock_held = True
+        try:
+            yield
+        finally:
+            args._plugin_trust_lock_held = False
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        process.stdout.close()
+
+
+def locked_plugin_trust(function):
+    @wraps(function)
+    def locked(args, *arguments, **keywords):
+        with plugin_trust_lock(args):
+            return function(args, *arguments, **keywords)
+    return locked
+
+
+@locked_plugin_trust
 def plugin_allowlist_write(
     args: argparse.Namespace,
     paths: list[str],
@@ -816,15 +889,16 @@ def command_plugin_install(args: argparse.Namespace) -> int:
         )
     commands.append(f"rm -f {shlex.quote(staged)} {shlex.quote(staged + '.SKILL.md')}")
     root_shell(args, " && ".join(commands))
-    allowed, hashes, skill_hashes = plugin_allowlist_state(args)
-    if destination not in allowed:
-        allowed.append(destination)
-    hashes[destination] = hashlib.sha256(source.read_bytes()).hexdigest()
-    if skill is None:
-        skill_hashes.pop(destination, None)
-    else:
-        skill_hashes[destination] = hashlib.sha256(skill.read_bytes()).hexdigest()
-    plugin_allowlist_write(args, allowed, hashes, skill_hashes)
+    with plugin_trust_lock(args):
+        allowed, hashes, skill_hashes = plugin_allowlist_state(args)
+        if destination not in allowed:
+            allowed.append(destination)
+        hashes[destination] = hashlib.sha256(source.read_bytes()).hexdigest()
+        if skill is None:
+            skill_hashes.pop(destination, None)
+        else:
+            skill_hashes[destination] = hashlib.sha256(skill.read_bytes()).hexdigest()
+        plugin_allowlist_write(args, allowed, hashes, skill_hashes)
     print(f"installed {source.name} -> {destination}")
     if skill is not None:
         print(f"installed skill -> {destination}.SKILL.md")
@@ -867,8 +941,9 @@ def command_plugin(args: argparse.Namespace) -> int:
                 return 0
             if not paths:
                 fail("plugin allow requires at least one device path (or --clear)")
-            _, existing_hashes, existing_skill_hashes = plugin_allowlist_state(args)
-            plugin_allowlist_write(args, paths, existing_hashes, existing_skill_hashes)
+            with plugin_trust_lock(args):
+                _, existing_hashes, existing_skill_hashes = plugin_allowlist_state(args)
+                plugin_allowlist_write(args, paths, existing_hashes, existing_skill_hashes)
             print(f"set {PLUGIN_ALLOWED_PROPERTY} ({len(paths)} path(s))")
             return 0
         value = ":".join(paths)
@@ -925,6 +1000,16 @@ def command_test(args: argparse.Namespace) -> int:
         if result == 0:
             return 0
     return result
+
+
+def positive_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number") from error
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return timeout
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1002,6 +1087,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = subparsers.add_parser("exec", help="run Lua in the target process")
     sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument(
+        "--timeout", type=positive_timeout, default=10.0, metavar="SECONDS",
+        help="RPC socket timeout in seconds (default: 10); does not cancel remote Lua",
+    )
     source = sub.add_mutually_exclusive_group(required=True)
     source.add_argument("-e", "--code", help="inline Lua code")
     source.add_argument("file", nargs="?", help="Lua file to execute")
@@ -1193,7 +1282,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("-p", "--process", default="bin.mt.plus")
     sub.add_argument(
         "--timeout",
-        type=float,
+        type=positive_timeout,
         default=120.0,
         help="default tool timeout in seconds (default: 120)",
     )

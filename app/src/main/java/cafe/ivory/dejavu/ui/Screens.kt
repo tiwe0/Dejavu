@@ -532,21 +532,47 @@ fun PluginsScreen(
     onRefresh: () -> Unit,
     onSelectTarget: (String) -> Unit,
     onPickApp: () -> Unit,
-    onUnload: (String) -> Unit,
-    onLoad: (String) -> Unit,
-    skillLoader: suspend (String) -> Result<String>,
+    onUnload: (String, String) -> Unit,
+    onLoad: (String, String) -> Unit,
+    onLoadLibrary: (String, String) -> Unit,
+    onImportFolder: () -> Unit,
+    onScanDirectory: () -> Unit,
+    onStartDirectory: (String, String) -> Unit,
+    onStopDirectory: (String, String) -> Unit,
+    onDirectoryEvents: (String, String) -> Unit,
+    onCloseDirectoryEvents: () -> Unit,
+    skillLoader: suspend (String, String) -> Result<String>,
 ) {
-    var loadDialog by rememberSaveable { mutableStateOf(false) }
-    var loadPath by rememberSaveable { mutableStateOf("") }
-    var loadError by remember { mutableStateOf(false) }
-    var skillPlugin by remember { mutableStateOf<PluginInfo?>(null) }
-    var skillText by remember { mutableStateOf("") }
-    var skillLoading by remember { mutableStateOf(false) }
-    var pendingUnload by remember { mutableStateOf<String?>(null) }
+    val target = state.selectedTarget
+    var loadDialog by rememberSaveable(target) { mutableStateOf(false) }
+    var loadPath by rememberSaveable(target) { mutableStateOf("") }
+    var loadError by remember(target) { mutableStateOf(false) }
+    var skillPlugin by remember(target) { mutableStateOf<PluginInfo?>(null) }
+    var skillText by remember(target) { mutableStateOf("") }
+    var skillLoading by remember(target) { mutableStateOf(false) }
+    var pendingUnload by remember(target) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val skillFallback = stringResource(R.string.msg_skill_load_failed)
-    val loadedCount = state.plugins.count { it.loaded }
+    val libraryPaths = state.nativeLibrary.mapNotNull { it.runtime?.path }.toSet()
+    val otherPlugins = state.plugins.filter { it.path !in libraryPaths }
+    val loadedCount = otherPlugins.count { it.loaded }
+    val nativeBusy = state.loading || state.pluginImporting || state.pluginDirectoryLoading ||
+        state.pluginActionId != null || state.nativePluginActionPath != null
+    val showSkill: (PluginInfo) -> Unit = { plugin ->
+        if (target != null) {
+            skillPlugin = plugin
+            skillText = ""
+            skillLoading = true
+            scope.launch {
+                skillText = skillLoader(target, plugin.name).fold(
+                    onSuccess = { it },
+                    onFailure = { it.message ?: skillFallback },
+                )
+                skillLoading = false
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -566,8 +592,9 @@ fun PluginsScreen(
             IconButton(onClick = onRefresh, enabled = state.selectedTarget != null && !state.pluginsLoading) {
                 Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh_plugins))
             }
-            IconButton(onClick = { loadDialog = true }, enabled = state.selectedTarget != null) {
-                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.load_plugin))
+            IconButton(onClick = onImportFolder,
+                enabled = state.rootGranted && !nativeBusy) {
+                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.package_import_folder))
             }
         }
         if (state.pluginsLoading) {
@@ -580,17 +607,68 @@ fun PluginsScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 104.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (state.plugins.isNotEmpty()) {
+            item {
+                DirectoryPluginsSection(
+                    state = state,
+                    onImport = onImportFolder,
+                    onRescan = onScanDirectory,
+                    onStart = onStartDirectory,
+                    onStop = onStopDirectory,
+                    onEvents = onDirectoryEvents,
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.native_library_title, state.nativeLibrary.size),
+                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { loadDialog = true },
+                        enabled = target != null && !nativeBusy) {
+                        Text(stringResource(R.string.package_device_path))
+                    }
+                }
+                Text(
+                    stringResource(R.string.native_library_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (state.nativeLibrary.isEmpty() && !state.pluginDirectoryLoading && !state.pluginImporting) {
+                item {
+                    EmptyState(
+                        title = stringResource(R.string.native_library_empty_title),
+                        detail = stringResource(R.string.native_library_empty_detail),
+                        icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
+                    )
+                }
+            }
+            items(state.nativeLibrary, key = { "library:${it.artifact.path}" }) { item ->
+                NativeLibraryPluginCard(
+                    item = item,
+                    target = target,
+                    busy = nativeBusy,
+                    working = state.nativePluginActionPath == item.artifact.path,
+                    onLoad = { if (target != null) onLoadLibrary(target, item.artifact.path) },
+                    onUnload = { item.runtime?.let { pendingUnload = it.name } },
+                    onSkill = { item.runtime?.let(showSkill) },
+                )
+            }
+            if (otherPlugins.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        stringResource(R.string.native_library_other_runtime_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
                 item {
                     Text(
                         stringResource(R.string.plugins_count, loadedCount) +
-                            " / ${state.plugins.size}",
+                            " / ${otherPlugins.size}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            if (state.plugins.isEmpty() && !state.pluginsLoading) {
+            if (state.plugins.isEmpty() && state.nativeLibrary.isEmpty() && !state.pluginsLoading) {
                 item {
                     EmptyState(
                         title = stringResource(R.string.plugins_no_status_title),
@@ -606,21 +684,11 @@ fun PluginsScreen(
                     ) { Text(stringResource(R.string.plugins_empty_action)) }
                 }
             }
-            items(state.plugins, key = { it.name }) { plugin ->
+            items(otherPlugins, key = { "runtime:${it.name}" }) { plugin ->
                 PluginCard(
                     plugin = plugin,
-                    onSkill = {
-                        skillPlugin = plugin
-                        skillText = ""
-                        skillLoading = true
-                        scope.launch {
-                            skillText = skillLoader(plugin.name).fold(
-                                onSuccess = { it },
-                                onFailure = { it.message ?: skillFallback },
-                            )
-                            skillLoading = false
-                        }
-                    },
+                    enabled = !nativeBusy,
+                    onSkill = { showSkill(plugin) },
                     onUnload = { pendingUnload = plugin.name },
                 )
             }
@@ -653,13 +721,14 @@ fun PluginsScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = !nativeBusy,
                     onClick = {
                         val path = loadPath.trim()
-                        if (!path.startsWith("/") || !path.endsWith(".so")) {
+                        if (!path.startsWith("/") || (!path.endsWith(".so") && !path.endsWith(".c"))) {
                             loadError = true
                         } else {
                             loadDialog = false
-                            onLoad(path)
+                            if (target != null) onLoad(target, path)
                         }
                     },
                 ) { Text(stringResource(R.string.load)) }
@@ -681,8 +750,11 @@ fun PluginsScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = !nativeBusy,
                     onClick = {
-                        pendingUnload?.let(onUnload)
+                        pendingUnload?.let { name ->
+                            if (target != null) onUnload(target, name)
+                        }
                         pendingUnload = null
                     },
                 ) { Text(stringResource(R.string.unload)) }
@@ -727,11 +799,16 @@ fun PluginsScreen(
             }
         }
     }
+
+    state.packageEvents?.let { events ->
+        DirectoryPluginEventsSheet(events, onCloseDirectoryEvents)
+    }
 }
 
 @Composable
 private fun PluginCard(
     plugin: PluginInfo,
+    enabled: Boolean,
     onSkill: () -> Unit,
     onUnload: () -> Unit,
 ) {
@@ -805,7 +882,7 @@ private fun PluginCard(
                 }
             }
             Box {
-                IconButton(onClick = { menu = true }) {
+                IconButton(onClick = { menu = true }, enabled = enabled) {
                     Icon(
                         Icons.Rounded.MoreVert,
                         contentDescription = stringResource(R.string.action_more),
@@ -814,6 +891,7 @@ private fun PluginCard(
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     if (plugin.skill) {
                         DropdownMenuItem(
+                            enabled = enabled,
                             text = { Text(stringResource(R.string.action_skill)) },
                             onClick = {
                                 menu = false
@@ -822,6 +900,7 @@ private fun PluginCard(
                         )
                     }
                     DropdownMenuItem(
+                        enabled = enabled,
                         text = { Text(stringResource(R.string.unload)) },
                         onClick = {
                             menu = false

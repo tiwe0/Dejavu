@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "capture",
+  "name": "capture",
+  "version": "1.0.0",
+  "description": "TLS plaintext capture through explicit capture controls.",
+  "kind": "native",
+  "entry": "libdejavu_capture.so",
+  "files": [
+    "libdejavu_capture.so",
+    "SKILL.md"
+  ]
+}

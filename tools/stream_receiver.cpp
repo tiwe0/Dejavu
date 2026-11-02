@@ -101,10 +101,20 @@ KcpSession *session_for(unsigned int conv, const sockaddr_storage &peer, socklen
 
 int run_tcp(int listen_fd) {
     while (true) {
+#if defined(__linux__)
         const int client = accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
+#else
+        const int client = accept(listen_fd, nullptr, nullptr);
+#endif
         if (client < 0) {
             continue;
         }
+#if !defined(__linux__)
+        if (fcntl(client, F_SETFD, FD_CLOEXEC) < 0) {
+            close(client);
+            continue;
+        }
+#endif
         std::string buffer;
         char chunk[8192];
         while (true) {

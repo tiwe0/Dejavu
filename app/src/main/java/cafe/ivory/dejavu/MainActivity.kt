@@ -6,7 +6,9 @@ import android.os.Bundle
 import android.os.LocaleList
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Box
@@ -105,6 +107,9 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val importPluginFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.importPluginFolder(uri)
+    }
 
     LaunchedEffect(state.lastMessage) {
         val message = state.lastMessage ?: return@LaunchedEffect
@@ -113,6 +118,7 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     }
 
     LaunchedEffect(tabIndex, state.selectedTarget, state.rootGranted) {
+        if (tabIndex != 2 || !state.rootGranted) vm.closePackageEvents()
         if (!state.rootGranted) {
             vm.stopLogs()
             return@LaunchedEffect
@@ -238,9 +244,16 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                     onRefresh = { vm.refreshPlugins() },
                     onSelectTarget = { vm.selectTarget(it) },
                     onPickApp = openAppPicker,
-                    onUnload = { vm.unloadPlugin(it) },
-                    onLoad = { vm.loadPlugin(it) },
-                    skillLoader = { vm.pluginSkill(it) },
+                    onUnload = { target, name -> vm.unloadPlugin(target, name) },
+                    onLoad = { target, path -> vm.loadPlugin(target, path) },
+                    onLoadLibrary = { target, path -> vm.loadLibraryPlugin(target, path) },
+                    onImportFolder = { importPluginFolder.launch(null) },
+                    onScanDirectory = { vm.refreshPlugins() },
+                    onStartDirectory = { target, id -> vm.startDirectoryPlugin(target, id) },
+                    onStopDirectory = { target, id -> vm.stopDirectoryPlugin(target, id) },
+                    onDirectoryEvents = { target, id -> vm.openPackageEvents(target, id) },
+                    onCloseDirectoryEvents = { vm.closePackageEvents() },
+                    skillLoader = { target, name -> vm.pluginSkill(target, name) },
                 )
                 3 -> LogsScreen(
                     state = state,

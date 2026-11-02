@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +25,7 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PROTOCOL_VERSION = PROTOCOL_VERSIONS[-1]
 SERVER_VERSION = "0.1.0"
 MAX_TOOL_OUTPUT = 200_000
+EXEC_CLEANUP_BUDGET = 15.0
 
 
 class ToolFailure(Exception):
@@ -40,7 +43,7 @@ class DejavuRunner:
         self.cli_path = cli_path
         self.serial = serial or os.environ.get("ADB_SERIAL")
         self.adb = adb or os.environ.get("ADB")
-        self.timeout = timeout
+        self.timeout = _timeout(timeout)
 
     def global_args(self) -> list[str]:
         args: list[str] = []
@@ -52,25 +55,41 @@ class DejavuRunner:
 
     def run(self, command: list[str], timeout: float | None = None) -> str:
         cmd = [sys.executable, str(self.cli_path), *self.global_args(), *command]
+        command_timeout = _timeout(timeout if timeout is not None else self.timeout)
         try:
-            result = subprocess.run(
+            # The CLI launches dejavuctl/adb children. Give this invocation its
+            # own process group so a local timeout cannot leave a child holding
+            # the CLI session lock or an inherited stdout/stderr pipe.
+            with subprocess.Popen(
                 cmd,
                 cwd=str(REPO_ROOT),
                 text=True,
-                capture_output=True,
-                timeout=timeout if timeout is not None else self.timeout,
-            )
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(timeout=command_timeout)
+                except BaseException:
+                    # Match subprocess.run's cleanup on interrupts as well as
+                    # timeouts, including descendants launched by the CLI.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+                    raise
         except subprocess.TimeoutExpired as error:
             raise ToolFailure(
-                f"command timed out after {timeout if timeout is not None else self.timeout:.0f}s: "
+                f"command timed out after {command_timeout:g}s: "
                 + " ".join(command)
             ) from error
         except OSError as error:
             raise ToolFailure(f"unable to run dejavu CLI: {error}") from error
-        output = (result.stdout or "").strip()
-        error_text = (result.stderr or "").strip()
-        if result.returncode != 0:
-            detail = error_text or output or f"exit code {result.returncode}"
+        output = (stdout or "").strip()
+        error_text = (stderr or "").strip()
+        if process.returncode != 0:
+            detail = error_text or output or f"exit code {process.returncode}"
             raise ToolFailure(detail)
         if output:
             return output
@@ -101,6 +120,25 @@ def _integer(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ToolFailure(f"{name} must be an integer")
     return value
+
+
+def _timeout(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ToolFailure("timeout must be a positive finite number")
+    try:
+        timeout = float(value)
+    except OverflowError as error:
+        raise ToolFailure("timeout must be a positive finite number") from error
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ToolFailure("timeout must be a positive finite number")
+    return timeout
+
+
+def _timeout_argument(value: str) -> float:
+    try:
+        return _timeout(float(value))
+    except (ValueError, ToolFailure) as error:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number") from error
 
 
 def _cli_argument(value: Any) -> str:
@@ -193,7 +231,10 @@ TOOLS: list[dict[str, Any]] = [
                 "process": PROCESS_SCHEMA,
                 "timeout": {
                     "type": "number",
-                    "description": "Command timeout in seconds (optional)",
+                    "exclusiveMinimum": 0,
+                    "description": "RPC socket timeout in seconds (defaults to the server's "
+                    "--timeout, normally 120). Local setup/cleanup gets 15 extra seconds; "
+                    "timing out does not cancel Lua already running on the device.",
                 },
             },
             "required": ["code"],
@@ -523,12 +564,10 @@ class McpServer:
         if name == "dejavu_exec":
             code = _string(arguments.get("code"), "code")
             process = _process(arguments, self.default_process)
-            timeout = arguments.get("timeout")
-            if timeout is not None and not isinstance(timeout, (int, float)):
-                raise ToolFailure("timeout must be a number")
+            timeout = _timeout(arguments.get("timeout", self.runner.timeout))
             return self.runner.run(
-                ["exec", "-p", process, "-e", code],
-                timeout=float(timeout) if timeout is not None else None,
+                ["exec", "-p", process, "--timeout", str(timeout), "-e", code],
+                timeout=timeout + EXEC_CLEANUP_BUDGET,
             )
         if name == "dejavu_plugin_list":
             process = _process(arguments, self.default_process)
@@ -827,7 +866,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-p", "--process", default=DEFAULT_PROCESS)
     parser.add_argument("-s", "--serial", default=None)
     parser.add_argument("--adb", default=None)
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--timeout", type=_timeout_argument, default=120.0,
+                        help="default tool/RPC timeout in seconds (default: 120)")
     parser.add_argument("--cli", default=str(DEFAULT_CLI))
     return parser
 

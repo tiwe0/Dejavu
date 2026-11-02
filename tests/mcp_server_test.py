@@ -15,6 +15,7 @@ import dejavu_mcp  # noqa: E402
 class FakeRunner:
     def __init__(self):
         self.calls = []
+        self.timeout = 120.0
 
     def run(self, command, timeout=None):
         self.calls.append((list(command), timeout))
@@ -26,7 +27,7 @@ class FakeRunner:
             return "fake plugins"
         if command[:5] == ["plugin", "-p", "pkg", "call", "demo"]:
             return "called"
-        if command == ["exec", "-p", "pkg", "-e", "return 1"]:
+        if command == ["exec", "-p", "pkg", "--timeout", "5.0", "-e", "return 1"]:
             return "1"
         return "ok"
 
@@ -86,6 +87,10 @@ def main():
         }
     )
     assert executed["result"]["content"][0]["text"] == "1"
+    assert runner.calls[-1] == (
+        ["exec", "-p", "pkg", "--timeout", "5.0", "-e", "return 1"],
+        20.0,
+    )
 
     called = server.handle_request(
         {

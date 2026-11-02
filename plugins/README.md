@@ -49,7 +49,18 @@ plugin-specific instructions without guessing the repo path.
 
 Example plugins are built separately from the module. `plugins/package.sh`
 creates `dejavu-plugins-vX.Y.Z-arm64.zip` containing the native `.so` files,
-their SKILL sidecars, JIT examples and `unpack/cli.py`. CI uploads it as the
+their SKILL sidecars, JIT examples and `unpack/cli.py`.
+Every plugin has its own folder and `manifest.json` declaring its identifier,
+display name, version, description, kind, entry and resource files. The app only
+recognizes manifest folders directly under `/data/adb/dejavu/plugins`; bare
+`.so`/`.c` files and folders without manifests are ignored. Run
+`python3 plugins/prepare-library.py` after native builds to assemble the seven
+importable folders under `out/plugins`. Import an individual folder in the app,
+or copy these folders to the default device library and scan. Import and scan
+do not execute plugins; native/JIT loading deploys and hash-pins only the selected
+plugin for the selected target.
+
+CI uploads the zip as the
 `dejavu-example-plugins` artifact and attaches the zip to the GitHub Release as
 a second asset; the module zip remains framework-only.
 

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "hello",
+  "name": "hello",
+  "version": "1.0.0",
+  "description": "Minimal host ABI and safe plugin lifecycle example.",
+  "kind": "native",
+  "entry": "libdejavu_hello.so",
+  "files": [
+    "libdejavu_hello.so",
+    "SKILL.md"
+  ]
+}

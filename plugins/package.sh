@@ -13,9 +13,11 @@ OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/plugins"}
 ZIP_NAME=${ZIP_NAME:-"dejavu-plugins-v${VERSION}-arm64.zip"}
 ZIP_PATH="${OUT_DIR}/${ZIP_NAME}"
 mkdir -p "${OUT_DIR}"
+python3 "${ROOT_DIR}/plugins/prepare-library.py"
 rm -f "${ZIP_PATH}"
 
 python3 - "${ROOT_DIR}" "${ZIP_PATH}" "${VERSION}" <<'PY'
+import json
 import sys
 import zipfile
 from pathlib import Path
@@ -29,24 +31,12 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
     if readme.is_file():
         bundle.write(readme, "README.md")
 
-    for name in ("hello", "capture", "algorithm", "unpack"):
-        plugin_dir = root / "plugins" / name
+    for name in ("hello", "capture", "algorithm", "unpack", "hellojit", "hellofsjit", "hellohookjit"):
         out_dir = root / "out" / "plugins" / name
-        libraries = sorted(out_dir.glob("*.so")) if out_dir.is_dir() else []
-        if not libraries:
-            raise SystemExit(f"missing built plugin: {out_dir}/*.so")
-        for library in libraries:
-            bundle.write(library, f"{name}/{library.name}")
-        skill = plugin_dir / "SKILL.md"
-        if skill.is_file():
-            bundle.write(skill, f"{name}/SKILL.md")
-
-    jit_dir = root / "plugins" / "hello"
-    for source in sorted(jit_dir.glob("*.c")):
-        bundle.write(source, f"jit/{source.name}")
-        sidecar = source.with_name(source.name + ".SKILL.md")
-        if sidecar.is_file():
-            bundle.write(sidecar, f"jit/{sidecar.name}")
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        bundle.write(out_dir / "manifest.json", f"{name}/manifest.json")
+        for relative in manifest["files"]:
+            bundle.write(out_dir / relative, f"{name}/{relative}")
 
     unpack_cli = root / "plugins" / "unpack" / "cli.py"
     if unpack_cli.is_file():
@@ -55,7 +45,7 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
     manifest = (
         "Dejavu example plugins\n"
         f"module version: {version}\n"
-        "layout: <plugin>/<library>.so + SKILL.md; jit/*.c + sidecars; unpack/cli.py\n"
+        "layout: <plugin>/manifest.json plus declared resources; unpack/cli.py\n"
     )
     bundle.writestr("MANIFEST.txt", manifest)
 

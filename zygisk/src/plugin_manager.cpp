@@ -1612,9 +1612,11 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
         }
     }
     pending_entries_.clear();
-    for (auto &plugin : plugins_) {
+    for (size_t index = 0; index < plugins_.size(); ++index) {
+        auto *plugin = plugins_[index].get();
         if (plugin->loaded && !plugin->control_ready && plugin->descriptor != nullptr &&
             plugin->descriptor->on_control_ready != nullptr) {
+            PluginContextGuard context_guard(index);
             plugin->descriptor->on_control_ready(plugin->state);
             plugin->control_ready = true;
         }

@@ -86,6 +86,29 @@ echo "== SHA-256 known answers"
 
 echo "== MCP protocol"
 PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT_DIR}/tests/mcp_server_test.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT_DIR}/tests/cli_test.py"
+
+echo "== Freestanding Hook ABI compilation"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/include" "${ROOT_DIR}/tests/hook_source_compile.c" \
+    "${OBJ_DIR}/dejavu_engine.o" "${OBJ_DIR}/tinycc.o" \
+    -ldl -lm -pthread -o "${OUT_DIR}/hook_source_compile"
+PYTHONDONTWRITEBYTECODE=1 python3 - "${ROOT_DIR}" "${GEN_DIR}" "${OUT_DIR}/hook_source_compile" <<'PY'
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+root, generated = map(Path, sys.argv[1:3])
+runtime = (root / "zygisk/src/hook_api_runtime.cpp").read_text()
+preamble = runtime.split('R"DEJAVU_HOOK_API(', 1)[1].split(')DEJAVU_HOOK_API"', 1)[0]
+source = (root / "tests/fixtures/hook_callback.c").read_text()
+path = generated / "hook-callback.c"
+path.write_text(preamble + source + "\nint dejavu_entry(void) { return 0; }\n")
+symbols = re.findall(r'\{"(dejavu_hook_[a-z0-9_]+)"', runtime)
+assert symbols, "Hook ABI allowlist was not found"
+subprocess.run([sys.argv[3], str(path), *symbols], check=True)
+PY
 
 if [[ "$(uname -s)" == "Linux" ]]; then
     # Simulate an execmem-restricted domain: deny PROT_EXEC mprotect calls and

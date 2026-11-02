@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -19,6 +20,7 @@
 namespace {
 
 constexpr int kConnectTimeoutMs = 3000;
+constexpr int kWriteTimeoutMs = 100;
 constexpr size_t kMaximumUdpPayload = 65000;
 
 std::atomic<unsigned int> g_next_conv{0x4B435001u};
@@ -111,7 +113,6 @@ int connect_endpoint(uint32_t transport, const std::string &endpoint, std::strin
                     continue;
                 }
             }
-            fcntl(fd, F_SETFL, original_flags & ~O_NONBLOCK);
             const int one = 1;
             setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         } else {
@@ -143,15 +144,42 @@ bool build_frame(const void *data, size_t size, std::vector<char> *frame) {
     return true;
 }
 
-bool send_all(int fd, const void *data, size_t size) {
+bool send_all(int fd, const void *data, size_t size, const std::atomic<bool> &active,
+              std::chrono::steady_clock::time_point deadline) {
     const char *bytes = static_cast<const char *>(data);
     size_t offset = 0;
     while (offset < size) {
-        const ssize_t written = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
-        if (written <= 0) {
+        if (!active.load() || std::chrono::steady_clock::now() >= deadline) {
             return false;
         }
-        offset += static_cast<size_t>(written);
+        const ssize_t written =
+            send(fd, bytes + offset, size - offset, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            return false;
+        }
+        const auto remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::steady_clock::duration::zero()) {
+            return false;
+        }
+        pollfd descriptor = {fd, POLLOUT, 0};
+        const int timeout =
+            static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count()) +
+            1;
+        const int ready = poll(&descriptor, 1, timeout);
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+        if (ready <= 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            return false;
+        }
     }
     return true;
 }
@@ -163,7 +191,7 @@ struct StreamService::Stream {
     int fd = -1;
     uint32_t conv = 0;
     ikcpcb *kcp = nullptr;
-    std::mutex mutex;
+    std::timed_mutex mutex;
     std::atomic<bool> active{true};
     std::thread worker;
 };
@@ -190,12 +218,12 @@ void run_kcp_worker(StreamService::Stream *stream) {
                 if (count <= 0) {
                     break;
                 }
-                std::lock_guard<std::mutex> lock(stream->mutex);
+                std::lock_guard<std::timed_mutex> lock(stream->mutex);
                 ikcp_input(stream->kcp, buffer, static_cast<long>(count));
             }
         }
         {
-            std::lock_guard<std::mutex> lock(stream->mutex);
+            std::lock_guard<std::timed_mutex> lock(stream->mutex);
             if (stream->kcp != nullptr) {
                 ikcp_update(stream->kcp, iclock_value());
             }
@@ -276,6 +304,8 @@ std::shared_ptr<StreamService::Stream> StreamService::find(int handle) {
 }
 
 int StreamService::write(int handle, const void *data, size_t size) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kWriteTimeoutMs);
     std::shared_ptr<Stream> stream = find(handle);
     if (stream == nullptr) {
         return -1;
@@ -284,7 +314,14 @@ int StreamService::write(int handle, const void *data, size_t size) {
     if (!build_frame(data, size, &frame)) {
         return -1;
     }
-    std::lock_guard<std::mutex> lock(stream->mutex);
+    std::unique_lock<std::timed_mutex> lock(stream->mutex, std::defer_lock);
+    if (stream->transport == DEJAVU_STREAM_TRANSPORT_TCP) {
+        if (!lock.try_lock_until(deadline)) {
+            return -1;
+        }
+    } else {
+        lock.lock();
+    }
     if (!stream->active.load() || stream->fd < 0) {
         return -1;
     }
@@ -307,7 +344,14 @@ int StreamService::write(int handle, const void *data, size_t size) {
                    ? 0
                    : -1;
     }
-    return send_all(stream->fd, frame.data(), frame.size()) ? 0 : -1;
+    if (send_all(stream->fd, frame.data(), frame.size(), stream->active, deadline)) {
+        return 0;
+    }
+    // The peer may have received only part of this frame. Retire the stream so
+    // a later write cannot corrupt its length-prefixed record sequence.
+    stream->active.store(false);
+    shutdown(stream->fd, SHUT_RDWR);
+    return -1;
 }
 
 int StreamService::close(int handle) {
@@ -323,11 +367,16 @@ int StreamService::close(int handle) {
         owners_.erase(handle);
     }
     stream->active.store(false);
+    // The fd stays owned by this close operation until after the writer has
+    // released the mutex. shutdown wakes poll/send without risking fd reuse.
+    if (stream->transport == DEJAVU_STREAM_TRANSPORT_TCP) {
+        shutdown(stream->fd, SHUT_RDWR);
+    }
     if (stream->worker.joinable()) {
         stream->worker.join();
     }
     {
-        std::lock_guard<std::mutex> lock(stream->mutex);
+        std::lock_guard<std::timed_mutex> lock(stream->mutex);
         if (stream->kcp != nullptr) {
             ikcp_flush(stream->kcp);
             ikcp_release(stream->kcp);
