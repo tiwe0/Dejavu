@@ -28,10 +28,29 @@ The final static backend archive must export:
 extern "C" DejavuLsplantInitResult dejavu_lsplant_backend_initialize(JNIEnv *env);
 ```
 
-The inline provider is Dobby Prefab 1.2, pinned by SHA-256
-`251f48ae21686d7f69276c50644ca345f450e45110057437f7d76bb14cddf3a1`.
-Its corresponding public source is retained at Dobby commit
-`5dfc8546954ce3b3198132ab13fddb89ee92cdd7`. Dobby is Apache-2.0.
+The inline provider is built from the checksum-pinned Dobby source at commit
+`5dfc8546954ce3b3198132ab13fddb89ee92cdd7` (Apache-2.0). No prebuilt Prefab
+archive is linked: it would bypass the maintained native-hook safety patch.
+
+`patches/dobby-native-publication.patch` adds `DobbyHookWithPrepare`, which
+publishes a valid original trampoline before activating an aligned, atomic
+4-byte ARM64 branch. Its near stub uses a fresh anonymous mapping only: no
+code-cave scanning, existing-text writes, or `MAP_FIXED` allocation. A missing
+near mapping fails before activation instead of falling back to a multiword
+entry patch. The regular `DobbyHook` API retains its routing for LSPlant and
+publishes its output trampoline before activation.
+
+The patch also preserves each patched page's current protection, propagates
+write/restoration failures. Only activations that published branch bytes remain
+registered for retry via `DobbyIsHooked` / `DobbyDestroy`; failures before writing
+remove their reservation and clear the ordinary hook output. Internally CodePatch
+returns -1 before writing and -2 after writing if protection restoration fails. Prepared callbacks must only
+publish preallocated state (no allocation, logging, Dobby calls or exceptions).
+Once a callback has run, its state and replacement must remain alive even when
+activation returns an error, until the caller has safely retired the hook.
+Dobby's exposed trampoline allocations are intentionally retained for the
+process lifetime. Source-only Android build fixes are included for this pinned
+revision (ELF assembly relocations and platform header/field consistency).
 
 `patches/lsplant-main-reflection-shorty.patch` replaces LSPlant's hard
 dependency on the private ART `GetMethodShorty` symbol with its existing Java

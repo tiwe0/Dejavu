@@ -1,0 +1,648 @@
+--- a/common/os_arch_features.h
++++ b/common/os_arch_features.h
+@@ -4,7 +4,12 @@
+ #include <stddef.h>
+ #include "pac_kit.h"
+ 
+-#include "PlatformUnifiedInterface/platform.h"
++#if defined(ANDROID)
++#include <stdint.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <sys/mman.h>
++#endif
+ 
+ #if defined(__arm64e__) && __has_feature(ptrauth_calls)
+ #include <ptrauth.h>
+@@ -36,10 +41,29 @@
+ namespace android {
+ inline void make_memory_readable(void *address, size_t size) {
+ #if defined(ANDROID)
+-  auto page = (void *)ALIGN_FLOOR(address, OSMemory::PageSize());
+-  if (!OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)) {
++  if (!address || !size)
+     return;
++  FILE *maps = fopen("/proc/self/maps", "r");
++  if (!maps)
++    return;
++  char line[512];
++  while (fgets(line, sizeof(line), maps)) {
++    unsigned long long begin = 0, end = 0;
++    char permissions[5] = {};
++    if (sscanf(line, "%llx-%llx %4s", &begin, &end, permissions) != 3 ||
++        (uintptr_t)address < begin || (uintptr_t)address >= end)
++      continue;
++    const int protection = (permissions[0] == 'r' ? PROT_READ : 0) |
++                           (permissions[1] == 'w' ? PROT_WRITE : 0) |
++                           (permissions[2] == 'x' ? PROT_EXEC : 0);
++    const long page_size = sysconf(_SC_PAGESIZE);
++    if (!(protection & PROT_READ) && page_size > 0) {
++      void *page = (void *)((uintptr_t)address / page_size * page_size);
++      mprotect(page, page_size, protection | PROT_READ);
++    }
++    break;
+   }
++  fclose(maps);
+ #endif
+ }
+ } // namespace android
+--- a/include/dobby.h
++++ b/include/dobby.h
+@@ -121,6 +121,12 @@
+ // function inline hook
+ int DobbyHook(void *address, void *fake_func, void **out_origin_func);
+ 
++// ARM64 native hooks: publish the original trampoline before an atomic B patch.
++// The callback must not allocate, log, call Dobby or throw. A failed activation
++// may already have exposed the replacement; keep callback-owned state alive.
++typedef void (*dobby_hook_prepare_t)(void *original, size_t patch_size, void *opaque);
++int DobbyHookWithPrepare(void *address, void *fake_func, dobby_hook_prepare_t prepare, void *opaque);
++
+ // dynamic binary instruction instrument
+ // for Arm64, can't access q8 - q31, unless enable full floating-point register pack
+ typedef void (*dobby_instrument_callback_t)(void *address, DobbyRegisterContext *ctx);
+@@ -129,6 +135,10 @@
+ // destroy and restore code patch
+ int DobbyDestroy(void *address);
+ 
++// Returns whether hook bytes may be live, including post-write restoration failures.
++// Prepared reservations and activation failures before writing return zero.
++int DobbyIsHooked(void *address);
++
+ const char *DobbyGetVersion();
+ 
+ // symbol resolver
+--- a/source/Backend/UserMode/ExecMemory/code-patch-tool-posix.cc
++++ b/source/Backend/UserMode/ExecMemory/code-patch-tool-posix.cc
+@@ -1,37 +1,94 @@
+-
+ #include "dobby/dobby_internal.h"
+-#include "core/arch/Cpu.h"
+ 
+ #include <unistd.h>
+ #include <sys/mman.h>
++#include <stdint.h>
++#include <stdio.h>
+ #include <string.h>
++#include <vector>
+ 
+ #if !defined(__APPLE__)
++namespace {
++struct PatchPage {
++  uintptr_t start;
++  int protection;
++};
++
++bool CapturePatchPages(uintptr_t first, uintptr_t last, size_t page_size,
++                       std::vector<PatchPage> *pages) {
++  FILE *maps = fopen("/proc/self/maps", "r");
++  if (!maps)
++    return false;
++  uintptr_t cursor = first;
++  char line[4096];
++  while (fgets(line, sizeof(line), maps) && cursor <= last) {
++    unsigned long long start = 0, end = 0;
++    char permissions[5] = {};
++    if (sscanf(line, "%llx-%llx %4s", &start, &end, permissions) != 3 ||
++        end <= cursor)
++      continue;
++    if (start > cursor || end - cursor < page_size)
++      break;
++    int protection = (permissions[0] == 'r' ? PROT_READ : 0) |
++                     (permissions[1] == 'w' ? PROT_WRITE : 0) |
++                     (permissions[2] == 'x' ? PROT_EXEC : 0);
++    do {
++      pages->push_back({cursor, protection});
++      cursor += page_size;
++    } while (cursor <= last && cursor < end && end - cursor >= page_size);
++  }
++  fclose(maps);
++  return cursor > last;
++}
++}
++
+ PUBLIC int DobbyCodePatch(void *address, uint8_t *buffer, uint32_t buffer_size) {
+ #if defined(__ANDROID__) || defined(__linux__)
+-  int page_size = (int)sysconf(_SC_PAGESIZE);
+-  uintptr_t patch_page = ALIGN_FLOOR(address, page_size);
+-  uintptr_t patch_end_page = ALIGN_FLOOR((uintptr_t)address + buffer_size, page_size);
++  const long runtime_page_size = sysconf(_SC_PAGESIZE);
++  if (!address || !buffer || !buffer_size || runtime_page_size <= 0 ||
++      (uintptr_t)address > UINTPTR_MAX - (buffer_size - 1))
++    return -1;
++  const size_t page_size = (size_t)runtime_page_size;
++  const uintptr_t first = (uintptr_t)address / page_size * page_size;
++  const uintptr_t last = ((uintptr_t)address + buffer_size - 1) / page_size * page_size;
++  std::vector<PatchPage> pages;
++  if (!CapturePatchPages(first, last, page_size, &pages))
++    return -1;
+ 
+-  // change page permission as rwx
+-  mprotect((void *)patch_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+-  if (patch_page != patch_end_page) {
+-    mprotect((void *)patch_end_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
++  size_t writable = 0;
++  for (; writable < pages.size(); ++writable) {
++    const auto &page = pages[writable];
++    const int protection = page.protection | PROT_READ | PROT_WRITE;
++    if (protection != page.protection &&
++        mprotect((void *)page.start, page_size, protection) != 0) {
++      for (size_t index = 0; index < writable; ++index) {
++        if ((pages[index].protection | PROT_READ | PROT_WRITE) != pages[index].protection)
++          mprotect((void *)pages[index].start, page_size, pages[index].protection);
++      }
++      return -1;
++    }
+   }
+ 
+-  // patch buffer
+-  memcpy(address, buffer, buffer_size);
+-
+-  // restore page permission
+-  mprotect((void *)patch_page, page_size, PROT_READ | PROT_EXEC);
+-  if (patch_page != patch_end_page) {
+-    mprotect((void *)patch_end_page, page_size, PROT_READ | PROT_EXEC);
++  if (buffer_size == sizeof(uint32_t) && ((uintptr_t)address % alignof(uint32_t)) == 0) {
++    uint32_t instruction;
++    memcpy(&instruction, buffer, sizeof(instruction));
++    __atomic_store_n((uint32_t *)address, instruction, __ATOMIC_RELEASE);
++  } else {
++    memcpy(address, buffer, buffer_size);
+   }
++  ClearCache(address, (void *)((uintptr_t)address + buffer_size));
+ 
+-  addr_t clear_start_ = (addr_t)address;
+-  ClearCache((void *)clear_start_, (void *)(clear_start_ + buffer_size));
++  bool restored = true;
++  for (const auto &page : pages) {
++    if ((page.protection | PROT_READ | PROT_WRITE) != page.protection &&
++        mprotect((void *)page.start, page_size, page.protection) != 0)
++      restored = false;
++  }
++  // -1 means no bytes were written; -2 means bytes are visible but page
++  // protection restoration failed. Routing must retain only the latter.
++  return restored ? 0 : -2;
++#else
++  return -1;
+ #endif
+-  return 0;
+ }
+-
+-#endif
+\ No newline at end of file
++#endif
+--- a/source/Backend/UserMode/PlatformUtil/Linux/ProcessRuntime.cc
++++ b/source/Backend/UserMode/PlatformUtil/Linux/ProcessRuntime.cc
+@@ -11,10 +11,11 @@
+ #include <vector>
+ #include <algorithm>
+ 
++#undef LINE_MAX
+ #define LINE_MAX 2048
+ 
+ static bool memory_region_comparator(MemRange a, MemRange b) {
+-  return (a.start < b.start);
++  return (a.start() < b.start());
+ }
+ 
+ stl::vector<MemRegion> regions;
+@@ -25,12 +26,11 @@
+   if (fp == nullptr)
+     return regions;
+ 
+-  while (!feof(fp)) {
+-    char line_buffer[LINE_MAX + 1];
+-    fgets(line_buffer, LINE_MAX, fp);
++  char line_buffer[LINE_MAX + 1];
++  while (fgets(line_buffer, sizeof(line_buffer), fp)) {
+ 
+     // ignore the rest of characters
+-    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
++    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX - 1] != '\n') {
+       // Entry not describing executable data. Skip to end of line to set up
+       // reading the next entry.
+       int c;
+@@ -67,8 +67,12 @@
+       return regions;
+     }
+ 
++    if (region_end <= region_start)
++      continue;
+     MemoryPermission permission;
+-    if (permissions[0] == 'r' && permissions[1] == 'w') {
++    if (permissions[0] == 'r' && permissions[1] == 'w' && permissions[2] == 'x') {
++      permission = MemoryPermission::kReadWriteExecute;
++    } else if (permissions[0] == 'r' && permissions[1] == 'w') {
+       permission = MemoryPermission::kReadWrite;
+     } else if (permissions[0] == 'r' && permissions[2] == 'x') {
+       permission = MemoryPermission::kReadExecute;
+@@ -101,12 +105,11 @@
+   if (fp == nullptr)
+     return *modules;
+ 
+-  while (!feof(fp)) {
+-    char line_buffer[LINE_MAX + 1];
+-    fgets(line_buffer, LINE_MAX, fp);
++  char line_buffer[LINE_MAX + 1];
++  while (fgets(line_buffer, sizeof(line_buffer), fp)) {
+ 
+     // ignore the rest of characters
+-    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
++    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX - 1] != '\n') {
+       // Entry not describing executable data. Skip to end of line to set up
+       // reading the next entry.
+       int c;
+--- a/source/InterceptRouting/InlineHookRouting.h
++++ b/source/InterceptRouting/InlineHookRouting.h
+@@ -7,7 +7,9 @@
+ struct InlineHookRouting : InterceptRouting {
+   addr_t fake_func;
+ 
+-  InlineHookRouting(Interceptor::Entry *entry, addr_t fake_func) : InterceptRouting(entry), fake_func(fake_func) {
++  InlineHookRouting(Interceptor::Entry *entry, addr_t fake_func, bool atomic_patch = false)
++      : InterceptRouting(entry), fake_func(fake_func) {
++    require_atomic_patch = atomic_patch;
+   }
+ 
+   ~InlineHookRouting() = default;
+@@ -19,52 +21,71 @@
+   void BuildRouting() {
+     __FUNC_CALL_TRACE__();
+ 
+-    GenerateTrampoline();
+-
++    if (!GenerateTrampoline()) {
++      error = 1;
++      return;
++    }
+     GenerateRelocatedCode();
+-
++    if (error || !entry->relocated.addr() || !entry->patched.size)
++      return;
+     BackupOriginCode();
+   }
+ };
+ 
+-PUBLIC inline int DobbyHook(void *address, void *fake_func, void **out_origin_func) {
+-  __FUNC_CALL_TRACE__();
+-  if (!address) {
+-    ERROR_LOG("address is 0x0");
++static inline int DobbyHookPreparedImpl(void *address, void *fake_func, void **out_origin_func,
++                                        dobby_hook_prepare_t prepare, void *opaque, bool atomic_patch) {
++  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
++  if (!address || !fake_func || (atomic_patch && !prepare))
+     return -1;
+-  }
+-
++#if !defined(TARGET_ARCH_ARM64)
++  if (atomic_patch)
++    return -1;
++#endif
+   features::apple::arm64e_pac_strip(address);
+   features::apple::arm64e_pac_strip(fake_func);
+-  features::android::make_memory_readable(address, 4);
+-
+-  DEBUG_LOG("----- [DobbyHook: %p] -----", address);
+-
+-  auto entry = gInterceptor.find((addr_t)address);
+-  if (entry) {
+-    ERROR_LOG("%p already been hooked.", address);
++  if (atomic_patch && ((addr_t)address % 4 != 0 || (addr_t)fake_func % 4 != 0))
+     return -1;
+-  }
++  if (!atomic_patch)
++    features::android::make_memory_readable(address, 4);
++  if (gInterceptor.find((addr_t)address))
++    return -1;
+ 
+-  entry = new Interceptor::Entry((addr_t)address);
++  auto entry = new Interceptor::Entry((addr_t)address);
+   entry->fake_func_addr = (addr_t)fake_func;
+-
+-  auto routing = new InlineHookRouting(entry, (addr_t)fake_func);
+-  routing->BuildRouting();
+-  routing->Active();
++  auto routing = new InlineHookRouting(entry, (addr_t)fake_func, atomic_patch);
+   entry->routing = routing;
+-
+-  if (routing->error) {
+-    ERROR_LOG("build routing error.");
++  routing->BuildRouting();
++  if (routing->error || !entry->relocated.addr() ||
++      (atomic_patch && (routing->trampoline_size() != 4 || entry->patched.size != 4))) {
++    delete routing;
++    delete entry;
+     return -1;
+   }
+-
+-  if (out_origin_func) {
+-    *out_origin_func = (void *)entry->relocated.addr();
++  void *original = (void *)entry->relocated.addr();
++  features::apple::arm64e_pac_strip_and_sign(original);
++  // Register before activation: failures after byte publication must remain
++  // destroyable, and both original pointers and callback state stay valid.
++  gInterceptor.add(entry);
++  if (out_origin_func)
++    *out_origin_func = original;
++  if (prepare)
++    prepare(original, routing->trampoline_size(), opaque);
++  routing->Active();
++  if (!entry->bytes_published) {
++    gInterceptor.remove((addr_t)address);
++    if (out_origin_func)
++      *out_origin_func = nullptr;
++    // The callback/output may already have exposed the original trampoline.
++    // Keep its lifetime independent of this failed reservation.
+   }
+-  features::apple::arm64e_pac_strip_and_sign(*out_origin_func);
++  return routing->error ? -1 : 0;
++}
+ 
+-  gInterceptor.add(entry);
++PUBLIC inline int DobbyHook(void *address, void *fake_func, void **out_origin_func) {
++  return DobbyHookPreparedImpl(address, fake_func, out_origin_func, nullptr, nullptr, false);
++}
+ 
+-  return 0;
++PUBLIC inline int DobbyHookWithPrepare(void *address, void *fake_func,
++                                       dobby_hook_prepare_t prepare, void *opaque) {
++  return DobbyHookPreparedImpl(address, fake_func, nullptr, prepare, opaque, true);
+ }
+--- a/source/InterceptRouting/InstrumentRouting.h
++++ b/source/InterceptRouting/InstrumentRouting.h
+@@ -40,6 +40,7 @@
+ };
+ 
+ PUBLIC inline int DobbyInstrument(void *address, dobby_instrument_callback_t pre_handler) {
++  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
+   __FUNC_CALL_TRACE__();
+   if (!address) {
+     ERROR_LOG("address is 0x0.");
+--- a/source/InterceptRouting/InterceptRouting.h
++++ b/source/InterceptRouting/InterceptRouting.h
+@@ -8,6 +8,7 @@
+ #include "NearBranchTrampoline/NearBranchTrampoline.h"
+ 
+ Trampoline *GenerateNearTrampolineBuffer(addr_t src, addr_t dst);
++Trampoline *GenerateSafeNearTrampolineBuffer(addr_t src, addr_t dst);
+ Trampoline *GenerateNormalTrampolineBuffer(addr_t from, addr_t to);
+ 
+ struct InterceptRouting {
+@@ -15,6 +16,7 @@
+   Trampoline *trampoline = 0;
+   Trampoline *near_trampoline = 0;
+   int error = 0;
++  bool require_atomic_patch = false;
+ 
+   explicit InterceptRouting(Interceptor::Entry *entry) : entry(entry) {
+   }
+@@ -57,6 +59,7 @@
+   virtual void Active() {
+     __FUNC_CALL_TRACE__();
+     auto ret = DobbyCodePatch((void *)entry->addr, (uint8_t *)trampoline_addr(), trampoline_size());
++    entry->bytes_published = (ret == 0 || ret == -2);
+     error |= (ret != 0);
+   }
+ 
+@@ -72,6 +75,14 @@
+       plugin->GenerateTrampolineBuffer(this, from, to);
+     }
+ 
++    if (require_atomic_patch) {
++#if defined(TARGET_ARCH_ARM64)
++      near_trampoline = GenerateSafeNearTrampolineBuffer(from, to);
++      return near_trampoline != nullptr && near_trampoline->size() == 4;
++#else
++      return false;
++#endif
++    }
+     if (g_enable_near_trampoline) {
+       near_trampoline = GenerateNearTrampolineBuffer(from, to);
+     }
+@@ -79,7 +90,7 @@
+     if (!near_trampoline) {
+       trampoline = GenerateNormalTrampolineBuffer(from, to);
+     }
+-    return true;
++    return trampoline != nullptr;
+   }
+ 
+   void GenerateRelocatedCode() {
+@@ -87,6 +98,7 @@
+     if (trampoline_addr() == 0) {
+       ERROR_LOG("GenerateTrampoline must be called first");
+       error = 1;
++      return;
+     }
+ 
+     auto code_addr = entry->addr;
+--- a/source/InterceptRouting/NearBranchTrampoline/near_trampoline_arm64.cc
++++ b/source/InterceptRouting/NearBranchTrampoline/near_trampoline_arm64.cc
+@@ -78,4 +78,85 @@
+   return tramp;
+ }
+ 
++#if defined(__ANDROID__) || defined(__linux__)
++#include <sys/mman.h>
++#include <unistd.h>
++#include <stdint.h>
++
++// The native-only path never reads or reuses code caves, and never uses
++// MAP_FIXED. An allocation hint may be ignored; reject mappings outside B range.
++static bool SafeBranchReachable(addr_t from, addr_t to) {
++  return to >= from ? to - from < ARM64_B_XXX_RANGE : from - to <= ARM64_B_XXX_RANGE;
++}
++
++static void *AllocateSafeNearPage(addr_t source) {
++  const long size = sysconf(_SC_PAGESIZE);
++  if (size <= 0)
++    return nullptr;
++  const addr_t lower = source > ARM64_B_XXX_RANGE ? source - ARM64_B_XXX_RANGE : (addr_t)size;
++  const addr_t upper = source <= UINTPTR_MAX - ARM64_B_XXX_RANGE
++                           ? source + ARM64_B_XXX_RANGE : UINTPTR_MAX;
++  const auto regions = ProcessRuntime::getMemoryLayout();
++  addr_t cursor = lower;
++  for (size_t index = 0; index <= regions.size(); ++index) {
++    const addr_t end = index < regions.size() ? regions[index].addr() : upper;
++    if (end > cursor && cursor < upper) {
++      if (cursor > UINTPTR_MAX - (size - 1))
++        break;
++      const addr_t candidate = ((cursor + size - 1) / size) * size;
++      const addr_t gap_end = end < upper ? end : upper;
++      if (candidate < gap_end && gap_end - candidate >= (addr_t)size) {
++        void *page = mmap((void *)candidate, size, PROT_READ | PROT_EXEC,
++                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++        if (page != MAP_FAILED) {
++          if ((addr_t)page % 4 == 0 && SafeBranchReachable(source, (addr_t)page))
++            return page;
++          munmap(page, size);
++        }
++      }
++    }
++    if (index < regions.size() && regions[index].end() > cursor)
++      cursor = regions[index].end();
++    if (cursor >= upper)
++      break;
++  }
++  return nullptr;
++}
+ #endif
++
++Trampoline *GenerateSafeNearTrampolineBuffer(addr_t src, addr_t dst) {
++#if defined(__ANDROID__) || defined(__linux__)
++  if ((src % 4) != 0 || (dst % 4) != 0)
++    return nullptr;
++  Trampoline *forward = nullptr;
++  addr_t destination = dst;
++  if (!SafeBranchReachable(src, dst)) {
++    void *page = AllocateSafeNearPage(src);
++    if (!page)
++      return nullptr;
++    TurboAssembler forward_assembler;
++    forward_assembler.ldr(TMP_REG_0, 8);
++    forward_assembler.br(TMP_REG_0);
++    forward_assembler.EmitInt64((uint64_t)dst);
++    forward_assembler.fixed_addr = (addr_t)page;
++    auto block = AssemblerCodeBuilder::FinalizeFromTurboAssembler(&forward_assembler);
++    if (!block.addr()) {
++      munmap(page, sysconf(_SC_PAGESIZE));
++      return nullptr;
++    }
++    forward = new Trampoline(FORWARD_TRAMPOLINE_ARM64, block);
++    destination = block.addr();
++  }
++  TurboAssembler entry_assembler(src);
++  entry_assembler.b(destination - src);
++  auto buffer = entry_assembler.code_buffer()->dup();
++  return new Trampoline(forward ? TRAMPOLINE_ARM64_B_XXX_AND_FORWARD_TRAMP
++                                : TRAMPOLINE_ARM64_B_XXX, buffer, forward);
++#else
++  // This strict entry-publication API is currently supported by the Linux /
++  // Android ARM64 backend only; the compatibility API keeps its old routing.
++  return nullptr;
++#endif
++}
++
++#endif
+--- a/source/Interceptor.h
++++ b/source/Interceptor.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "dobby/common.h"
++#include <mutex>
+ #include "MemoryAllocator/MemoryAllocator.h"
+ 
+ #include "TrampolineBridge/Trampoline/Trampoline.h"
+@@ -28,6 +29,7 @@
+     InterceptRouting *routing;
+ 
+     uint8_t *origin_code_ = 0;
++    bool bytes_published = false;
+ 
+     Entry(addr_t addr) {
+       this->addr = addr;
+@@ -44,11 +46,13 @@
+       memcpy(origin_code_, orig, tramp_size);
+     }
+ 
+-    void restore_orig_code() {
++    bool restore_orig_code() {
+       __FUNC_CALL_TRACE__();
+-      DobbyCodePatch((void *)patched.addr(), origin_code_, patched.size);
++      if (DobbyCodePatch((void *)patched.addr(), origin_code_, patched.size) != 0)
++        return false;
+       operator delete(origin_code_);
+       origin_code_ = nullptr;
++      return true;
+     }
+ 
+     void feature_set_arm_thumb(bool thumb) {
+@@ -93,6 +97,7 @@
+   }
+ };
+ 
++inline std::recursive_mutex gInterceptorMutex;
+ inline static Interceptor gInterceptor;
+ 
+ inline Interceptor *Interceptor::Shared() {
+--- a/source/MemoryAllocator/AssemblerCodeBuilder.h
++++ b/source/MemoryAllocator/AssemblerCodeBuilder.h
+@@ -33,7 +33,8 @@
+       assembler->set_fixed_addr(fixed_addr);
+     }
+ 
+-    DobbyCodePatch((void *)fixed_addr, code_buffer->data(), code_buffer->size());
++    if (DobbyCodePatch((void *)fixed_addr, code_buffer->data(), code_buffer->size()) != 0)
++      return MemBlock{};
+ 
+     return MemBlock(fixed_addr, code_buffer->size());
+   }
+--- a/source/PlatformUtil/ProcessRuntime.h
++++ b/source/PlatformUtil/ProcessRuntime.h
+@@ -4,7 +4,7 @@
+ #include "PlatformUnifiedInterface/platform.h"
+ 
+ struct RuntimeModule {
+-  void *base;
++  union { void *base; void *load_address; };
+   char path[1024];
+ };
+ 
+--- a/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
++++ b/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+@@ -50,8 +50,13 @@
+ // call convention: x0 = register context, x1 = interceptor entry
+ mov x0, sp
+ ldr x1, [sp, #(2 * 8 + 2 * 8 + 30 * 8 + 8 * 16)]
++#if defined(__APPLE__)
+ adrp TMP_REG_0, cdecl(common_closure_bridge_handler)@PAGE
+ add TMP_REG_0, TMP_REG_0, cdecl(common_closure_bridge_handler)@PAGEOFF
++#else
++adrp TMP_REG_0, cdecl(common_closure_bridge_handler)
++add TMP_REG_0, TMP_REG_0, :lo12:cdecl(common_closure_bridge_handler)
++#endif
+ blr TMP_REG_0
+ 
+ // restore stack, saved original sp
+--- a/source/dobby.cpp
++++ b/source/dobby.cpp
+@@ -15,7 +15,18 @@
+   DEBUG_LOG("================================");
+ }
+ 
++PUBLIC int DobbyIsHooked(void *address) {
++  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
++  if (!address)
++    return 0;
++  features::arm_thumb_fix_addr(address);
++  features::apple::arm64e_pac_strip(address);
++  auto entry = gInterceptor.find((addr_t)address);
++  return entry && entry->bytes_published ? 1 : 0;
++}
++
+ PUBLIC int DobbyDestroy(void *address) {
++  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
+   __FUNC_CALL_TRACE__();
+   if (!address) {
+     ERROR_LOG("address is 0x0");
+@@ -27,8 +38,9 @@
+ 
+   auto entry = gInterceptor.find((addr_t)address);
+   if (entry) {
++    if (!entry->restore_orig_code())
++      return -1;
+     gInterceptor.remove((addr_t)address);
+-    entry->restore_orig_code();
+     // FIXME: delete entry safely
+     // delete entry;
+     return 0;
+@@ -45,6 +57,8 @@
+ PUBLIC uintptr_t placeholder() {
+   uintptr_t x = 0;
+   x += (uintptr_t)&DobbyHook;
++  x += (uintptr_t)&DobbyHookWithPrepare;
++  x += (uintptr_t)&DobbyIsHooked;
+   x += (uintptr_t)&DobbyInstrument;
+   x += (uintptr_t)&dobby_set_near_trampoline;
+   x += (uintptr_t)&common_closure_bridge_handler;

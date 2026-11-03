@@ -13,6 +13,7 @@
 
 #include "dejavu.h"
 #include "dejavu_plugin.h"
+#include "root_helper_client.h"
 #include "stream_service.h"
 
 struct DejavuRuntime;
@@ -37,8 +38,8 @@ class PluginManager {
                                void *function, void *function_context, char *error,
                                size_t error_size);
     bool unload_plugin(const std::string &name, std::string *status, std::string *error);
-    bool remember_hook(void *target);
-    void forget_hook(void *target);
+    int install_owned_hook(void *target, void *replacement, void **original,
+                            char *error, size_t error_size);
     bool uninstall_owned_hook(void *target, char *error, size_t error_size);
     size_t hook_count_for(size_t plugin_index) const;
     bool active_plugin_has_capability(uint32_t capability) const;
@@ -60,6 +61,9 @@ class PluginManager {
     struct HookRecord {
         void *target = nullptr;
         size_t plugin_index = 0;
+        RootHelperProtectionSnapshot protection;
+        bool installed = false;
+        bool permissions_dirty = false;
     };
     struct Entry {
         size_t plugin_index = 0;
@@ -80,6 +84,8 @@ class PluginManager {
         uint32_t flags = 0;
         uint32_t capabilities = 0;
         bool loaded = false;
+        bool initialized = false;
+        bool cleanup_pending = false;
         bool control_ready = false;
         bool jit = false;
         dejavu_module *jit_module = nullptr;
@@ -152,9 +158,10 @@ class PluginManager {
     void destroy_jit_cache();
     bool name_exists(const std::string &name) const;
     void invalidate_entries(size_t plugin_index);
-    void remove_plugin(size_t plugin_index);
-    void remove_hooks_for(size_t plugin_index);
-    void remove_all_hooks();
+    void prepare_plugin_for_unload(size_t plugin_index);
+    bool remove_plugin(size_t plugin_index, std::string *error);
+    bool remove_hooks_for(size_t plugin_index, std::string *error);
+    bool uninstall_hook_record(size_t record_index, std::string *error);
     static bool valid_identifier(const std::string &value);
     static bool valid_namespace(const std::string &value);
     static bool make_string(const std::string &value, dejavu_value *result);

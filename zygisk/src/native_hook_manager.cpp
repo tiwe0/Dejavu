@@ -30,8 +30,10 @@ constexpr char kNativePreamble[] = R"DEJAVU_NATIVE(
 extern void *dejavu_native_original_by_id(unsigned long long id);
 extern void dejavu_native_hit_by_id(unsigned long long id);
 extern void dejavu_native_log(const char *message);
-#define dejavu_native_original() dejavu_native_original_by_id(DEJAVU_NATIVE_HOOK_ID)
-#define dejavu_native_hit() dejavu_native_hit_by_id(DEJAVU_NATIVE_HOOK_ID)
+extern void *dejavu_native_original_context(unsigned long long context);
+extern void dejavu_native_hit_context(unsigned long long context);
+#define dejavu_native_original() dejavu_native_original_context(DEJAVU_NATIVE_CONTEXT)
+#define dejavu_native_hit() dejavu_native_hit_context(DEJAVU_NATIVE_CONTEXT)
 )DEJAVU_NATIVE";
 
 constexpr char kNativeCallPreamble[] = R"DEJAVU_CALL_API(
@@ -140,88 +142,6 @@ int query_protection(void *address, int *protection, std::string *error) {
     return result;
 }
 
-bool set_page_protection(void *address, int protection, std::string *error) {
-    const long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) {
-        *error = "unable to determine the runtime page size";
-        return false;
-    }
-    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
-    const uintptr_t page = value - value % static_cast<uintptr_t>(page_size);
-    if (mprotect(reinterpret_cast<void *>(page), static_cast<size_t>(page_size), protection) != 0) {
-        *error = std::string("mprotect failed: ") + strerror(errno);
-        return false;
-    }
-    return true;
-}
-
-bool set_mapping_protection(void *address, int protection, std::string *error) {
-    FILE *maps = fopen("/proc/self/maps", "re");
-    if (maps == nullptr) {
-        *error = std::string("unable to open /proc/self/maps: ") + strerror(errno);
-        return false;
-    }
-    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
-    char line[512];
-    bool applied = false;
-    while (fgets(line, sizeof(line), maps) != nullptr) {
-        unsigned long start = 0;
-        unsigned long end = 0;
-        if (sscanf(line, "%lx-%lx", &start, &end) != 2) {
-            continue;
-        }
-        if (value < start || value >= end) {
-            continue;
-        }
-        if (mprotect(reinterpret_cast<void *>(start), end - start, protection) != 0) {
-            *error = std::string("mprotect failed: ") + strerror(errno);
-        } else {
-            applied = true;
-        }
-        break;
-    }
-    fclose(maps);
-    if (!applied) {
-        if (error->empty()) {
-            *error = "target address is not mapped";
-        }
-        return false;
-    }
-    return true;
-}
-
-bool module_has_execute_only_mapping(const std::string &module_name) {
-    const size_t slash = module_name.rfind('/');
-    const std::string basename =
-        slash == std::string::npos ? module_name : module_name.substr(slash + 1);
-    FILE *maps = fopen("/proc/self/maps", "re");
-    if (maps == nullptr) {
-        return false;
-    }
-    char line[512];
-    bool found = false;
-    while (fgets(line, sizeof(line), maps) != nullptr) {
-        unsigned long start = 0;
-        unsigned long end = 0;
-        char permissions[8] = {};
-        if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
-            continue;
-        }
-        char *path = strchr(line, '/');
-        if (path == nullptr || strstr(path, basename.c_str()) == nullptr) {
-            continue;
-        }
-        found = true;
-        if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
-            fclose(maps);
-            return true;
-        }
-    }
-    fclose(maps);
-    (void)found;
-    return false;
-}
-
 std::string library_basename(const std::string &path) {
     const size_t slash = path.rfind('/');
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -271,6 +191,28 @@ void *resolve_target(const std::string &module_name, const std::string &symbol_n
     return symbol;
 }
 
+// The saved range remains immutable even if Dobby splits the VMA.
+class SavedProtectionScope {
+  public:
+    SavedProtectionScope(const RootHelperProtectionSnapshot &snapshot,
+                         std::atomic<bool> &pending) : snapshot_(snapshot), pending_(pending) {}
+    ~SavedProtectionScope() {
+        if (pending_.load(std::memory_order_acquire)) {
+            std::string ignored;
+            restore(&ignored);
+        }
+    }
+    bool restore(std::string *error) {
+        if (!pending_.load(std::memory_order_acquire)) return true;
+        const bool restored = root_helper_restore(snapshot_, error);
+        pending_.store(!restored, std::memory_order_release);
+        return restored;
+    }
+  private:
+    const RootHelperProtectionSnapshot &snapshot_;
+    std::atomic<bool> &pending_;
+};
+
 struct NativeCallContext {
     const std::vector<NativeCallArgument> *arguments = nullptr;
     bool result_set = false;
@@ -303,6 +245,8 @@ void set_argument_type_error(unsigned int index, const char *expected) {
 
 extern "C" void *dejavu_native_original_by_id(unsigned long long id);
 extern "C" void dejavu_native_hit_by_id(unsigned long long id);
+extern "C" void *dejavu_native_original_context(unsigned long long context);
+extern "C" void dejavu_native_hit_context(unsigned long long context);
 extern "C" void dejavu_native_log(const char *message);
 extern "C" long long dejavu_native_call_argument(unsigned int index);
 extern "C" long long dejavu_native_call_argument_int(unsigned int index);
@@ -312,7 +256,8 @@ extern "C" const char *dejavu_native_call_argument_string(unsigned int index, un
 extern "C" int dejavu_native_call_argument_type(unsigned int index);
 extern "C" void dejavu_native_call_return(long long value);
 
-NativeHookManager *NativeHookManager::instance_ = nullptr;
+std::atomic<NativeHookManager::Record *> NativeHookManager::callback_records_{nullptr};
+std::atomic<unsigned long long> NativeHookManager::next_id_{1};
 
 NativeHookManager::NativeHookManager() = default;
 
@@ -334,6 +279,8 @@ bool NativeHookManager::initialize(DejavuRuntime *runtime, dejavu_engine *engine
         {"dejavu_native_original_by_id",
          reinterpret_cast<const void *>(dejavu_native_original_by_id)},
         {"dejavu_native_hit_by_id", reinterpret_cast<const void *>(dejavu_native_hit_by_id)},
+        {"dejavu_native_original_context", reinterpret_cast<const void *>(dejavu_native_original_context)},
+        {"dejavu_native_hit_context", reinterpret_cast<const void *>(dejavu_native_hit_context)},
         {"dejavu_native_log", reinterpret_cast<const void *>(dejavu_native_log)},
         {"dejavu_native_call_argument",
          reinterpret_cast<const void *>(dejavu_native_call_argument)},
@@ -357,7 +304,6 @@ bool NativeHookManager::initialize(DejavuRuntime *runtime, dejavu_engine *engine
     }
     runtime_ = runtime;
     engine_ = engine;
-    instance_ = this;
     return true;
 }
 
@@ -393,9 +339,36 @@ bool NativeHookManager::register_lua(dejavu_control_session *session, std::strin
     return true;
 }
 
+void NativeHookManager::publish_original(void *original, size_t patch_size, void *context) {
+    (void)patch_size; // The native backend rejects anything except an aligned 4-byte branch.
+    auto *record = static_cast<Record *>(context);
+    record->original.store(original, std::memory_order_release);
+    if (!record->exposed.exchange(true, std::memory_order_acq_rel)) {
+        Record *head = callback_records_.load(std::memory_order_acquire);
+        do {
+            record->callback_next = head;
+        } while (!callback_records_.compare_exchange_weak(head, record,
+                     std::memory_order_release, std::memory_order_acquire));
+    }
+}
+
+void NativeHookManager::release_unexposed(Record *record) {
+    if (record->exposed.load(std::memory_order_acquire) ||
+        record->restore_pending.load(std::memory_order_acquire)) return;
+    if (record->module != nullptr) {
+        runtime_->module_destroy(record->module);
+        record->module = nullptr;
+    }
+    if (record->module_handle != nullptr) {
+        dlclose(record->module_handle);
+        record->module_handle = nullptr;
+    }
+}
+
 bool NativeHookManager::install(const std::string &module_name, const std::string &symbol_name,
                                 const std::string &source, unsigned long long *id,
                                 std::string *error) {
+    std::lock_guard<std::mutex> operation(operations_mutex_);
     if (runtime_ == nullptr || engine_ == nullptr) {
         *error = "native hook manager is not initialized";
         return false;
@@ -404,123 +377,87 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
         *error = "native.install expects module, symbol and C source";
         return false;
     }
-    const unsigned long long hook_id = next_id_.fetch_add(1);
-    void *module_handle = nullptr;
-    void *target = resolve_target(module_name, symbol_name, &module_handle, error);
-    if (target == nullptr) {
-        return false;
-    }
-    int original_protection = 0;
-    if (query_protection(target, &original_protection, error) != 0) {
-        dlclose(module_handle);
-        return false;
-    }
-    if ((original_protection & PROT_EXEC) == 0) {
-        dlclose(module_handle);
-        *error = "target symbol is not in an executable mapping";
-        return false;
-    }
-    bool root_unlocked = false;
-    size_t root_mapping_length = 0;
-    int root_original_protection = 0;
-    if (module_has_execute_only_mapping(module_name) || (original_protection & PROT_READ) == 0) {
-        if (!root_helper_unlock(target, &root_original_protection, &root_mapping_length, error)) {
-            dlclose(module_handle);
-            return false;
-        }
-        root_unlocked = true;
-        original_protection = root_original_protection;
-    }
-
-    std::string full_source = "#define DEJAVU_NATIVE_HOOK_ID ";
-    full_source += std::to_string(hook_id);
-    full_source += "ULL\n";
-    full_source += kNativePreamble;
-    full_source += source;
-    char compile_error[1024] = {};
-    dejavu_module *module = nullptr;
-    const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(), &module,
-                                                        compile_error, sizeof(compile_error));
-    if (compile_status != DEJAVU_OK) {
-        if (module != nullptr) {
-            runtime_->module_destroy(module);
-        }
-        dlclose(module_handle);
-        *error = compile_error[0] != '\0' ? compile_error : "native hook compilation failed";
-        return false;
-    }
-    void *replacement = runtime_->module_symbol(module, kNativeTargetSymbol);
-    if (replacement == nullptr) {
-        runtime_->module_destroy(module);
-        dlclose(module_handle);
-        *error = "C source must define dejavu_native_target with the target signature";
-        return false;
-    }
-
     auto owned = std::make_unique<Record>();
     Record *record = owned.get();
-    record->id = hook_id;
+    record->id = next_id_.fetch_add(1, std::memory_order_relaxed);
     record->module_name = module_name;
     record->symbol_name = symbol_name;
-    record->module_handle = module_handle;
-    record->target = target;
-    record->module = module;
+    record->target = resolve_target(module_name, symbol_name, &record->module_handle, error);
+    if (record->target == nullptr) return false;
+    if (DobbyIsHooked(record->target) != 0) {
+        *error = "target already has a native hook";
+        release_unexposed(record);
+        return false;
+    }
+    if (!root_helper_capture(record->target, 4, &record->protection, error)) {
+        release_unexposed(record);
+        return false;
+    }
+    char context_address[48];
+    std::snprintf(context_address, sizeof(context_address), "0x%llxULL",
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(record)));
+    std::string full_source = "#define DEJAVU_NATIVE_HOOK_ID " + std::to_string(record->id) +
+        "ULL\n#define DEJAVU_NATIVE_CONTEXT " + context_address + "\n" + kNativePreamble + source;
+    char compile_error[1024] = {};
+    const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(),
+                                                        &record->module, compile_error,
+                                                        sizeof(compile_error));
+    if (compile_status != DEJAVU_OK) {
+        *error = compile_error[0] != '\0' ? compile_error : "native hook compilation failed";
+        release_unexposed(record);
+        return false;
+    }
+    void *replacement = runtime_->module_symbol(record->module, kNativeTargetSymbol);
+    if (replacement == nullptr) {
+        *error = "C source must define dejavu_native_target with the target signature";
+        release_unexposed(record);
+        return false;
+    }
+    const unsigned long long hook_id = record->id;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         records_.emplace(hook_id, std::move(owned));
     }
-
-    if (!set_mapping_protection(target, original_protection | PROT_READ | PROT_WRITE, error)) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        records_.erase(hook_id);
-        runtime_->module_destroy(module);
-        dlclose(module_handle);
-        return false;
-    }
-    void *original = nullptr;
-    const int hook_status = DobbyHook(target, replacement, &original);
-    std::string restore_error;
-    bool restored = false;
-    if (root_unlocked) {
-        restored =
-            root_helper_restore(target, root_mapping_length, original_protection, &restore_error);
-    } else {
-        restored = set_mapping_protection(target, original_protection, &restore_error);
-    }
-    if (hook_status != 0 || !restored) {
-        if (hook_status == 0) {
-            std::string ignored;
-            if (root_unlocked) {
-                root_helper_restore(target, root_mapping_length, original_protection, &ignored);
-            }
-            DobbyDestroy(target);
-            if (root_unlocked) {
-                root_helper_restore(target, root_mapping_length, original_protection, &ignored);
-            } else {
-                set_page_protection(target, original_protection, &ignored);
-            }
-        }
-        std::lock_guard<std::mutex> lock(mutex_);
-        records_.erase(hook_id);
-        runtime_->module_destroy(module);
-        dlclose(module_handle);
-        if (hook_status != 0) {
-            *error = "DobbyHook failed with status " + std::to_string(hook_status);
-        } else {
-            *error = "unable to restore the target page protection: " + restore_error;
-        }
-        return false;
-    }
-    record->original.store(original, std::memory_order_release);
-    record->active.store(true, std::memory_order_release);
-    LOGD("native hook %llu installed: %s!%s target=%p original=%p",
-         static_cast<unsigned long long>(hook_id), module_name.c_str(), symbol_name.c_str(), target,
-         original);
     *id = hook_id;
+    record->restore_pending.store(true, std::memory_order_release);
+    SavedProtectionScope permissions(record->protection, record->restore_pending);
+    if (!root_helper_apply_read_write(record->protection, error)) {
+        std::string cleanup;
+        if (!permissions.restore(&cleanup)) *error += "; protection restore pending: " + cleanup;
+        release_unexposed(record);
+        *error = "native hook " + std::to_string(hook_id) + ": " + *error;
+        return false;
+    }
+    const int hook_status = DobbyHookWithPrepare(record->target, replacement,
+                                                publish_original, record);
+    record->active.store(record->exposed.load(std::memory_order_acquire) &&
+                         DobbyIsHooked(record->target) != 0, std::memory_order_release);
+    std::string restore_error;
+    const bool restored = permissions.restore(&restore_error);
+    if (hook_status != 0 || !restored) {
+        // An exposed callback may still be running. Keep its original, JIT code,
+        // target library reference and context until process exit, even on error.
+        release_unexposed(record);
+        *error = "native hook " + std::to_string(hook_id) + ": ";
+        if (hook_status != 0) *error += "DobbyHook failed with status " + std::to_string(hook_status);
+        if (!restored) *error += (hook_status != 0 ? "; " : "") +
+            std::string("protection restore pending: ") + restore_error;
+        if (record->active.load(std::memory_order_acquire))
+            *error += "; hook remains installed; retry native.uninstall(" + std::to_string(hook_id) + ")";
+        return false;
+    }
+    LOGD("native hook %llu installed: %s!%s target=%p original=%p",
+         hook_id, module_name.c_str(), symbol_name.c_str(), record->target,
+         record->original.load(std::memory_order_acquire));
     return true;
 }
 
 bool NativeHookManager::uninstall(unsigned long long id, std::string *error) {
+    std::lock_guard<std::mutex> operation(operations_mutex_);
+    return uninstall_locked(id, error);
+}
+
+bool NativeHookManager::uninstall_locked(unsigned long long id, std::string *error) {
     Record *record = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -531,61 +468,44 @@ bool NativeHookManager::uninstall(unsigned long long id, std::string *error) {
         }
         record = iterator->second.get();
     }
-    if (!record->active.load(std::memory_order_acquire)) {
+    if (!record->active.load(std::memory_order_acquire) &&
+        !record->restore_pending.load(std::memory_order_acquire)) {
         *error = "native hook is already uninstalled: " + std::to_string(id);
         return false;
     }
-    int protection = 0;
-    std::string protection_error;
-    const bool have_protection =
-        query_protection(record->target, &protection, &protection_error) == 0;
-    bool root_unlocked = false;
-    size_t root_mapping_length = 0;
-    int root_original_protection = 0;
-    if (have_protection &&
-        (module_has_execute_only_mapping(record->module_name) || (protection & PROT_READ) == 0)) {
-        if (!root_helper_unlock(record->target, &root_original_protection, &root_mapping_length,
-                                error)) {
-            return false;
-        }
-        root_unlocked = true;
-    } else if (have_protection && !set_mapping_protection(
-                                      record->target, protection | PROT_READ | PROT_WRITE, error)) {
+    record->restore_pending.store(true, std::memory_order_release);
+    SavedProtectionScope permissions(record->protection, record->restore_pending);
+    if (!root_helper_apply_read_write(record->protection, error)) {
+        std::string cleanup;
+        if (!permissions.restore(&cleanup)) *error += "; protection restore pending: " + cleanup;
         return false;
     }
-    const int destroy_status = DobbyDestroy(record->target);
-    if (root_unlocked) {
-        std::string ignored;
-        root_helper_restore(record->target, root_mapping_length, root_original_protection,
-                            &ignored);
-    } else if (have_protection) {
-        std::string restore_error;
-        set_mapping_protection(record->target, protection, &restore_error);
+    int status = 0;
+    if (record->active.load(std::memory_order_acquire)) {
+        status = DobbyDestroy(record->target);
+        record->active.store(DobbyIsHooked(record->target) != 0, std::memory_order_release);
     }
-    if (destroy_status != 0) {
-        *error = "DobbyDestroy failed with status " + std::to_string(destroy_status);
+    std::string restore_error;
+    const bool restored = permissions.restore(&restore_error);
+    if (status != 0 || !restored) {
+        *error = status != 0 ? "DobbyDestroy failed with status " + std::to_string(status) : "";
+        if (!restored) *error += (status != 0 ? "; " : "") +
+            std::string("protection restore pending: ") + restore_error;
         return false;
     }
-    record->active.store(false, std::memory_order_release);
-    record->original.store(nullptr, std::memory_order_release);
-    if (record->module != nullptr) {
-        runtime_->module_destroy(record->module);
-        record->module = nullptr;
-    }
-    if (record->module_handle != nullptr) {
-        dlclose(record->module_handle);
-        record->module_handle = nullptr;
-    }
-    LOGD("native hook %llu uninstalled", static_cast<unsigned long long>(id));
+    release_unexposed(record);
+    LOGD("native hook %llu uninstalled", id);
     return true;
 }
 
 bool NativeHookManager::clear(unsigned long long *removed, std::string *error) {
+    std::lock_guard<std::mutex> operation(operations_mutex_);
     std::vector<unsigned long long> ids;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto &entry : records_) {
-            if (entry.second->active.load(std::memory_order_acquire)) {
+            if (entry.second->active.load(std::memory_order_acquire) ||
+                entry.second->restore_pending.load(std::memory_order_acquire)) {
                 ids.push_back(entry.first);
             }
         }
@@ -593,7 +513,7 @@ bool NativeHookManager::clear(unsigned long long *removed, std::string *error) {
     unsigned long long count = 0;
     for (const unsigned long long id : ids) {
         std::string uninstall_error;
-        if (!uninstall(id, &uninstall_error)) {
+        if (!uninstall_locked(id, &uninstall_error)) {
             *error = uninstall_error;
             *removed = count;
             return false;
@@ -620,6 +540,7 @@ std::string NativeHookManager::list() const {
         }
         output += std::to_string(id);
         output += record->active.load(std::memory_order_acquire) ? " active " : " uninstalled ";
+        if (record->restore_pending.load(std::memory_order_acquire)) output += "protection-pending ";
         output += record->module_name;
         output += "#";
         output += record->symbol_name;
@@ -718,79 +639,59 @@ bool NativeHookManager::call(const std::string &module_name, const std::string &
 }
 
 void NativeHookManager::shutdown() {
-    std::vector<unsigned long long> ids;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto &entry : records_) {
-            if (entry.second->active.load(std::memory_order_acquire)) {
-                ids.push_back(entry.first);
-            }
+    std::lock_guard<std::mutex> operation(operations_mutex_);
+    for (const auto &entry : records_) {
+        Record *record = entry.second.get();
+        if (record->active.load(std::memory_order_acquire) ||
+            record->restore_pending.load(std::memory_order_acquire)) {
+            std::string error;
+            if (!uninstall_locked(entry.first, &error))
+                LOGE("native hook %llu cleanup deferred: %s", entry.first, error.c_str());
         }
     }
-    for (const unsigned long long id : ids) {
-        std::string ignored;
-        uninstall(id, &ignored);
-    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        for (auto &entry : records_) {
+            Record *record = entry.second.get();
+            if (record->exposed.load(std::memory_order_acquire) ||
+                record->restore_pending.load(std::memory_order_acquire)) {
+                // There is no safe quiescence proof for arbitrary native C callbacks.
+                // The OS reclaims this pinned state when the process exits.
+                entry.second.release();
+            } else release_unexposed(record);
+        }
         records_.clear();
-    }
-    if (instance_ == this) {
-        instance_ = nullptr;
     }
     runtime_ = nullptr;
     engine_ = nullptr;
 }
 
+void *NativeHookManager::original_for_context(unsigned long long context) {
+    auto *record = reinterpret_cast<Record *>(static_cast<uintptr_t>(context));
+    return record == nullptr ? nullptr : record->original.load(std::memory_order_acquire);
+}
+
+void NativeHookManager::hit_for_context(unsigned long long context) {
+    auto *record = reinterpret_cast<Record *>(static_cast<uintptr_t>(context));
+    if (record != nullptr) record->hits.fetch_add(1, std::memory_order_relaxed);
+}
+
 void *NativeHookManager::original_for_id(unsigned long long id) {
-    struct Cache {
-        unsigned long long id = 0;
-        void *original = nullptr;
-    };
-    static thread_local Cache cache;
-    if (cache.id == id && cache.original != nullptr) {
-        return cache.original;
+    for (Record *record = callback_records_.load(std::memory_order_acquire); record != nullptr;
+         record = record->callback_next) {
+        if (record->id == id) return record->original.load(std::memory_order_acquire);
     }
-    NativeHookManager *manager = instance_;
-    if (manager == nullptr) {
-        return nullptr;
-    }
-    void *original = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex_);
-        const auto iterator = manager->records_.find(id);
-        if (iterator == manager->records_.end()) {
-            return nullptr;
-        }
-        original = iterator->second->original.load(std::memory_order_acquire);
-    }
-    if (original != nullptr) {
-        cache.id = id;
-        cache.original = original;
-    }
-    return original;
+    return nullptr;
 }
 
 void NativeHookManager::hit_for_id(unsigned long long id) {
-    struct Cache {
-        unsigned long long id = 0;
-        Record *record = nullptr;
-    };
-    static thread_local Cache cache;
-    if (cache.id != id || cache.record == nullptr) {
-        NativeHookManager *manager = instance_;
-        if (manager == nullptr) {
+    for (Record *record = callback_records_.load(std::memory_order_acquire); record != nullptr;
+         record = record->callback_next) {
+        if (record->id == id) {
+            record->hits.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        std::lock_guard<std::mutex> lock(manager->mutex_);
-        const auto iterator = manager->records_.find(id);
-        if (iterator == manager->records_.end()) {
-            return;
-        }
-        cache.id = id;
-        cache.record = iterator->second.get();
     }
-    cache.record->hits.fetch_add(1, std::memory_order_relaxed);
 }
 
 void NativeHookManager::log_message(const char *message) {
@@ -902,6 +803,14 @@ extern "C" void *dejavu_native_original_by_id(unsigned long long id) {
 
 extern "C" void dejavu_native_hit_by_id(unsigned long long id) {
     NativeHookManager::hit_for_id(id);
+}
+
+extern "C" void *dejavu_native_original_context(unsigned long long context) {
+    return NativeHookManager::original_for_context(context);
+}
+
+extern "C" void dejavu_native_hit_context(unsigned long long context) {
+    NativeHookManager::hit_for_context(context);
 }
 
 extern "C" void dejavu_native_log(const char *message) {

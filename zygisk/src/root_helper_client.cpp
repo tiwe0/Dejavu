@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 
 namespace {
 
@@ -160,23 +161,48 @@ bool root_helper_mapping(void *address, uintptr_t *start, size_t *length, int *p
     return true;
 }
 
-bool root_helper_unlock(void *address, int *original_protection, size_t *mapping_length,
-                        std::string *error) {
-    uintptr_t start = 0;
-    if (!root_helper_mapping(address, &start, mapping_length, original_protection, error)) {
+bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapshot *snapshot,
+                         std::string *error) {
+    snapshot->ranges.clear();
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        *error = "unable to determine the runtime page size";
         return false;
     }
-    const int target_protection = *original_protection | PROT_READ | PROT_WRITE;
-    return send_mprotect(reinterpret_cast<void *>(start), *mapping_length, target_protection,
-                         error);
+    std::ifstream maps("/proc/self/maps");
+    if (!maps.is_open()) {
+        *error = "unable to open /proc/self/maps";
+        return false;
+    }
+    return capture_mapping_protection(maps, reinterpret_cast<uintptr_t>(address), size,
+                                       static_cast<size_t>(page_size), snapshot, error);
 }
 
-bool root_helper_restore(void *address, size_t mapping_length, int protection, std::string *error) {
-    uintptr_t start = 0;
-    size_t ignored_length = 0;
-    int ignored_protection = 0;
-    if (!root_helper_mapping(address, &start, &ignored_length, &ignored_protection, error)) {
+namespace {
+
+bool apply_saved_range(const RootHelperProtectionRange &range, int protection,
+                       std::string *error) {
+    // ART hooks are installed before app specialization, when helper IPC may
+    // still be unavailable. Let the kernel decide whether the current process
+    // may change the page, including XOM; use the helper only when it cannot.
+    if (mprotect(reinterpret_cast<void *>(range.start), range.length, protection) == 0) {
+        return true;
+    }
+    const int local_error = errno;
+    if (!root_helper_available()) {
+        *error = std::string("mprotect failed: ") + std::strerror(local_error);
         return false;
     }
-    return send_mprotect(reinterpret_cast<void *>(start), mapping_length, protection, error);
+    return send_mprotect(reinterpret_cast<void *>(range.start), range.length, protection, error);
+}
+
+} // namespace
+
+bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &snapshot,
+                                  std::string *error) {
+    return apply_mapping_read_write(snapshot, apply_saved_range, error);
+}
+
+bool root_helper_restore(const RootHelperProtectionSnapshot &snapshot, std::string *error) {
+    return restore_mapping_protection(snapshot, apply_saved_range, error);
 }

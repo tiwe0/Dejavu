@@ -80,73 +80,6 @@ using JitShutdownFunction = void (*)();
 using JitStringFunction = const char *(*)();
 using JitUnloadSafeFunction = int (*)();
 
-bool target_module_has_execute_only_text(void *target, std::string *error) {
-    FILE *maps = fopen("/proc/self/maps", "re");
-    if (maps == nullptr) {
-        return false;
-    }
-    char line[512];
-    std::string target_path;
-    bool target_execute_only = false;
-    while (fgets(line, sizeof(line), maps) != nullptr) {
-        unsigned long start = 0;
-        unsigned long end = 0;
-        char permissions[8] = {};
-        if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
-            continue;
-        }
-        const uintptr_t address = reinterpret_cast<uintptr_t>(target);
-        if (address >= start && address < end) {
-            if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
-                target_execute_only = true;
-            }
-            char *path = strchr(line, '/');
-            if (path != nullptr) {
-                target_path = path;
-                while (!target_path.empty() &&
-                       (target_path.back() == '\n' || target_path.back() == '\r')) {
-                    target_path.pop_back();
-                }
-            }
-            break;
-        }
-    }
-    if (target_execute_only) {
-        *error = "target mapping is execute-only; native hooks are unsupported on this ROM";
-        fclose(maps);
-        return true;
-    }
-    if (!target_path.empty()) {
-        rewind(maps);
-        while (fgets(line, sizeof(line), maps) != nullptr) {
-            unsigned long start = 0;
-            unsigned long end = 0;
-            char permissions[8] = {};
-            if (sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3) {
-                continue;
-            }
-            char *path = strchr(line, '/');
-            if (path == nullptr) {
-                continue;
-            }
-            std::string candidate(path);
-            while (!candidate.empty() && (candidate.back() == '\n' || candidate.back() == '\r')) {
-                candidate.pop_back();
-            }
-            if (candidate != target_path) {
-                continue;
-            }
-            if ((permissions[0] != 'r') && (permissions[2] == 'x')) {
-                *error =
-                    "target module has execute-only text; native hooks are unsupported on this ROM";
-                fclose(maps);
-                return true;
-            }
-        }
-    }
-    fclose(maps);
-    return false;
-}
 
 PluginManager *g_jit_manager = nullptr;
 thread_local std::string g_jit_last_error;
@@ -613,46 +546,46 @@ PluginManager::~PluginManager() {
 
 void PluginManager::shutdown() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (g_jit_manager == this) {
-        g_jit_manager = nullptr;
-    }
+    bool retained = false;
     for (size_t index = 0; index < plugins_.size(); ++index) {
         Plugin *plugin = plugins_[index].get();
-        if (plugin == nullptr || !plugin->loaded) {
+        if (plugin == nullptr || !plugin->loaded) continue;
+        if (plugin->initialized && !plugin->cleanup_pending) prepare_plugin_for_unload(index);
+        plugin->cleanup_pending = true;
+        invalidate_entries(index);
+        std::string cleanup_error;
+        if (!remove_hooks_for(index, &cleanup_error)) {
+            log_line(ANDROID_LOG_ERROR, ("plugin teardown retained " + plugin->name +
+                ": " + cleanup_error).c_str());
+            retained = true;
             continue;
         }
-        {
+        if (plugin->initialized) {
             PluginContextGuard context_guard(index);
             if (plugin->jit) {
-                if (plugin->jit_shutdown != nullptr) {
-                    plugin->jit_shutdown();
-                }
+                if (plugin->jit_shutdown != nullptr) plugin->jit_shutdown();
             } else if (plugin->descriptor != nullptr && plugin->descriptor->shutdown != nullptr) {
                 plugin->descriptor->shutdown(plugin->state);
             }
         }
-        remove_hooks_for(index);
-        if (plugin->stream_owner_token != 0) {
-            streams_->close_owner(plugin->stream_owner_token);
-        }
+        if (plugin->stream_owner_token != 0) streams_->close_owner(plugin->stream_owner_token);
         if (plugin->jit) {
             if (plugin->jit_module != nullptr) {
-                if (plugin->jit_cache_owned) {
-                    release_jit_module(plugin->jit_cache_key, true);
-                } else if (runtime_ != nullptr) {
-                    runtime_->module_destroy(plugin->jit_module);
-                }
+                if (plugin->jit_cache_owned) release_jit_module(plugin->jit_cache_key, true);
+                else if (runtime_ != nullptr) runtime_->module_destroy(plugin->jit_module);
                 plugin->jit_module = nullptr;
             }
         } else if (plugin->handle != nullptr) {
             dlclose(plugin->handle);
             plugin->handle = nullptr;
         }
-        invalidate_entries(index);
         plugin->loaded = false;
         plugin->state = nullptr;
     }
-    remove_all_hooks();
+    // A failed unpatch still owns executable plugin code. Keep the module and
+    // JIT cache pinned instead of releasing code that the target can enter.
+    if (retained) return;
+    if (g_jit_manager == this) g_jit_manager = nullptr;
     plugins_.clear();
     destroy_jit_cache();
 }
@@ -860,155 +793,166 @@ void PluginManager::invalidate_entries(size_t plugin_index) {
                            pending_entries_.end());
 }
 
-void PluginManager::remove_plugin(size_t plugin_index) {
-    if (plugin_index >= plugins_.size()) {
-        return;
-    }
-    invalidate_entries(plugin_index);
-    remove_hooks_for(plugin_index);
-    plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(plugin_index));
-    for (auto &entry : entries_) {
-        if (entry->plugin_index > plugin_index) {
-            --entry->plugin_index;
-        }
-    }
-    for (auto &hook : hooks_) {
-        if (hook.plugin_index > plugin_index) {
-            --hook.plugin_index;
-        }
+void PluginManager::prepare_plugin_for_unload(size_t plugin_index) {
+    Plugin *plugin = plugins_[plugin_index].get();
+    PluginContextGuard context_guard(plugin_index);
+    if (plugin->jit) {
+        if (plugin->jit_prepare != nullptr) plugin->jit_prepare();
+    } else if (plugin->descriptor != nullptr &&
+               plugin->descriptor->struct_size >=
+                   offsetof(DejavuPluginDescriptor, on_unload_prepare) +
+                       sizeof(plugin->descriptor->on_unload_prepare) &&
+               plugin->descriptor->on_unload_prepare != nullptr) {
+        plugin->descriptor->on_unload_prepare(plugin->state);
     }
 }
 
-bool PluginManager::remember_hook(void *target) {
-    const size_t index = active_plugin_index();
-    if (index == kPluginIndexNone || target == nullptr) {
+bool PluginManager::remove_plugin(size_t plugin_index, std::string *error) {
+    if (plugin_index >= plugins_.size()) {
+        *error = "unknown plugin index";
         return false;
     }
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    for (const HookRecord &record : hooks_) {
-        if (record.target == target) {
-            return false;
-        }
+    if (!remove_hooks_for(plugin_index, error)) return false;
+    invalidate_entries(plugin_index);
+    plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(plugin_index));
+    for (auto &entry : entries_) {
+        if (entry->plugin_index > plugin_index) --entry->plugin_index;
     }
-    hooks_.push_back(HookRecord{target, index});
+    for (auto &hook : hooks_) {
+        if (hook.plugin_index > plugin_index) --hook.plugin_index;
+    }
     return true;
-}
-
-void PluginManager::forget_hook(void *target) {
-    const size_t index = active_plugin_index();
-    if (index == kPluginIndexNone) {
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    hooks_.erase(std::remove_if(hooks_.begin(), hooks_.end(),
-                                [target, index](const HookRecord &record) {
-                                    return record.target == target && record.plugin_index == index;
-                                }),
-                 hooks_.end());
 }
 
 size_t PluginManager::hook_count_for(size_t plugin_index) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    size_t count = 0;
-    for (const HookRecord &record : hooks_) {
-        if (record.plugin_index == plugin_index) {
-            ++count;
-        }
-    }
-    return count;
+    return static_cast<size_t>(std::count_if(hooks_.begin(), hooks_.end(),
+        [plugin_index](const HookRecord &record) { return record.plugin_index == plugin_index; }));
 }
 
 bool PluginManager::active_plugin_has_capability(uint32_t capability) const {
     const size_t index = active_plugin_index();
-    if (index == kPluginIndexNone) {
-        return false;
-    }
+    if (index == kPluginIndexNone) return false;
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (index >= plugins_.size()) {
-        return false;
+    return index < plugins_.size() && (plugins_[index]->capabilities & capability) != 0;
+}
+
+int PluginManager::install_owned_hook(void *target, void *replacement, void **original,
+                                      char *error, size_t error_size) {
+    const size_t index = active_plugin_index();
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (index == kPluginIndexNone || index >= plugins_.size() || plugins_[index]->cleanup_pending) {
+        std::snprintf(error, error_size, "hook.install is only allowed from active plugin code");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    return (plugins_[index]->capabilities & capability) != 0;
+    if (std::any_of(hooks_.begin(), hooks_.end(),
+                   [target](const HookRecord &record) { return record.target == target; })) {
+        std::snprintf(error, error_size, "hook target is already owned by a plugin");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (DobbyIsHooked(target) > 0) {
+        std::snprintf(error, error_size, "hook target is already patched by another owner");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    RootHelperProtectionSnapshot protection;
+    std::string detail;
+    constexpr size_t kMaximumArm64PatchSize = 16;
+    if (!root_helper_capture(target, kMaximumArm64PatchSize, &protection, &detail)) {
+        std::snprintf(error, error_size, "%s", detail.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    hooks_.push_back(HookRecord{target, index, protection, false, true});
+    const size_t record_index = hooks_.size() - 1;
+    if (!root_helper_apply_read_write(protection, &detail)) {
+        std::string restore_error;
+        if (root_helper_restore(protection, &restore_error)) {
+            hooks_.erase(hooks_.begin() + static_cast<std::ptrdiff_t>(record_index));
+        } else {
+            detail += "; permission cleanup failed: " + restore_error;
+        }
+        std::snprintf(error, error_size, "%s", detail.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    *original = nullptr;
+    const int status = DobbyHook(target, replacement, original);
+    hooks_[record_index].installed = status == 0 || (*original != nullptr && DobbyIsHooked(target) > 0);
+    std::string restore_error;
+    const bool restored = root_helper_restore(protection, &restore_error);
+    hooks_[record_index].permissions_dirty = !restored;
+    if (status != 0 || !restored) {
+        detail = status != 0 ? "DobbyHook failed with status " + std::to_string(status)
+                             : "unable to restore hook page protection: " + restore_error;
+        std::string cleanup_error;
+        if (!uninstall_hook_record(record_index, &cleanup_error)) {
+            detail += "; hook cleanup is pending: " + cleanup_error;
+        }
+        std::snprintf(error, error_size, "%s", detail.c_str());
+        return DEJAVU_ERROR_LUA_EXECUTE;
+    }
+    return DEJAVU_OK;
+}
+
+bool PluginManager::uninstall_hook_record(size_t record_index, std::string *error) {
+    HookRecord &record = hooks_[record_index];
+    if (record.installed) {
+        if (!root_helper_apply_read_write(record.protection, error)) {
+            std::string restore_error;
+            record.permissions_dirty = !root_helper_restore(record.protection, &restore_error);
+            if (record.permissions_dirty) *error += "; permission cleanup failed: " + restore_error;
+            return false;
+        }
+        const int status = DobbyDestroy(record.target);
+        if (status == 0) record.installed = false;
+        std::string restore_error;
+        record.permissions_dirty = !root_helper_restore(record.protection, &restore_error);
+        if (status != 0) {
+            *error = "DobbyDestroy failed with status " + std::to_string(status);
+            if (record.permissions_dirty) *error += "; permission cleanup failed: " + restore_error;
+            return false;
+        }
+        if (record.permissions_dirty) {
+            *error = restore_error;
+            return false;
+        }
+    } else if (record.permissions_dirty) {
+        if (!root_helper_restore(record.protection, error)) return false;
+        record.permissions_dirty = false;
+    }
+    hooks_.erase(hooks_.begin() + static_cast<std::ptrdiff_t>(record_index));
+    return true;
 }
 
 bool PluginManager::uninstall_owned_hook(void *target, char *error, size_t error_size) {
     const size_t index = active_plugin_index();
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (index == kPluginIndexNone || target == nullptr) {
         std::snprintf(error, error_size, "hook.uninstall is only allowed from plugin code");
         return false;
     }
-    {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        bool owned = false;
-        for (const HookRecord &record : hooks_) {
-            if (record.target == target && record.plugin_index == index) {
-                owned = true;
-                break;
-            }
-        }
-        if (!owned) {
-            std::snprintf(error, error_size, "hook target is not owned by this plugin");
-            return false;
-        }
-    }
-    int original_protection = 0;
-    size_t mapping_length = 0;
-    bool root_unlocked = false;
-    std::string mapping_error;
-    if (target_module_has_execute_only_text(target, &mapping_error)) {
-        if (!root_helper_unlock(target, &original_protection, &mapping_length, &mapping_error)) {
-            std::snprintf(error, error_size, "%s", mapping_error.c_str());
-            return false;
-        }
-        root_unlocked = true;
-    }
-    const int status = DobbyDestroy(target);
-    if (root_unlocked) {
-        std::string ignored;
-        root_helper_restore(target, mapping_length, original_protection, &ignored);
-    }
-    if (status != 0) {
-        std::snprintf(error, error_size, "DobbyDestroy failed with status %d", status);
+    for (size_t position = 0; position < hooks_.size(); ++position) {
+        if (hooks_[position].target != target || hooks_[position].plugin_index != index) continue;
+        std::string detail;
+        if (uninstall_hook_record(position, &detail)) return true;
+        std::snprintf(error, error_size, "%s", detail.c_str());
         return false;
     }
-    forget_hook(target);
-    return true;
+    std::snprintf(error, error_size, "hook target is not owned by this plugin");
+    return false;
 }
 
-void PluginManager::remove_hooks_for(size_t plugin_index) {
-    std::vector<void *> targets;
-    {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        for (auto iterator = hooks_.begin(); iterator != hooks_.end();) {
-            if (iterator->plugin_index == plugin_index) {
-                targets.push_back(iterator->target);
-                iterator = hooks_.erase(iterator);
-            } else {
-                ++iterator;
-            }
-        }
+bool PluginManager::remove_hooks_for(size_t plugin_index, std::string *error) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    bool removed = true;
+    for (size_t position = 0; position < hooks_.size();) {
+        if (hooks_[position].plugin_index != plugin_index) { ++position; continue; }
+        std::string detail;
+        if (uninstall_hook_record(position, &detail)) continue;
+        if (!error->empty()) *error += "; ";
+        *error += detail;
+        removed = false;
+        ++position;
     }
-    for (void *target : targets) {
-        const int status = DobbyDestroy(target);
-        if (status != 0) {
-            log_line(
-                ANDROID_LOG_WARN,
-                ("DobbyDestroy failed during plugin teardown: " + std::to_string(status)).c_str());
-        }
-    }
-}
-
-void PluginManager::remove_all_hooks() {
-    std::vector<void *> targets;
-    {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        for (const HookRecord &record : hooks_) {
-            targets.push_back(record.target);
-        }
-        hooks_.clear();
-    }
-    for (void *target : targets) {
-        DobbyDestroy(target);
-    }
+    return removed;
 }
 
 bool PluginManager::valid_identifier(const std::string &value) {
@@ -1031,6 +975,10 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     }
     for (const auto &plugin : plugins_) {
         if (plugin->path == path && plugin->loaded) {
+            if (plugin->cleanup_pending) {
+                *error = "plugin cleanup is pending; retry unload before loading: " + plugin->name;
+                return false;
+            }
             *status = plugin->name + " already loaded from " + path;
             return true;
         }
@@ -1111,7 +1059,10 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     }
     for (size_t position = 0; position < plugins_.size();) {
         if (plugins_[position]->name == plugin_name && !plugins_[position]->loaded) {
-            remove_plugin(position);
+            if (!remove_plugin(position, error)) {
+                dlclose(handle);
+                return false;
+            }
         } else {
             ++position;
         }
@@ -1151,11 +1102,19 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         *error = plugin_error[0] != '\0' ? plugin_error : "plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         streams_->close_owner(plugins_[plugin_index]->stream_owner_token);
-        remove_plugin(plugin_index);
-        dlclose(handle);
+        std::string cleanup_error;
+        if (!remove_plugin(plugin_index, &cleanup_error)) {
+            plugins_[plugin_index]->loaded = true;
+            plugins_[plugin_index]->cleanup_pending = true;
+            invalidate_entries(plugin_index);
+            *error += "; plugin cleanup is pending: " + cleanup_error;
+        } else {
+            dlclose(handle);
+        }
         return false;
     }
     plugins_[plugin_index]->loaded = true;
+    plugins_[plugin_index]->initialized = true;
     if (session_ != nullptr && descriptor->on_control_ready != nullptr) {
         PluginContextGuard context_guard(plugin_index);
         descriptor->on_control_ready(plugins_[plugin_index]->state);
@@ -1281,6 +1240,10 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     }
     for (const auto &plugin : plugins_) {
         if (plugin->path == path && plugin->loaded) {
+            if (plugin->cleanup_pending) {
+                *error = "plugin cleanup is pending; retry unload before loading: " + plugin->name;
+                return false;
+            }
             *status = plugin->name + " already loaded from " + path;
             return true;
         }
@@ -1350,7 +1313,10 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
     }
     for (size_t position = 0; position < plugins_.size();) {
         if (plugins_[position]->name == plugin_name && !plugins_[position]->loaded) {
-            remove_plugin(position);
+            if (!remove_plugin(position, error)) {
+                discard_jit_module(source_hash, module, cache_owned);
+                return false;
+            }
         } else {
             ++position;
         }
@@ -1395,11 +1361,19 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         *error = !g_jit_last_error.empty() ? g_jit_last_error : "JIT plugin initialize failed";
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         streams_->close_owner(plugins_[plugin_index]->stream_owner_token);
-        discard_jit_module(source_hash, module, cache_owned);
-        remove_plugin(plugin_index);
+        std::string cleanup_error;
+        if (!remove_plugin(plugin_index, &cleanup_error)) {
+            plugins_[plugin_index]->loaded = true;
+            plugins_[plugin_index]->cleanup_pending = true;
+            invalidate_entries(plugin_index);
+            *error += "; plugin cleanup is pending: " + cleanup_error;
+        } else {
+            discard_jit_module(source_hash, module, cache_owned);
+        }
         return false;
     }
     plugins_[plugin_index]->loaded = true;
+    plugins_[plugin_index]->initialized = true;
     if (session_ != nullptr && control_ready != nullptr) {
         PluginContextGuard context_guard(plugin_index);
         control_ready();
@@ -1441,7 +1415,9 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
         *error = "plugin not loaded: " + name;
         return false;
     }
-    if ((target->flags & DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE) == 0) {
+    const bool failed_initialization_cleanup = !target->initialized && target->cleanup_pending;
+    if (!failed_initialization_cleanup &&
+        (target->flags & DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE) == 0) {
         *error = "plugin is not marked unload-safe; remove its hooks explicitly or restart";
         return false;
     }
@@ -1451,38 +1427,20 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
             return false;
         }
     }
-    {
-        PluginContextGuard context_guard(index);
-        if (target->jit) {
-            if (target->jit_prepare != nullptr) {
-                target->jit_prepare();
-            }
-        } else if (target->descriptor != nullptr &&
-                   target->descriptor->struct_size >=
-                       offsetof(DejavuPluginDescriptor, on_unload_prepare) +
-                           sizeof(target->descriptor->on_unload_prepare) &&
-                   target->descriptor->on_unload_prepare != nullptr) {
-            target->descriptor->on_unload_prepare(target->state);
-        }
+    if (target->initialized && !target->cleanup_pending) {
+        prepare_plugin_for_unload(index);
     }
-    const size_t owned_hooks = hook_count_for(index);
-    if (owned_hooks != 0) {
-        *error = "plugin still owns " + std::to_string(owned_hooks) +
-                 " host hook(s); uninstall them in on_unload_prepare before unload";
-        return false;
-    }
+    target->cleanup_pending = true;
     invalidate_entries(index);
-    {
+    if (!remove_hooks_for(index, error)) return false;
+    if (target->initialized) {
         PluginContextGuard context_guard(index);
         if (target->jit) {
-            if (target->jit_shutdown != nullptr) {
-                target->jit_shutdown();
-            }
+            if (target->jit_shutdown != nullptr) target->jit_shutdown();
         } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
             target->descriptor->shutdown(target->state);
         }
     }
-    remove_hooks_for(index);
     if (target->stream_owner_token != 0) {
         streams_->close_owner(target->stream_owner_token);
     }
@@ -1500,7 +1458,7 @@ bool PluginManager::unload_plugin(const std::string &name, std::string *status,
         dlclose(target->handle);
         target->handle = nullptr;
     }
-    remove_plugin(index);
+    if (!remove_plugin(index, error)) return false;
     *status = name + " unloaded";
     return true;
 }
@@ -1614,7 +1572,7 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
     pending_entries_.clear();
     for (size_t index = 0; index < plugins_.size(); ++index) {
         auto *plugin = plugins_[index].get();
-        if (plugin->loaded && !plugin->control_ready && plugin->descriptor != nullptr &&
+        if (plugin->loaded && !plugin->cleanup_pending && !plugin->control_ready && plugin->descriptor != nullptr &&
             plugin->descriptor->on_control_ready != nullptr) {
             PluginContextGuard context_guard(index);
             plugin->descriptor->on_control_ready(plugin->state);
@@ -2082,45 +2040,7 @@ int PluginManagerHostHookInstall(void *host_context, void *target, void *replace
         std::snprintf(error, error_size, "hook.install requires target/replacement/original");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    int original_protection = 0;
-    size_t mapping_length = 0;
-    bool root_unlocked = false;
-    std::string mapping_error;
-    if (target_module_has_execute_only_text(target, &mapping_error)) {
-        if (!root_helper_unlock(target, &original_protection, &mapping_length, &mapping_error)) {
-            std::snprintf(error, error_size, "%s", mapping_error.c_str());
-            return DEJAVU_ERROR_LUA_EXECUTE;
-        }
-        root_unlocked = true;
-    }
-    if (!manager->remember_hook(target)) {
-        if (root_unlocked) {
-            std::string ignored;
-            root_helper_restore(target, mapping_length, original_protection, &ignored);
-        }
-        std::snprintf(error, error_size, "hook.install is only allowed from plugin code");
-        return DEJAVU_ERROR_INVALID_ARGUMENT;
-    }
-    const int status = DobbyHook(target, replacement, original);
-    if (status != 0) {
-        manager->forget_hook(target);
-        if (root_unlocked) {
-            std::string ignored;
-            root_helper_restore(target, mapping_length, original_protection, &ignored);
-        }
-        std::snprintf(error, error_size, "DobbyHook failed with status %d", status);
-        return DEJAVU_ERROR_LUA_EXECUTE;
-    }
-    if (root_unlocked) {
-        std::string restore_error;
-        if (!root_helper_restore(target, mapping_length, original_protection, &restore_error)) {
-            DobbyDestroy(target);
-            manager->forget_hook(target);
-            std::snprintf(error, error_size, "%s", restore_error.c_str());
-            return DEJAVU_ERROR_LUA_EXECUTE;
-        }
-    }
-    return DEJAVU_OK;
+    return manager->install_owned_hook(target, replacement, original, error, error_size);
 }
 
 int PluginManagerHostHookUninstall(void *host_context, void *target, char *error,

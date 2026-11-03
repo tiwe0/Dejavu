@@ -318,8 +318,9 @@ native.clear()
   `dejavu_native_hit()`（命中计数）和 `dejavu_native_log()`。
 - 只支持**已加载模块的动态导出符号**（`dlopen(RTLD_NOLOAD)` + `dlsym`），
   且目标必须位于可执行映射；目前仅 arm64。
-- 不要在有并发调用时 `uninstall`（销毁 trampoline 后仍在执行的替换函数
-  行为未定义）；建议空闲期卸载或重启目标进程。
+- native 安装在激活前发布原 trampoline，入口仅使用单条四字节跳转；无法安全
+  分配近跳板时拒绝安装。卸载恢复入口和权限，已暴露的 JIT/context 保留到进程
+  退出，供已进入的回调完成；反复安装会保留内存，重启目标可回收。
 - 主动调用：`native.call(module, symbol, c_source, ...参数)` 可直接执行目标
   函数（C 源定义 `void dejavu_native_call(void)`，使用
   `DEJAVU_NATIVE_CALL_ADDRESS`、类型化参数访问器和

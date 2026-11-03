@@ -104,8 +104,8 @@ choice), regular, 1 MiB or smaller. The content still follows the same
 | --- | --- |
 | `native.install(...)` | resolve, compile, and install; returns a positive id |
 | `native.stats(id)` | number of replacement calls recorded so far |
-| `native.list()` | `id active\|uninstalled module#symbol hits=N` lines |
-| `native.uninstall(id)` | restore the original code and release the compiled module |
+| `native.list()` | `id active\|uninstalled [protection-pending] module#symbol hits=N` lines |
+| `native.uninstall(id)` | restore the original entry and saved page permissions |
 | `native.clear()` | uninstall all active native hooks; returns the count |
 
 Installed hooks stay active until uninstalled or the process dies. All calls
@@ -238,14 +238,23 @@ it into the Lua chunk and prints the returned hook id.
   `module.symbols`/`module.resolve` to discover them; fully stripped images
   without a full symbol table still only expose dynamic symbols.
 - **arm64 Android.** The agent/module only supports `arm64-v8a`.
+- **Atomic native entry patches.** Native installs require an aligned four-byte
+  branch and a fresh anonymous near trampoline. If a suitable near mapping cannot
+  be allocated, installation fails before activating the replacement; it does
+  not fall back to a multi-instruction entry patch or overwrite code caves.
 - **Executable mappings only.** The target address must be in a mapping with
   the execute permission; page protection is saved/widened to patch and then
   restored.
-- **Uninstall safety.** Do not uninstall while the target function may be
-  executing concurrently: Dobby destroys the trampoline, and an in-flight
-  callback that calls `dejavu_native_original()` afterwards is undefined
-  behaviour. Uninstalling from an idle period or during a target-process
-  restart is safest.
+- **In-flight callbacks.** The original trampoline is published before the
+  replacement becomes callable. Exposed contexts, JIT code and target-library
+  references remain pinned until process exit, so an already-entered callback
+  can finish after uninstall. Repeated install/uninstall cycles therefore retain
+  memory; restarting the target releases it. Plugin-owned state still needs its
+  own synchronization and teardown protocol.
+- **Retryable permission errors.** Permission snapshots retain the original
+  page addresses and protections across VMA splits. A failed restore is reported
+  with the hook id and kept as `protection-pending`; retry `native.uninstall(id)`
+  or `native.clear()` rather than assuming the failed operation removed it.
 - **Shared state.** Replacements run on arbitrary threads of the target
   process. Keep counters/state atomic (`dejavu_native_hit` is atomic) and do
   not call blocking or allocation-heavy code from hot replacements.

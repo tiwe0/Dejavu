@@ -10,6 +10,7 @@
 
 #include "dejavu.h"
 #include "dejavu_runtime.h"
+#include "root_helper_client.h"
 
 /* Typed Lua -> C argument protocol used by native.call(). */
 struct NativeCallArgument {
@@ -67,6 +68,8 @@ class NativeHookManager {
     /* C helper entry points, also registered as TinyCC symbols. */
     static void *original_for_id(unsigned long long id);
     static void hit_for_id(unsigned long long id);
+    static void *original_for_context(unsigned long long context);
+    static void hit_for_context(unsigned long long context);
     static void log_message(const char *message);
     static long long call_argument(unsigned int index);
     static long long call_argument_int(unsigned int index);
@@ -77,6 +80,7 @@ class NativeHookManager {
     static void call_return(long long value);
 
   private:
+    friend struct NativeHookManagerTest;
     struct Record {
         unsigned long long id = 0;
         std::string module_name;
@@ -87,11 +91,18 @@ class NativeHookManager {
         std::atomic<void *> original{nullptr};
         std::atomic<unsigned long long> hits{0};
         std::atomic<bool> active{false};
+        std::atomic<bool> exposed{false};
+        std::atomic<bool> restore_pending{false};
+        RootHelperProtectionSnapshot protection;
+        Record *callback_next = nullptr;
     };
 
     bool install(const std::string &module_name, const std::string &symbol_name,
                  const std::string &source, unsigned long long *id, std::string *error);
     bool uninstall(unsigned long long id, std::string *error);
+    bool uninstall_locked(unsigned long long id, std::string *error);
+    void release_unexposed(Record *record);
+    static void publish_original(void *original, size_t patch_size, void *context);
     bool clear(unsigned long long *removed, std::string *error);
     std::string list() const;
     bool stats(unsigned long long id, unsigned long long *hits, std::string *error) const;
@@ -113,11 +124,12 @@ class NativeHookManager {
     static int lua_call_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
                              dejavu_value *, char *, size_t);
 
-    static NativeHookManager *instance_;
+    static std::atomic<Record *> callback_records_;
+    static std::atomic<unsigned long long> next_id_;
 
     DejavuRuntime *runtime_ = nullptr;
     dejavu_engine *engine_ = nullptr;
     mutable std::mutex mutex_;
+    std::mutex operations_mutex_;
     std::unordered_map<unsigned long long, std::unique_ptr<Record>> records_;
-    std::atomic<unsigned long long> next_id_{1};
 };

@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include "mapping_protection.h"
+
 /*
  * Prototype client for the root helper. The helper runs as root outside the
  * app and injects mprotect into this process via ptrace so execute-only text
@@ -12,6 +14,8 @@
 bool root_helper_available();
 bool root_helper_mapping(void *address, uintptr_t *start, size_t *length, int *protection,
                          std::string *error);
-bool root_helper_unlock(void *address, int *original_protection, size_t *mapping_length,
-                        std::string *error);
-bool root_helper_restore(void *address, size_t mapping_length, int protection, std::string *error);
+bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapshot *snapshot,
+                         std::string *error);
+bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &snapshot,
+                                  std::string *error);
+bool root_helper_restore(const RootHelperProtectionSnapshot &snapshot, std::string *error);

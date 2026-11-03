@@ -40,38 +40,6 @@ fetch_archive() {
     mv "${staging}" "${destination}"
 }
 
-fetch_aar() {
-    local name=$1
-    local version=$2
-    local sha256=$3
-    local url=$4
-    local destination=$5
-    local archive="${CACHE_DIR}/${name}-${version}.aar"
-    local staging
-
-    if [[ -f "${destination}/.dejavu-pin" ]] &&
-        [[ "$(<"${destination}/.dejavu-pin")" == "${version}" ]]; then
-        return
-    fi
-    if [[ ! -f "${archive}" ]] ||
-        [[ "$(shasum -a 256 "${archive}" | awk '{print $1}')" != "${sha256}" ]]; then
-        curl -L --fail --retry 3 --output "${archive}" "${url}"
-    fi
-    if [[ "$(shasum -a 256 "${archive}" | awk '{print $1}')" != "${sha256}" ]]; then
-        echo "error: checksum mismatch for ${name}" >&2
-        exit 1
-    fi
-
-    staging=$(mktemp -d "${THIRD_PARTY_DIR}/.${name}.XXXXXX")
-    unzip -q "${archive}" -d "${staging}"
-    printf '%s\n' "${version}" > "${staging}/.dejavu-pin"
-    if [[ -e "${destination}" ]]; then
-        find "${destination}" -mindepth 1 -delete
-        rmdir "${destination}"
-    fi
-    mv "${staging}" "${destination}"
-}
-
 fetch_archive \
     lsplant \
     d8b5d1dbb664abc606644036822e4bb64547edf6 \
@@ -93,6 +61,16 @@ fetch_archive \
     https://github.com/greg7mdp/parallel-hashmap/archive/0cd57d29a959256ed66b2afdd1009928fc625d09.tar.gz \
     "${THIRD_PARTY_DIR}/LSPlant/lsplant/src/main/jni/external/dex_builder/external/parallel_hashmap"
 
+DOBBY_PATCH="${ROOT_DIR}/patches/dobby-native-publication.patch"
+DOBBY_PATCH_HASH=$(shasum -a 256 "${DOBBY_PATCH}" | awk '{print $1}')
+DOBBY_PATCH_STAMP="${THIRD_PARTY_DIR}/Dobby/.dejavu-native-patch"
+if [[ -f "${THIRD_PARTY_DIR}/Dobby/.dejavu-pin" ]] &&
+    { [[ ! -f "${DOBBY_PATCH_STAMP}" ]] || [[ "$(<"${DOBBY_PATCH_STAMP}")" != "${DOBBY_PATCH_HASH}" ]]; }; then
+    # A changed maintained patch is always reapplied to the checksum-pinned
+    # pristine archive, never on top of an older generated dependency tree.
+    rm "${THIRD_PARTY_DIR}/Dobby/.dejavu-pin"
+fi
+
 fetch_archive \
     dobby \
     5dfc8546954ce3b3198132ab13fddb89ee92cdd7 \
@@ -100,12 +78,10 @@ fetch_archive \
     https://github.com/jmpews/Dobby/archive/5dfc8546954ce3b3198132ab13fddb89ee92cdd7.tar.gz \
     "${THIRD_PARTY_DIR}/Dobby"
 
-fetch_aar \
-    dobby-prefab \
-    1.2 \
-    251f48ae21686d7f69276c50644ca345f450e45110057437f7d76bb14cddf3a1 \
-    https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/dobby-1.2.aar \
-    "${THIRD_PARTY_DIR}/DobbyPrefab"
+if [[ ! -f "${DOBBY_PATCH_STAMP}" ]] || [[ "$(<"${DOBBY_PATCH_STAMP}")" != "${DOBBY_PATCH_HASH}" ]]; then
+    patch -d "${THIRD_PARTY_DIR}/Dobby" -p1 < "${DOBBY_PATCH}"
+    printf '%s\n' "${DOBBY_PATCH_HASH}" > "${DOBBY_PATCH_STAMP}"
+fi
 
 LSPLANT_PATCH_STAMP="${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v4"
 if [[ ! -f "${LSPLANT_PATCH_STAMP}" ]]; then

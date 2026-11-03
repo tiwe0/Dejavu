@@ -38,6 +38,36 @@ mkdir -p "${OUT_DIR}"
 
 "${OUT_DIR}/control_channel_test"
 
+"${CXX}" -std=c++17 -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/mapping_protection.cpp" \
+    "${ROOT_DIR}/tests/mapping_protection_test.cpp" -o "${OUT_DIR}/mapping_protection_test"
+"${OUT_DIR}/mapping_protection_test"
+"${CXX}" -std=c++17 -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/tests/plugin-stubs" -I"${ROOT_DIR}/include" -I"${ROOT_DIR}/src" \
+    "${ROOT_DIR}/src/mapping_protection.cpp" \
+    "${ROOT_DIR}/tests/root_helper_client_test.cpp" -o "${OUT_DIR}/root_helper_client_test"
+"${OUT_DIR}/root_helper_client_test"
+"${ROOT_DIR}/tests/test-native-hook-manager.sh"
+bash "${ROOT_DIR}/tests/test-lsplant-protection.sh"
+if [[ -f "${ROOT_DIR}/third_party/Dobby/.dejavu-native-patch" ]]; then
+    PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT_DIR}/tests/dobby_safety_test.py"
+else
+    echo "SKIP: Dobby safety tests require scripts/fetch-third-party.sh"
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    PLUGIN_TEST_LINK_FLAGS=(-Wl,-dead_strip)
+else
+    PLUGIN_TEST_LINK_FLAGS=(-Wl,--gc-sections -ldl)
+fi
+"${CXX}" -std=c++17 -Wall -Wextra -Werror -pthread \
+    -ffunction-sections -fdata-sections -fvisibility=hidden \
+    -I"${ROOT_DIR}/tests/plugin-stubs" -I"${ROOT_DIR}/tests/native-stubs" \
+    -I"${ROOT_DIR}/include" -I"${PROJECT_DIR}/include" -I"${ROOT_DIR}/src" \
+    "${ROOT_DIR}/tests/plugin_hook_lifecycle_test.cpp" \
+    "${PLUGIN_TEST_LINK_FLAGS[@]}" -o "${OUT_DIR}/plugin_hook_lifecycle_test"
+"${OUT_DIR}/plugin_hook_lifecycle_test"
+
 "${CC}" -std=c11 -O2 \
     -I"${ROOT_DIR}/third_party/kcp" \
     -c "${ROOT_DIR}/third_party/kcp/ikcp.c" -o "${OUT_DIR}/ikcp.o"

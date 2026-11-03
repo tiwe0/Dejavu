@@ -21,13 +21,14 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
-add_library(dobby_static STATIC IMPORTED GLOBAL)
-set_target_properties(dobby_static PROPERTIES
-    IMPORTED_LOCATION
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/DobbyPrefab/prefab/modules/dobby/libs/android.arm64-v8a/libdobby.a
-    INTERFACE_INCLUDE_DIRECTORIES
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/DobbyPrefab/prefab/modules/dobby/include
-)
+# Compile the pinned, maintained source patch; an imported Prefab archive would
+# silently bypass native-hook publication and permission fixes.
+set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(NearBranch ON CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/Dobby ${CMAKE_CURRENT_BINARY_DIR}/dobby EXCLUDE_FROM_ALL)
 
 set(JIT_PRELUDE_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/jit-prelude)
 add_custom_command(
@@ -78,6 +79,7 @@ add_library(dejavu_agent SHARED
     src/lsplant_backend.cpp
     src/lsplant_runtime.cpp
     src/native_hook_manager.cpp
+    src/mapping_protection.cpp
     src/java_invoker.cpp
     src/plugin_manager.cpp
     src/sha256.cpp
