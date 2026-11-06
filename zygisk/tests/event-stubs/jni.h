@@ -17,7 +17,17 @@ using jclass = void *;
 using jstring = void *;
 using jobjectArray = void *;
 using jmethodID = void *;
-union jvalue { jboolean z; jbyte b; jchar c; jshort s; jint i; jlong j; jfloat f; jdouble d; jobject l; };
+union jvalue {
+    jboolean z;
+    jbyte b;
+    jchar c;
+    jshort s;
+    jint i;
+    jlong j;
+    jfloat f;
+    jdouble d;
+    jobject l;
+};
 constexpr jboolean JNI_TRUE = 1;
 struct JavaVM {};
 struct JNIEnv {
@@ -32,15 +42,29 @@ struct JNIEnv {
     bool pending_exception = false;
     size_t cleared_exceptions = 0;
     jclass FindClass(const char *) {
-        if (failure == Failure::find_class) { pending_exception = true; return nullptr; }
+        if (failure == Failure::find_class) {
+            pending_exception = true;
+            return nullptr;
+        }
         return this;
     }
-    jboolean IsInstanceOf(jobject, jclass) { return string_value; }
-    void DeleteLocalRef(jobject) {}
-    void ExceptionClear() { pending_exception = false; ++cleared_exceptions; }
-    jboolean ExceptionCheck() { return pending_exception; }
+    jboolean IsInstanceOf(jobject, jclass) {
+        return string_value;
+    }
+    void DeleteLocalRef(jobject) {
+    }
+    void ExceptionClear() {
+        pending_exception = false;
+        ++cleared_exceptions;
+    }
+    jboolean ExceptionCheck() {
+        return pending_exception;
+    }
     jsize GetStringLength(jstring) {
-        if (failure == Failure::string_length) { pending_exception = true; return 0; }
+        if (failure == Failure::string_length) {
+            pending_exception = true;
+            return 0;
+        }
         return static_cast<jsize>(text.size());
     }
     void GetStringRegion(jstring, jsize start, jsize count, jchar *out) {
@@ -52,7 +76,12 @@ struct JNIEnv {
         largest_region = std::max(largest_region, static_cast<size_t>(count));
         std::memcpy(out, text.data() + start, static_cast<size_t>(count) * sizeof(jchar));
     }
-    const char *GetStringUTFChars(jstring, void *) { return modified.c_str(); }
-    jsize GetStringUTFLength(jstring) { return static_cast<jsize>(modified.size()); }
-    void ReleaseStringUTFChars(jstring, const char *) {}
+    const char *GetStringUTFChars(jstring, void *) {
+        return modified.c_str();
+    }
+    jsize GetStringUTFLength(jstring) {
+        return static_cast<jsize>(modified.size());
+    }
+    void ReleaseStringUTFChars(jstring, const char *) {
+    }
 };

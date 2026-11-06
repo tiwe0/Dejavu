@@ -26,11 +26,17 @@ struct Peer {
         endpoint = "127.0.0.1:" + std::to_string(ntohs(address.sin_port));
     }
     void accept_client() {
-        if (connection >= 0) close(connection);
+        if (connection >= 0)
+            close(connection);
         connection = accept(listener, nullptr, nullptr);
         assert(connection >= 0);
     }
-    ~Peer() { if (connection >= 0) close(connection); if (listener >= 0) close(listener); }
+    ~Peer() {
+        if (connection >= 0)
+            close(connection);
+        if (listener >= 0)
+            close(listener);
+    }
 };
 
 int main() {
@@ -74,7 +80,10 @@ int main() {
     std::puts("OK: stale releases cannot stop a replacement managed or legacy channel");
 
     std::string unavailable;
-    { Peer closed; unavailable = closed.endpoint; }
+    {
+        Peer closed;
+        unavailable = closed.endpoint;
+    }
     assert(sink.acquire(unavailable, &lease, &error));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (sink.active() && std::chrono::steady_clock::now() < deadline)
@@ -88,11 +97,13 @@ int main() {
     uint64_t leases[2]{};
     bool results[2]{};
     std::thread workers[2];
-    for (int i = 0; i < 2; ++i) workers[i] = std::thread([&, i] {
-        std::string failure;
-        results[i] = sink.acquire(first.endpoint, &leases[i], &failure);
-    });
-    for (auto &worker : workers) worker.join();
+    for (int i = 0; i < 2; ++i)
+        workers[i] = std::thread([&, i] {
+            std::string failure;
+            results[i] = sink.acquire(first.endpoint, &leases[i], &failure);
+        });
+    for (auto &worker : workers)
+        worker.join();
     assert(results[0] != results[1]);
     first.accept_client();
     assert(sink.release(results[0] ? leases[0] : leases[1]));

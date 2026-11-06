@@ -39,8 +39,8 @@ class PluginManager {
                                void *function, void *function_context, char *error,
                                size_t error_size);
     bool unload_plugin(const std::string &name, std::string *status, std::string *error);
-    int install_owned_hook(void *target, void *replacement, void **original,
-                            char *error, size_t error_size);
+    int install_owned_hook(void *target, void *replacement, void **original, char *error,
+                           size_t error_size);
     bool uninstall_owned_hook(void *target, char *error, size_t error_size);
     size_t hook_count_for(size_t plugin_index) const;
     bool active_plugin_has_capability(uint32_t capability) const;
@@ -64,8 +64,8 @@ class PluginManager {
     int stream_listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
                       int backlog, std::string *error);
     int stream_accept(int listener_handle, int timeout_ms, uint64_t owner_token);
-    int stream_read(int handle, void *buffer, size_t capacity, int timeout_ms,
-                    size_t *size_read, uint64_t owner_token);
+    int stream_read(int handle, void *buffer, size_t capacity, int timeout_ms, size_t *size_read,
+                    uint64_t owner_token);
     int stream_write(int handle, const void *data, size_t size, uint64_t owner_token);
     int stream_close(int handle, uint64_t owner_token);
     size_t stream_close_owner(uint64_t owner_token);

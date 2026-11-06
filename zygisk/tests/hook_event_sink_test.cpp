@@ -24,7 +24,10 @@ std::mutex send_mutex;
 std::condition_variable send_condition;
 bool send_waiting = false;
 int test_connect(int fd, const sockaddr *address, socklen_t length) {
-    if (stalled_connect.load()) { errno = EINPROGRESS; return -1; }
+    if (stalled_connect.load()) {
+        errno = EINPROGRESS;
+        return -1;
+    }
     return ::connect(fd, address, length);
 }
 [[maybe_unused]] int test_poll(pollfd *descriptors, nfds_t count, int timeout) {
@@ -37,18 +40,20 @@ int test_connect(int fd, const sockaddr *address, socklen_t length) {
         std::unique_lock<std::mutex> lock(send_mutex);
         send_waiting = true;
         send_condition.notify_all();
-        send_condition.wait_for(lock, std::chrono::milliseconds(timeout), [] {
-            return !stalled_send.load();
-        });
+        send_condition.wait_for(lock, std::chrono::milliseconds(timeout),
+                                [] { return !stalled_send.load(); });
         return 0;
     }
     return ::poll(descriptors, count, timeout);
 }
 ssize_t test_send(int fd, const void *data, size_t size, int flags) {
-    if (stalled_send.load()) { errno = EAGAIN; return -1; }
+    if (stalled_send.load()) {
+        errno = EAGAIN;
+        return -1;
+    }
     return ::send(fd, data, size, flags);
 }
-}
+} // namespace
 #define connect test_connect
 #define poll test_poll
 #define send test_send
@@ -73,9 +78,20 @@ struct Peer {
         assert(getsockname(listener, reinterpret_cast<sockaddr *>(&address), &length) == 0);
         endpoint = "127.0.0.1:" + std::to_string(ntohs(address.sin_port));
     }
-    void accept_client() { connection = ::accept(listener, nullptr, nullptr); assert(connection >= 0); }
-    void close_client() { if (connection >= 0) { ::close(connection); connection = -1; } }
-    ~Peer() { close_client(); ::close(listener); }
+    void accept_client() {
+        connection = ::accept(listener, nullptr, nullptr);
+        assert(connection >= 0);
+    }
+    void close_client() {
+        if (connection >= 0) {
+            ::close(connection);
+            connection = -1;
+        }
+    }
+    ~Peer() {
+        close_client();
+        ::close(listener);
+    }
 };
 void normal_frame() {
     Peer peer;
@@ -88,7 +104,8 @@ void normal_frame() {
     size_t offset = 0;
     while (offset < sizeof(bytes)) {
         const auto size = recv(peer.connection, bytes + offset, sizeof(bytes) - offset, 0);
-        assert(size > 0); offset += static_cast<size_t>(size);
+        assert(size > 0);
+        offset += static_cast<size_t>(size);
     }
     assert(std::string(bytes, sizeof(bytes)) == std::string("\0\0\0\x0c\0\x05topichello", 16));
     sink.stop();
@@ -185,7 +202,8 @@ void concurrent_start_stop() {
         }
     };
     std::thread first(exercise), second(exercise);
-    first.join(); second.join();
+    first.join();
+    second.join();
     sink.stop();
     assert(!sink.active());
     stalled_connect.store(false);
@@ -203,7 +221,8 @@ void start_stalled_sink(HookEventSink &sink) {
 void queue_frame_limit_and_recovery() {
     auto &sink = HookEventSink::instance();
     start_stalled_sink(sink);
-    for (size_t i = 0; i < 2048; ++i) assert(sink.emit("q", "x", 1));
+    for (size_t i = 0; i < 2048; ++i)
+        assert(sink.emit("q", "x", 1));
     assert(!sink.emit("q", "overflow", 8));
     assert(sink.stats().find("queued=2048 ") != std::string::npos);
     sink.stop();
@@ -247,18 +266,26 @@ void failed_send_can_restart() {
 }
 bool run(const char *name, void (*test)()) {
     std::fflush(nullptr);
-    const auto pid = fork(); assert(pid >= 0);
-    if (pid == 0) { alarm(5); test(); _exit(0); }
-    int status = 0; assert(waitpid(pid, &status, 0) == pid);
+    const auto pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        alarm(5);
+        test();
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
     const bool passed = WIFEXITED(status) && WEXITSTATUS(status) == 0;
     std::printf("%s: %s\n", passed ? "OK" : "FAIL", name);
     return passed;
 }
-}
+} // namespace
 int main(int argc, char **) {
 #if defined(DEJAVU_EVENT_CANCELLATION_PROBE)
     if (argc > 1)
-        return run("stop cancels a blocked send before its five-second deadline", stop_backpressure) ? 0 : 1;
+        return run("stop cancels a blocked send before its five-second deadline", stop_backpressure)
+                   ? 0
+                   : 1;
 #else
     (void)argc;
 #endif
@@ -266,10 +293,15 @@ int main(int argc, char **) {
     passed = run("stop cancels a pending event connection", stop_pending_connect) && passed;
     passed = run("pending event connections have a deadline", pending_connect_expires) && passed;
     passed = run("stalled event sends have a deadline", stalled_send_expires) && passed;
-    passed = run("concurrent event starts/stops preserve worker ownership", concurrent_start_stop) && passed;
-    passed = run("frame queue limit resets on stop and restart", queue_frame_limit_and_recovery) && passed;
-    passed = run("byte queue limit resets on stop and restart", queue_byte_limit_and_recovery) && passed;
-    passed = run("a failed connection can restart and send", failed_connection_can_restart) && passed;
+    passed =
+        run("concurrent event starts/stops preserve worker ownership", concurrent_start_stop) &&
+        passed;
+    passed = run("frame queue limit resets on stop and restart", queue_frame_limit_and_recovery) &&
+             passed;
+    passed =
+        run("byte queue limit resets on stop and restart", queue_byte_limit_and_recovery) && passed;
+    passed =
+        run("a failed connection can restart and send", failed_connection_can_restart) && passed;
     passed = run("a failed send can restart and send", failed_send_can_restart) && passed;
     return passed ? 0 : 1;
 }

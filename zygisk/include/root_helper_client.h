@@ -16,6 +16,5 @@ bool root_helper_mapping(void *address, uintptr_t *start, size_t *length, int *p
                          std::string *error);
 bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapshot *snapshot,
                          std::string *error);
-bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &snapshot,
-                                  std::string *error);
+bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &snapshot, std::string *error);
 bool root_helper_restore(const RootHelperProtectionSnapshot &snapshot, std::string *error);

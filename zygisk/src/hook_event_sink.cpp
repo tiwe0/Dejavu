@@ -73,24 +73,32 @@ bool parse_endpoint(const std::string &endpoint, sockaddr_in *address, std::stri
 bool wait_writable(int fd, const std::atomic<bool> &stopping, Clock::time_point deadline) {
     while (!stopping.load()) {
         const auto remaining = deadline - Clock::now();
-        if (remaining <= Clock::duration::zero()) return false;
+        if (remaining <= Clock::duration::zero())
+            return false;
         const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
-        const int timeout = std::min(kCancellationPollMs, static_cast<int>(milliseconds.count()) + 1);
+        const int timeout =
+            std::min(kCancellationPollMs, static_cast<int>(milliseconds.count()) + 1);
         pollfd descriptor{fd, POLLOUT, 0};
         const int ready = poll(&descriptor, 1, timeout);
-        if (ready < 0 && errno == EINTR) continue;
-        if (ready < 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) return false;
-        if (ready > 0 && (descriptor.revents & POLLOUT) != 0) return !stopping.load();
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready < 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            return false;
+        if (ready > 0 && (descriptor.revents & POLLOUT) != 0)
+            return !stopping.load();
     }
     return false;
 }
 
 bool connect_socket(int fd, const sockaddr_in &address, const std::atomic<bool> &stopping) {
     const int status = connect(fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address));
-    if (status == 0) return !stopping.load();
-    if (errno != EINPROGRESS && errno != EINTR) return false;
+    if (status == 0)
+        return !stopping.load();
+    if (errno != EINPROGRESS && errno != EINTR)
+        return false;
     const auto deadline = Clock::now() + std::chrono::milliseconds(kConnectTimeoutMs);
-    if (!wait_writable(fd, stopping, deadline)) return false;
+    if (!wait_writable(fd, stopping, deadline))
+        return false;
     int error = 0;
     socklen_t size = sizeof(error);
     return getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0 && error == 0;
@@ -100,14 +108,16 @@ bool write_all(int fd, const char *data, size_t size, const std::atomic<bool> &s
                Clock::time_point deadline) {
     size_t offset = 0;
     while (offset < size && !stopping.load()) {
-        if (Clock::now() >= deadline) return false;
+        if (Clock::now() >= deadline)
+            return false;
         const ssize_t written = send(fd, data + offset, size - offset, MSG_NOSIGNAL);
         if (written > 0) {
             offset += static_cast<size_t>(written);
         } else if (written < 0 && errno == EINTR) {
             continue;
         } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (!wait_writable(fd, stopping, deadline)) return false;
+            if (!wait_writable(fd, stopping, deadline))
+                return false;
         } else {
             return false;
         }
@@ -115,7 +125,7 @@ bool write_all(int fd, const char *data, size_t size, const std::atomic<bool> &s
     return offset == size && !stopping.load();
 }
 
-}  // namespace
+} // namespace
 
 struct HookEventSink::State {
     std::mutex lifecycle_mutex;
@@ -161,10 +171,10 @@ void run_worker(HookEventSink::State *state) {
         std::string frame;
         {
             std::unique_lock<std::mutex> lock(state->mutex);
-            state->ready.wait(lock, [state] {
-                return state->stop_requested.load() || !state->frames.empty();
-            });
-            if (state->stop_requested.load()) break;
+            state->ready.wait(
+                lock, [state] { return state->stop_requested.load() || !state->frames.empty(); });
+            if (state->stop_requested.load())
+                break;
             frame = std::move(state->frames.front());
             state->frames.pop_front();
             state->queued_bytes -= frame.size();
@@ -182,11 +192,14 @@ void run_worker(HookEventSink::State *state) {
     }
     std::lock_guard<std::mutex> lock(state->mutex);
     state->fd = -1;
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0)
+        ::close(fd);
     state->running = false;
     if (!state->stop_requested.load()) {
-        if (!connected) state->connect_failures += 1;
-        else if (failed) state->send_failures += 1;
+        if (!connected)
+            state->connect_failures += 1;
+        else if (failed)
+            state->send_failures += 1;
     }
     state->queued_bytes = 0;
     state->frames.clear();
@@ -202,10 +215,12 @@ void stop_worker(HookEventSink::State *state) {
         state->lease = 0;
         state->frames.clear();
         state->queued_bytes = 0;
-        if (state->fd >= 0) shutdown(state->fd, SHUT_RDWR);
+        if (state->fd >= 0)
+            shutdown(state->fd, SHUT_RDWR);
     }
     state->ready.notify_all();
-    if (state->worker.joinable()) state->worker.join();
+    if (state->worker.joinable())
+        state->worker.join();
     state->stop_requested.store(false);
 }
 
@@ -231,14 +246,15 @@ bool start_worker(HookEventSink::State *state, const sockaddr_in &address,
     return true;
 }
 
-}  // namespace
+} // namespace
 
 HookEventSink &HookEventSink::instance() {
     static HookEventSink sink;
     return sink;
 }
 
-HookEventSink::HookEventSink() : state_(new State()) {}
+HookEventSink::HookEventSink() : state_(new State()) {
+}
 
 HookEventSink::~HookEventSink() {
     stop();
@@ -260,10 +276,14 @@ void HookEventSink::stop() {
 }
 
 bool HookEventSink::acquire(const std::string &endpoint, uint64_t *lease, std::string *error) {
-    if (lease == nullptr) { *error = "missing event channel lease output"; return false; }
+    if (lease == nullptr) {
+        *error = "missing event channel lease output";
+        return false;
+    }
     *lease = 0;
     sockaddr_in address{};
-    if (!parse_endpoint(endpoint, &address, error)) return false;
+    if (!parse_endpoint(endpoint, &address, error))
+        return false;
     std::lock_guard<std::mutex> lifecycle_lock(state_->lifecycle_mutex);
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -276,7 +296,8 @@ bool HookEventSink::acquire(const std::string &endpoint, uint64_t *lease, std::s
             return false;
         }
     }
-    if (!start_worker(state_, address, endpoint, error)) return false;
+    if (!start_worker(state_, address, endpoint, error))
+        return false;
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->lease = state_->next_lease++;
     *lease = state_->lease;
@@ -284,11 +305,13 @@ bool HookEventSink::acquire(const std::string &endpoint, uint64_t *lease, std::s
 }
 
 bool HookEventSink::release(uint64_t lease) {
-    if (lease == 0) return false;
+    if (lease == 0)
+        return false;
     std::lock_guard<std::mutex> lifecycle_lock(state_->lifecycle_mutex);
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        if (state_->lease != lease) return false;
+        if (state_->lease != lease)
+            return false;
     }
     stop_worker(state_);
     return true;

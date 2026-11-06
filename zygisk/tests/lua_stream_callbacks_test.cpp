@@ -38,19 +38,22 @@ struct Backend {
         return 0;
     }
 };
-struct HookManager { struct Impl {
-    Backend *plugins;
-    static int lua_stream_accept(dejavu_control_session *, void *, const dejavu_value *, size_t,
-                                 dejavu_value *, char *, size_t);
-    static int lua_stream_read(dejavu_control_session *, void *, const dejavu_value *, size_t,
-                               dejavu_value *, char *, size_t);
-}; };
+struct HookManager {
+    struct Impl {
+        Backend *plugins;
+        static int lua_stream_accept(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                     dejavu_value *, char *, size_t);
+        static int lua_stream_read(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                   dejavu_value *, char *, size_t);
+    };
+};
 static void copy_error(char *buffer, size_t size, const std::string &error) {
     std::snprintf(buffer, size, "%s", error.c_str());
 }
 static bool set_owned_string(dejavu_value *result, const std::string &text) {
     char *copy = static_cast<char *>(std::malloc(text.size() + 1));
-    if (copy == nullptr) return false;
+    if (copy == nullptr)
+        return false;
     std::memcpy(copy, text.data(), text.size());
     copy[text.size()] = 0;
     result->type = DEJAVU_VALUE_STRING;
@@ -76,48 +79,50 @@ int main() {
     char error[512]{};
     for (long long invalid : {-1LL, -2LL, 10001LL, 600000LL}) {
         arguments[1].integer_value = invalid;
-        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 2,
-                                                     &result, error, sizeof(error)) != DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 2, &result, error,
+                                                    sizeof(error)) != DEJAVU_OK);
         arguments[1].integer_value = 64;
         arguments[2].integer_value = invalid;
-        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 3,
-                                                   &result, error, sizeof(error)) != DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 3, &result, error,
+                                                  sizeof(error)) != DEJAVU_OK);
     }
     assert(backend.accepts == 0 && backend.reads == 0);
     for (long long valid : {0LL, 25LL, 10000LL}) {
         arguments[1].integer_value = valid;
-        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 2,
-                                                     &result, error, sizeof(error)) == DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 2, &result, error,
+                                                    sizeof(error)) == DEJAVU_OK);
         assert(backend.last_timeout == valid);
         arguments[1].integer_value = 64;
         arguments[2].integer_value = valid;
-        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 3,
-                                                   &result, error, sizeof(error)) == DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 3, &result, error,
+                                                  sizeof(error)) == DEJAVU_OK);
         assert(backend.last_timeout == valid && result.type == DEJAVU_VALUE_NIL);
     }
     {
         LuaStreamWaitScope exhausted(LuaStreamWaitScope::Clock::now() - std::chrono::seconds(26));
-        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1,
-                                                     &result, error, sizeof(error)) != DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1, &result, error,
+                                                    sizeof(error)) != DEJAVU_OK);
         assert(std::strstr(error, "budget exhausted") != nullptr);
-        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 2,
-                                                   &result, error, sizeof(error)) != DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 2, &result, error,
+                                                  sizeof(error)) != DEJAVU_OK);
     }
     {
         LuaStreamWaitScope next_request;
-        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1,
-                                                     &result, error, sizeof(error)) == DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1, &result, error,
+                                                    sizeof(error)) == DEJAVU_OK);
         assert(backend.last_timeout == 5000);
-        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 2,
-                                                   &result, error, sizeof(error)) == DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_read(nullptr, &manager, arguments, 2, &result, error,
+                                                  sizeof(error)) == DEJAVU_OK);
         assert(backend.last_timeout == 1000);
     }
     {
-        LuaStreamWaitScope almost_spent(LuaStreamWaitScope::Clock::now() - std::chrono::seconds(24));
+        LuaStreamWaitScope almost_spent(LuaStreamWaitScope::Clock::now() -
+                                        std::chrono::seconds(24));
         LuaStreamWaitScope reentrant;
-        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1,
-                                                     &result, error, sizeof(error)) == DEJAVU_OK);
+        assert(HookManager::Impl::lua_stream_accept(nullptr, &manager, arguments, 1, &result, error,
+                                                    sizeof(error)) == DEJAVU_OK);
         assert(backend.last_timeout >= 0 && backend.last_timeout <= 1000);
     }
-    std::puts("OK: production Lua stream callbacks reject unbounded waits and recover in the next request");
+    std::puts("OK: production Lua stream callbacks reject unbounded waits and recover in the next "
+              "request");
 }

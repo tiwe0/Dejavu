@@ -354,8 +354,7 @@ HookManager::HookManager() : impl_(new(std::nothrow) Impl()) {
 
 HookManager::~HookManager() {
     if (impl_ != nullptr && impl_->plugins != nullptr) {
-        impl_->plugins->stream_close_owner(
-            dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+        impl_->plugins->stream_close_owner(dejavu_hook_manager_internal::kLuaStreamOwnerToken);
     }
     delete impl_;
 }

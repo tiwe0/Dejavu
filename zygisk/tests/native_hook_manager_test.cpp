@@ -16,7 +16,9 @@
 #include <thread>
 #include <vector>
 
-struct dejavu_module { unsigned int ordinal; };
+struct dejavu_module {
+    unsigned int ordinal;
+};
 
 namespace {
 
@@ -24,7 +26,10 @@ namespace {
     std::cerr << "FAIL: " << message << '\n';
     std::exit(1);
 }
-void expect(bool condition, const std::string &message) { if (!condition) fail(message); }
+void expect(bool condition, const std::string &message) {
+    if (!condition)
+        fail(message);
+}
 
 struct Scenario {
     bool compile_failure = false;
@@ -54,8 +59,8 @@ void *cold_target = nullptr;
 std::vector<dejavu_module *> modules;
 std::unordered_map<std::string, const void *> helper_symbols;
 
-int compile(const dejavu_engine *, const char *source, dejavu_module **out,
-            char *error, size_t error_size) {
+int compile(const dejavu_engine *, const char *source, dejavu_module **out, char *error,
+            size_t error_size) {
     scenario.source = source;
     ++scenario.compiled;
     if (scenario.compile_failure) {
@@ -71,8 +76,11 @@ int add_symbol(dejavu_engine *, const char *name, const void *address) {
     helper_symbols[name] = address;
     return DEJAVU_OK;
 }
-void destroy_module(dejavu_module *) { ++scenario.destroyed; }
-void replacement_placeholder() {}
+void destroy_module(dejavu_module *) {
+    ++scenario.destroyed;
+}
+void replacement_placeholder() {
+}
 void *module_symbol(dejavu_module *, const char *) {
     return scenario.missing_entry ? nullptr : reinterpret_cast<void *>(&replacement_placeholder);
 }
@@ -88,11 +96,13 @@ DejavuRuntime runtime() {
 void check_original(unsigned long long context) {
     const auto found = helper_symbols.find("dejavu_native_original_context");
     expect(found != helper_symbols.end(), "runtime must register the native context ABI helper");
-    const auto helper = reinterpret_cast<void *(*)(unsigned long long)>(const_cast<void *>(found->second));
+    const auto helper =
+        reinterpret_cast<void *(*)(unsigned long long)>(const_cast<void *>(found->second));
     void *original = helper(context);
     expect(original == NativeHookManager::original_for_context(context),
            "registered C ABI helper must resolve the same stable callback context");
-    expect(original == cold_target, "replacement must see prepared original before backend returns");
+    expect(original == cold_target,
+           "replacement must see prepared original before backend returns");
     expect(reinterpret_cast<int (*)(int)>(original)(35) == 42,
            "prepared original must remain callable");
 }
@@ -112,15 +122,21 @@ struct NativeHookManagerTest {
         return manager.install(library, "dejavu_test_cold_target",
                                "int dejavu_native_target(int value) { return value; }", id, error);
     }
-    bool uninstall(unsigned long long id, std::string *error) { return manager.uninstall(id, error); }
-    std::string list() { return manager.list(); }
+    bool uninstall(unsigned long long id, std::string *error) {
+        return manager.uninstall(id, error);
+    }
+    std::string list() {
+        return manager.list();
+    }
     unsigned long long retained_id(unsigned long long returned) {
-        if (returned != 0) return returned;
+        if (returned != 0)
+            return returned;
         auto text = list();
         expect(!text.empty(), "failed exposed install must leave a discoverable record");
         return std::stoull(text);
     }
-    void check_callback_while_control_lock_is_held(unsigned long long context, unsigned long long id) {
+    void check_callback_while_control_lock_is_held(unsigned long long context,
+                                                   unsigned long long id) {
         std::lock_guard<std::mutex> lock(manager.mutex_);
         check_original(context);
         NativeHookManager::hit_for_context(context);
@@ -131,25 +147,32 @@ struct NativeHookManagerTest {
 };
 
 FILE *native_test_fopen(const char *path, const char *mode) {
-    if (std::strcmp(path, "/proc/self/maps") != 0) return std::fopen(path, mode);
+    if (std::strcmp(path, "/proc/self/maps") != 0)
+        return std::fopen(path, mode);
     FILE *file = std::tmpfile();
     expect(file != nullptr, "create synthetic maps stream");
     const uintptr_t page_size = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
     const uintptr_t address = reinterpret_cast<uintptr_t>(cold_target);
     const uintptr_t start = address - address % page_size;
-    std::fprintf(file, "%lx-%lx --xp 00000000 00:00 0 %s\n",
-                 static_cast<unsigned long>(start), static_cast<unsigned long>(start + page_size),
-                 library.c_str());
+    std::fprintf(file, "%lx-%lx --xp 00000000 00:00 0 %s\n", static_cast<unsigned long>(start),
+                 static_cast<unsigned long>(start + page_size), library.c_str());
     std::rewind(file);
     return file;
 }
 
-extern "C" int __android_log_print(int, const char *, const char *, ...) { return 0; }
-extern "C" int __android_log_write(int, const char *, const char *) { return 0; }
-extern "C" int DobbyHook(void *, void *, void **) { fail("manager must use pre-publication backend"); }
+extern "C" int __android_log_print(int, const char *, const char *, ...) {
+    return 0;
+}
+extern "C" int __android_log_write(int, const char *, const char *) {
+    return 0;
+}
+extern "C" int DobbyHook(void *, void *, void **) {
+    fail("manager must use pre-publication backend");
+}
 extern "C" int DobbyHookWithPrepare(void *, void *, dobby_hook_prepare_t prepare, void *opaque) {
     if (scenario.prepare_failure) {
-        if (scenario.foreign_hook_races_prepare) scenario.installed = true;
+        if (scenario.foreign_hook_races_prepare)
+            scenario.installed = true;
         return -1;
     }
     scenario.context = reinterpret_cast<unsigned long long>(opaque);
@@ -157,7 +180,8 @@ extern "C" int DobbyHookWithPrepare(void *, void *, dobby_hook_prepare_t prepare
     check_original(scenario.context);
     auto hit = helper_symbols.find("dejavu_native_hit_context");
     expect(hit != helper_symbols.end(), "runtime must register the native hit ABI helper");
-    reinterpret_cast<void (*)(unsigned long long)>(const_cast<void *>(hit->second))(scenario.context);
+    reinterpret_cast<void (*)(unsigned long long)>(const_cast<void *>(hit->second))(
+        scenario.context);
     ++scenario.observations_before_return;
     scenario.installed = true;
     ++scenario.activations;
@@ -165,13 +189,18 @@ extern "C" int DobbyHookWithPrepare(void *, void *, dobby_hook_prepare_t prepare
 }
 extern "C" int DobbyDestroy(void *) {
     ++scenario.destroy_calls;
-    if (scenario.destroy_failure || !scenario.installed) return -1;
+    if (scenario.destroy_failure || !scenario.installed)
+        return -1;
     scenario.installed = false;
     return 0;
 }
-extern "C" int DobbyIsHooked(void *) { return scenario.installed ? 1 : 0; }
+extern "C" int DobbyIsHooked(void *) {
+    return scenario.installed ? 1 : 0;
+}
 
-bool root_helper_available() { return true; }
+bool root_helper_available() {
+    return true;
+}
 bool root_helper_mapping(void *address, uintptr_t *start, size_t *length, int *protection,
                          std::string *) {
     const auto page = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
@@ -183,9 +212,14 @@ bool root_helper_mapping(void *address, uintptr_t *start, size_t *length, int *p
 bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapshot *snapshot,
                          std::string *error) {
     ++scenario.captures;
-    if (scenario.capture_failure) { *error = "injected capture failure"; return false; }
+    if (scenario.capture_failure) {
+        *error = "injected capture failure";
+        return false;
+    }
     expect(size == 4, "native capture must cover exactly the single ARM64 entry instruction");
-    uintptr_t start; size_t length; int protection;
+    uintptr_t start;
+    size_t length;
+    int protection;
     root_helper_mapping(address, &start, &length, &protection, error);
     snapshot->ranges = {{start, length, protection}};
     return true;
@@ -193,56 +227,80 @@ bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapsho
 bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &, std::string *error) {
     ++scenario.applies;
     scenario.writable = true;
-    if (scenario.apply_failure) { *error = "injected apply failure"; return false; }
+    if (scenario.apply_failure) {
+        *error = "injected apply failure";
+        return false;
+    }
     return true;
 }
 bool root_helper_restore(const RootHelperProtectionSnapshot &, std::string *error) {
     ++scenario.restores;
-    if (scenario.restore_failure) { *error = "injected restore failure"; return false; }
+    if (scenario.restore_failure) {
+        *error = "injected restore failure";
+        return false;
+    }
     scenario.writable = false;
     return true;
 }
 bool root_helper_unlock(void *, int *protection, size_t *length, std::string *) {
-    ++scenario.applies; scenario.writable = true; *protection = PROT_EXEC; *length = 4096; return true;
+    ++scenario.applies;
+    scenario.writable = true;
+    *protection = PROT_EXEC;
+    *length = 4096;
+    return true;
 }
 bool root_helper_restore(void *, size_t, int, std::string *) {
-    ++scenario.restores; scenario.writable = false; return true;
+    ++scenario.restores;
+    scenario.writable = false;
+    return true;
 }
 
 namespace {
 void compile_failure_never_changes_permissions() {
-    NativeHookManagerTest test; scenario.compile_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.compile_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "compile error must fail install");
     expect(error.find("compile") != std::string::npos, "compile error must be reported");
-    expect(scenario.applies == 0 && !scenario.writable, "compile failure must precede permission changes");
+    expect(scenario.applies == 0 && !scenario.writable,
+           "compile failure must precede permission changes");
     expect(scenario.activations == 0, "compile failure must not patch entry");
 }
 void missing_entry_never_changes_permissions() {
-    NativeHookManagerTest test; scenario.missing_entry = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.missing_entry = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "missing entry must fail install");
-    expect(scenario.applies == 0 && !scenario.writable, "missing entry must precede permission changes");
+    expect(scenario.applies == 0 && !scenario.writable,
+           "missing entry must precede permission changes");
     expect(scenario.destroyed == 1, "unpublished compiled module must be reclaimed");
 }
 void capture_failure_never_compiles_or_patches() {
-    NativeHookManagerTest test; scenario.capture_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.capture_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "capture error must fail install");
     expect(scenario.compiled == 0 && scenario.applies == 0 && scenario.activations == 0,
            "invalid mapping must be rejected before compilation or permission changes");
 }
 void apply_failure_restores_permissions_before_returning() {
-    NativeHookManagerTest test; scenario.apply_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.apply_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "permission change failure must fail install");
     expect(scenario.activations == 0, "permission change failure must not publish an entry patch");
     expect(!scenario.writable, "uncertain permission change failure must retry saved restoration");
     expect(scenario.destroyed == 1, "unexposed JIT must be reclaimed after successful restoration");
 }
 void existing_foreign_hook_is_rejected_without_effects() {
-    NativeHookManagerTest test; scenario.installed = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.installed = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "an existing foreign hook must reject native installation");
     expect(scenario.captures == 0 && scenario.compiled == 0 && scenario.applies == 0,
            "foreign hook rejection must precede compilation and permission changes");
@@ -254,8 +312,10 @@ void foreign_hook_racing_prepare_is_not_claimed() {
     NativeHookManagerTest test;
     scenario.prepare_failure = true;
     scenario.foreign_hook_races_prepare = true;
-    unsigned long long id = 0; std::string error;
-    expect(!test.install(&id, &error), "a foreign hook installed during prepare must reject activation");
+    unsigned long long id = 0;
+    std::string error;
+    expect(!test.install(&id, &error),
+           "a foreign hook installed during prepare must reject activation");
     expect(scenario.installed && scenario.observations_before_return == 0,
            "prepare rejection must not publish this manager's replacement");
     expect(!test.uninstall(test.retained_id(id), &error),
@@ -268,26 +328,35 @@ void foreign_hook_racing_prepare_is_not_claimed() {
 }
 void original_is_ready_before_install_returns() {
     NativeHookManagerTest test;
-    unsigned long long id = 0; std::string error;
+    unsigned long long id = 0;
+    std::string error;
     expect(test.install(&id, &error), error);
-    expect(scenario.observations_before_return == 1, "backend must invoke preparation before returning");
+    expect(scenario.observations_before_return == 1,
+           "backend must invoke preparation before returning");
     expect(!scenario.writable, "successful install must restore permissions");
     test.check_callback_while_control_lock_is_held(scenario.context, id);
-    expect(NativeHookManager::original_for_id(id) == cold_target, "compatibility lookup must find published original");
+    expect(NativeHookManager::original_for_id(id) == cold_target,
+           "compatibility lookup must find published original");
     expect(test.uninstall(id, &error), error);
 }
 void prepare_failure_cleans_up_unpublished_module() {
-    NativeHookManagerTest test; scenario.prepare_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.prepare_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "backend prepare failure must fail install");
-    expect(!scenario.installed && !scenario.writable, "prepare failure must leave original entry/protection");
+    expect(!scenario.installed && !scenario.writable,
+           "prepare failure must leave original entry/protection");
     expect(scenario.destroyed == 1, "unexposed JIT module must be reclaimed");
 }
 void activation_error_retains_exposed_code() {
-    NativeHookManagerTest test; scenario.activated_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.activated_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "activation error must be reported");
-    expect(scenario.destroyed == 0, "code exposed to replacement cannot be unmapped on install failure");
+    expect(scenario.destroyed == 0,
+           "code exposed to replacement cannot be unmapped on install failure");
     check_original(scenario.context);
     if (scenario.installed) {
         scenario.activated_failure = false;
@@ -295,8 +364,10 @@ void activation_error_retains_exposed_code() {
     }
 }
 void restoration_error_is_visible_and_retryable() {
-    NativeHookManagerTest test; scenario.restore_failure = true;
-    unsigned long long id = 0; std::string error;
+    NativeHookManagerTest test;
+    scenario.restore_failure = true;
+    unsigned long long id = 0;
+    std::string error;
     expect(!test.install(&id, &error), "permission restoration failure must be reported");
     id = test.retained_id(id);
     expect(error.find("restor") != std::string::npos, "error must explain restoration failure");
@@ -304,29 +375,36 @@ void restoration_error_is_visible_and_retryable() {
     check_original(scenario.context);
     scenario.restore_failure = false;
     expect(test.uninstall(id, &error), error);
-    expect(!scenario.installed && !scenario.writable, "retry must restore both entry and page permissions");
+    expect(!scenario.installed && !scenario.writable,
+           "retry must restore both entry and page permissions");
 }
 void failed_uninstall_can_be_retried() {
     NativeHookManagerTest test;
-    unsigned long long id = 0; std::string error;
+    unsigned long long id = 0;
+    std::string error;
     expect(test.install(&id, &error), error);
     scenario.destroy_failure = true;
     expect(!test.uninstall(id, &error), "failed backend removal must be reported");
-    expect(scenario.installed && scenario.destroyed == 0, "failed removal must retain active replacement");
+    expect(scenario.installed && scenario.destroyed == 0,
+           "failed removal must retain active replacement");
     check_original(scenario.context);
     scenario.destroy_failure = false;
     expect(test.uninstall(id, &error), error);
 }
 void in_flight_replacement_survives_uninstall() {
     NativeHookManagerTest test;
-    unsigned long long id = 0; std::string error;
+    unsigned long long id = 0;
+    std::string error;
     expect(test.install(&id, &error), error);
     const auto context = scenario.context;
-    std::mutex mutex; std::condition_variable condition;
-    bool entered = false; bool resume = false;
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool resume = false;
     std::thread callback([&] {
         std::unique_lock<std::mutex> lock(mutex);
-        entered = true; condition.notify_all();
+        entered = true;
+        condition.notify_all();
         condition.wait(lock, [&] { return resume; });
         lock.unlock();
         check_original(context);
@@ -338,20 +416,24 @@ void in_flight_replacement_survives_uninstall() {
     }
     expect(test.uninstall(id, &error), error);
     expect(scenario.destroyed == 0, "uninstall must not unmap code used by an in-flight callback");
-    expect(NativeHookManager::original_for_id(id) == cold_target, "uninstall must preserve compatibility original lookup");
+    expect(NativeHookManager::original_for_id(id) == cold_target,
+           "uninstall must preserve compatibility original lookup");
     expect(test.list().find("uninstalled") != std::string::npos,
            "runtime status must distinguish an uninstalled record");
     {
-        std::lock_guard<std::mutex> lock(mutex); resume = true;
+        std::lock_guard<std::mutex> lock(mutex);
+        resume = true;
     }
-    condition.notify_all(); callback.join();
+    condition.notify_all();
+    callback.join();
 }
 void shutdown_preserves_published_context() {
     unsigned long long context = 0;
     unsigned long long published_id = 0;
     {
         NativeHookManagerTest test;
-        unsigned long long id = 0; std::string error;
+        unsigned long long id = 0;
+        std::string error;
         expect(test.install(&id, &error), error);
         context = scenario.context;
         published_id = id;
@@ -372,14 +454,19 @@ int main(int argc, char **argv) {
     expect(handle != nullptr, "load cold exported-symbol fixture");
     cold_target = dlsym(handle, "dejavu_test_cold_target");
     expect(cold_target != nullptr, "resolve cold exported test function");
-    const struct { const char *name; void (*run)(); } tests[] = {
+    const struct {
+        const char *name;
+        void (*run)();
+    } tests[] = {
         {"compile failure leaves XOM untouched", compile_failure_never_changes_permissions},
         {"missing entry leaves XOM untouched", missing_entry_never_changes_permissions},
         {"invalid mapping rejects before compilation", capture_failure_never_compiles_or_patches},
-        {"permission apply failure restores saved protection", apply_failure_restores_permissions_before_returning},
+        {"permission apply failure restores saved protection",
+         apply_failure_restores_permissions_before_returning},
         {"existing foreign hook is untouched", existing_foreign_hook_is_rejected_without_effects},
         {"foreign hook racing prepare is not claimed", foreign_hook_racing_prepare_is_not_claimed},
-        {"original is published before activation returns", original_is_ready_before_install_returns},
+        {"original is published before activation returns",
+         original_is_ready_before_install_returns},
         {"unpublished prepare failure reclaims code", prepare_failure_cleans_up_unpublished_module},
         {"activation failure retains exposed code", activation_error_retains_exposed_code},
         {"restoration failure is retryable", restoration_error_is_visible_and_retryable},
@@ -387,9 +474,13 @@ int main(int argc, char **argv) {
         {"in-flight replacement survives uninstall", in_flight_replacement_survives_uninstall},
         {"shutdown preserves published context", shutdown_preserves_published_context},
     };
-    for (const auto &test : tests) { test.run(); std::cout << "OK: " << test.name << '\n'; }
+    for (const auto &test : tests) {
+        test.run();
+        std::cout << "OK: " << test.name << '\n';
+    }
     dlclose(handle);
     // Published fake modules mirror the manager's documented process-lifetime retention.
-    for (auto *module : modules) delete module;
+    for (auto *module : modules)
+        delete module;
     return 0;
 }

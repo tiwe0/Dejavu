@@ -91,8 +91,7 @@ void send_framed(int fd, const std::string &payload) {
     const uint32_t length = htonl(static_cast<uint32_t>(payload.size()));
     assert(send(fd, &length, sizeof(length), 0) == sizeof(length));
     if (!payload.empty()) {
-        assert(send(fd, payload.data(), payload.size(), 0) ==
-               static_cast<ssize_t>(payload.size()));
+        assert(send(fd, payload.data(), payload.size(), 0) == static_cast<ssize_t>(payload.size()));
     }
 }
 
@@ -258,7 +257,6 @@ void close_cancels_writer() {
     assert(service.close(handle) == -1);
 }
 
-
 void zero_timeout_accepts_ready_connection() {
     StreamService service;
     const uint16_t port = reserve_loopback_port();
@@ -271,7 +269,8 @@ void zero_timeout_accepts_ready_connection() {
     const auto deadline = Clock::now() + 500ms;
     do {
         connection = service.accept(listener, 0);
-        if (connection == 0) std::this_thread::sleep_for(1ms);
+        if (connection == 0)
+            std::this_thread::sleep_for(1ms);
     } while (connection == 0 && Clock::now() < deadline);
     assert(connection > 0);
     assert(service.close_owner(21) == 2);
@@ -296,7 +295,8 @@ void zero_timeout_reads_ready_frame() {
     const auto deadline = Clock::now() + 500ms;
     do {
         status = service.read(connection, buffer, sizeof(buffer), 0, &size);
-        if (status == 0) std::this_thread::sleep_for(1ms);
+        if (status == 0)
+            std::this_thread::sleep_for(1ms);
     } while (status == 0 && Clock::now() < deadline);
     assert(status == 1);
     assert(std::string(buffer, size) == "ready");
@@ -385,17 +385,18 @@ void close_owner_racing_accept_leaves_no_connection() {
                                             "127.0.0.1:" + std::to_string(port), 4, &error);
         assert(listener > 0);
         const int client = connect_loopback(port);
-        auto acceptor = std::async(std::launch::async, [&] { return service.accept(listener, -1); });
+        auto acceptor =
+            std::async(std::launch::async, [&] { return service.accept(listener, -1); });
         const size_t count = service.close_owner(26);
         assert(count >= 1 && count <= 2);
         assert(acceptor.wait_for(200ms) == std::future_status::ready);
         const int connection = acceptor.get();
-        if (connection > 0) assert(service.write(connection, "late", 4) == -1);
+        if (connection > 0)
+            assert(service.write(connection, "late", 4) == -1);
         assert(service.close_owner(26) == 0);
         ::close(client);
     }
 }
-
 
 void stream_owner_is_checked_with_handle_lookup() {
     StreamService service;
@@ -431,7 +432,8 @@ void retired_owner_rejects_new_streams() {
     const std::string endpoint = "127.0.0.1:" + std::to_string(port);
     const int listener = service.listen(28, DEJAVU_STREAM_TRANSPORT_TCP, endpoint, 4, &error);
     assert(listener > 0);
-    auto acceptor = std::async(std::launch::async, [&] { return service.accept(listener, -1, 28); });
+    auto acceptor =
+        std::async(std::launch::async, [&] { return service.accept(listener, -1, 28); });
     std::this_thread::sleep_for(20ms);
     assert(service.retire_owner(28) == 1);
     assert(acceptor.wait_for(200ms) == std::future_status::ready);
@@ -461,7 +463,8 @@ void retire_owner_racing_open_does_not_publish_late_stream() {
         });
         service.retire_owner(30);
         const int handle = opener.get();
-        if (handle > 0) assert(service.write(handle, "late", 4, 30) == -1);
+        if (handle > 0)
+            assert(service.write(handle, "late", 4, 30) == -1);
         assert(service.close_owner(30) == 0);
     }
 }
@@ -501,7 +504,7 @@ void udp_framing_survives_lifecycle_changes() {
     StreamService service;
     std::string error;
     const int handle = service.open(32, DEJAVU_STREAM_TRANSPORT_UDP,
-        "127.0.0.1:" + std::to_string(ntohs(address.sin_port)), &error);
+                                    "127.0.0.1:" + std::to_string(ntohs(address.sin_port)), &error);
     assert(handle > 0);
     assert(service.write(handle, "udp", 3, 32) == 0);
     char frame[32];
@@ -513,7 +516,6 @@ void udp_framing_survives_lifecycle_changes() {
     assert(service.write(handle, "late", 4, 32) == -1);
     ::close(receiver);
 }
-
 
 void kcp_framing_survives_lifecycle_changes() {
     const int receiver = socket(AF_INET, SOCK_DGRAM, 0);
@@ -527,7 +529,7 @@ void kcp_framing_survives_lifecycle_changes() {
     StreamService service;
     std::string error;
     const int handle = service.open(33, DEJAVU_STREAM_TRANSPORT_KCP,
-        "127.0.0.1:" + std::to_string(ntohs(address.sin_port)), &error);
+                                    "127.0.0.1:" + std::to_string(ntohs(address.sin_port)), &error);
     assert(handle > 0);
     assert(service.write(handle, "kcp", 3, 33) == 0);
     char packet[2048];
@@ -572,23 +574,39 @@ int main() {
     passed = run_test("close interrupts an active TCP writer", close_cancels_writer) && passed;
     passed = run_test("TCP listen/accept/framed read/write", listen_accept_read_write) && passed;
     passed = run_test("accept timeout", listen_accept_timeout) && passed;
-    passed = run_test("read timeout/EOF/oversized record", listen_read_timeout_eof_oversize) &&
-             passed;
-    passed = run_test("close_owner covers listener and connections",
-                      listen_close_owner_cleans_all) &&
-             passed;
+    passed =
+        run_test("read timeout/EOF/oversized record", listen_read_timeout_eof_oversize) && passed;
+    passed =
+        run_test("close_owner covers listener and connections", listen_close_owner_cleans_all) &&
+        passed;
     passed = run_test("listen rejects non-TCP transports", listen_rejects_non_tcp) && passed;
-    passed = run_test("zero timeout accepts a ready connection", zero_timeout_accepts_ready_connection) && passed;
+    passed = run_test("zero timeout accepts a ready connection",
+                      zero_timeout_accepts_ready_connection) &&
+             passed;
     passed = run_test("zero timeout reads a ready frame", zero_timeout_reads_ready_frame) && passed;
     passed = run_test("close cancels indefinite accept", close_cancels_accept) && passed;
-    passed = run_test("close cancels active and queued readers", close_cancels_read_and_queued_reader) && passed;
-    passed = run_test("read timeout includes read lock wait", read_timeout_includes_lock_wait) && passed;
-    passed = run_test("owner close racing accept leaves no live connection", close_owner_racing_accept_leaves_no_connection) && passed;
-    passed = run_test("all stream operations enforce the expected owner", stream_owner_is_checked_with_handle_lookup) && passed;
-    passed = run_test("owner retirement rejects new streams", retired_owner_rejects_new_streams) && passed;
-    passed = run_test("owner retirement rejects in-progress opens", retire_owner_racing_open_does_not_publish_late_stream) && passed;
-    passed = run_test("partial frames survive timeout and drain before EOF", read_preserves_partial_frames_and_eof) && passed;
-    passed = run_test("UDP framing remains compatible", udp_framing_survives_lifecycle_changes) && passed;
-    passed = run_test("KCP framing remains compatible", kcp_framing_survives_lifecycle_changes) && passed;
+    passed =
+        run_test("close cancels active and queued readers", close_cancels_read_and_queued_reader) &&
+        passed;
+    passed =
+        run_test("read timeout includes read lock wait", read_timeout_includes_lock_wait) && passed;
+    passed = run_test("owner close racing accept leaves no live connection",
+                      close_owner_racing_accept_leaves_no_connection) &&
+             passed;
+    passed = run_test("all stream operations enforce the expected owner",
+                      stream_owner_is_checked_with_handle_lookup) &&
+             passed;
+    passed = run_test("owner retirement rejects new streams", retired_owner_rejects_new_streams) &&
+             passed;
+    passed = run_test("owner retirement rejects in-progress opens",
+                      retire_owner_racing_open_does_not_publish_late_stream) &&
+             passed;
+    passed = run_test("partial frames survive timeout and drain before EOF",
+                      read_preserves_partial_frames_and_eof) &&
+             passed;
+    passed = run_test("UDP framing remains compatible", udp_framing_survives_lifecycle_changes) &&
+             passed;
+    passed = run_test("KCP framing remains compatible", kcp_framing_survives_lifecycle_changes) &&
+             passed;
     return passed ? 0 : 1;
 }

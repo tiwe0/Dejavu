@@ -175,13 +175,12 @@ bool root_helper_capture(void *address, size_t size, RootHelperProtectionSnapsho
         return false;
     }
     return capture_mapping_protection(maps, reinterpret_cast<uintptr_t>(address), size,
-                                       static_cast<size_t>(page_size), snapshot, error);
+                                      static_cast<size_t>(page_size), snapshot, error);
 }
 
 namespace {
 
-bool apply_saved_range(const RootHelperProtectionRange &range, int protection,
-                       std::string *error) {
+bool apply_saved_range(const RootHelperProtectionRange &range, int protection, std::string *error) {
     // ART hooks are installed before app specialization, when helper IPC may
     // still be unavailable. Let the kernel decide whether the current process
     // may change the page, including XOM; use the helper only when it cannot.

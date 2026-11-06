@@ -180,7 +180,6 @@ void set_error(std::string *error, const char *message) {
     }
 }
 
-
 int mark_context_error(dejavu_hook_context *context, int status) {
     if (context != nullptr && context->helper_status == DEJAVU_HOOK_OK) {
         context->helper_status = status;
@@ -196,11 +195,7 @@ int check_context(dejavu_hook_context *context) {
     return DEJAVU_HOOK_OK;
 }
 
-int check_argument(
-    dejavu_hook_context *context,
-    unsigned int index,
-    char *kind,
-    jobject *boxed) {
+int check_argument(dejavu_hook_context *context, unsigned int index, char *kind, jobject *boxed) {
     int status = check_context(context);
     if (status != DEJAVU_HOOK_OK || index >= context->signature->parameters.size() ||
         context->arguments == nullptr) {
@@ -208,8 +203,7 @@ int check_argument(
     }
     *kind = context->signature->parameters[index];
     *boxed = context->env->GetObjectArrayElement(
-        context->arguments,
-        static_cast<jsize>(context->argument_offset + index));
+        context->arguments, static_cast<jsize>(context->argument_offset + index));
     if (context->env->ExceptionCheck()) {
         context->env->ExceptionClear();
         return mark_context_error(context, DEJAVU_HOOK_ERROR_JNI);
@@ -217,17 +211,13 @@ int check_argument(
     return DEJAVU_HOOK_OK;
 }
 
-
 void clear_local(JNIEnv *env, jobject value) {
     if (env != nullptr && value != nullptr) {
         env->DeleteLocalRef(value);
     }
 }
 
-
-
-
-}  // namespace dejavu_hook_internal
+} // namespace dejavu_hook_internal
 
 using namespace dejavu_hook_internal;
 
@@ -235,10 +225,7 @@ const char *dejavu_hook_api_preamble() {
     return kHookApiPreamble;
 }
 
-bool dejavu_hook_api_initialize(
-    JNIEnv *env,
-    DejavuHookJniApi *api,
-    std::string *error) {
+bool dejavu_hook_api_initialize(JNIEnv *env, DejavuHookJniApi *api, std::string *error) {
     struct Descriptor {
         const char *class_name;
         const char *unbox_name;
@@ -260,12 +247,13 @@ bool dejavu_hook_api_initialize(
         api->primitives[index].type =
             local == nullptr ? nullptr : static_cast<jclass>(env->NewGlobalRef(local));
         api->primitives[index].unbox = local == nullptr
-            ? nullptr
-            : env->GetMethodID(
-                  local, descriptors[index].unbox_name, descriptors[index].unbox_signature);
-        api->primitives[index].box = local == nullptr
-            ? nullptr
-            : env->GetStaticMethodID(local, "valueOf", descriptors[index].box_signature);
+                                           ? nullptr
+                                           : env->GetMethodID(local, descriptors[index].unbox_name,
+                                                              descriptors[index].unbox_signature);
+        api->primitives[index].box =
+            local == nullptr
+                ? nullptr
+                : env->GetStaticMethodID(local, "valueOf", descriptors[index].box_signature);
         if (env->ExceptionCheck() || api->primitives[index].type == nullptr ||
             api->primitives[index].unbox == nullptr || api->primitives[index].box == nullptr) {
             env->ExceptionClear();
@@ -276,10 +264,8 @@ bool dejavu_hook_api_initialize(
     return true;
 }
 
-bool dejavu_hook_api_register_symbols(
-    DejavuRuntime *runtime,
-    dejavu_engine *engine,
-    std::string *error) {
+bool dejavu_hook_api_register_symbols(DejavuRuntime *runtime, dejavu_engine *engine,
+                                      std::string *error) {
     if (runtime == nullptr || engine == nullptr) {
         set_error(error, "invalid hook API symbol registration argument");
         return false;
@@ -304,14 +290,22 @@ bool dejavu_hook_api_register_symbols(
         {"dejavu_hook_set_result_i64", reinterpret_cast<const void *>(dejavu_hook_set_result_i64)},
         {"dejavu_hook_get_result_f64", reinterpret_cast<const void *>(dejavu_hook_get_result_f64)},
         {"dejavu_hook_set_result_f64", reinterpret_cast<const void *>(dejavu_hook_set_result_f64)},
-        {"dejavu_hook_get_result_object", reinterpret_cast<const void *>(dejavu_hook_get_result_object)},
-        {"dejavu_hook_set_result_object", reinterpret_cast<const void *>(dejavu_hook_set_result_object)},
-        {"dejavu_hook_set_result_void", reinterpret_cast<const void *>(dejavu_hook_set_result_void)},
-        {"dejavu_hook_get_arg_string_mutf8", reinterpret_cast<const void *>(dejavu_hook_get_arg_string_mutf8)},
-        {"dejavu_hook_set_arg_string_mutf8", reinterpret_cast<const void *>(dejavu_hook_set_arg_string_mutf8)},
-        {"dejavu_hook_get_result_string_mutf8", reinterpret_cast<const void *>(dejavu_hook_get_result_string_mutf8)},
-        {"dejavu_hook_set_result_string_mutf8", reinterpret_cast<const void *>(dejavu_hook_set_result_string_mutf8)},
-        {"dejavu_hook_new_string_mutf8", reinterpret_cast<const void *>(dejavu_hook_new_string_mutf8)},
+        {"dejavu_hook_get_result_object",
+         reinterpret_cast<const void *>(dejavu_hook_get_result_object)},
+        {"dejavu_hook_set_result_object",
+         reinterpret_cast<const void *>(dejavu_hook_set_result_object)},
+        {"dejavu_hook_set_result_void",
+         reinterpret_cast<const void *>(dejavu_hook_set_result_void)},
+        {"dejavu_hook_get_arg_string_mutf8",
+         reinterpret_cast<const void *>(dejavu_hook_get_arg_string_mutf8)},
+        {"dejavu_hook_set_arg_string_mutf8",
+         reinterpret_cast<const void *>(dejavu_hook_set_arg_string_mutf8)},
+        {"dejavu_hook_get_result_string_mutf8",
+         reinterpret_cast<const void *>(dejavu_hook_get_result_string_mutf8)},
+        {"dejavu_hook_set_result_string_mutf8",
+         reinterpret_cast<const void *>(dejavu_hook_set_result_string_mutf8)},
+        {"dejavu_hook_new_string_mutf8",
+         reinterpret_cast<const void *>(dejavu_hook_new_string_mutf8)},
         {"dejavu_hook_is_instance_of", reinterpret_cast<const void *>(dejavu_hook_is_instance_of)},
         {"dejavu_hook_call", reinterpret_cast<const void *>(dejavu_hook_call)},
         {"dejavu_hook_log", reinterpret_cast<const void *>(dejavu_hook_log)},
@@ -343,9 +337,6 @@ jobjectArray dejavu_hook_copy_arguments(JNIEnv *env, jobjectArray arguments) {
     }
     return copy;
 }
-
-
-
 
 extern "C" void dejavu_hook_log(const char *message) {
     __android_log_print(ANDROID_LOG_DEBUG, kLogTag, "%s", message != nullptr ? message : "");

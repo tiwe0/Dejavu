@@ -17,7 +17,8 @@ bool valid_snapshot(const RootHelperProtectionSnapshot &snapshot, std::string *e
         return false;
     }
     for (const auto &range : snapshot.ranges) {
-        if (range.length == 0 || range.start > std::numeric_limits<uintptr_t>::max() - range.length ||
+        if (range.length == 0 ||
+            range.start > std::numeric_limits<uintptr_t>::max() - range.length ||
             (range.protection & PROT_EXEC) == 0 || range.start < previous_end) {
             *error = "invalid mapping protection snapshot";
             return false;
@@ -85,8 +86,10 @@ bool capture_mapping_protection(std::istream &maps, uintptr_t address, size_t si
             return false;
         }
         int protection = PROT_EXEC;
-        if (permissions[0] == 'r') protection |= PROT_READ;
-        if (permissions[1] == 'w') protection |= PROT_WRITE;
+        if (permissions[0] == 'r')
+            protection |= PROT_READ;
+        if (permissions[1] == 'w')
+            protection |= PROT_WRITE;
         const size_t length = range_end - covered;
         if (!captured.ranges.empty() && captured.ranges.back().protection == protection &&
             captured.ranges.back().start + captured.ranges.back().length == covered) {
@@ -107,11 +110,13 @@ bool capture_mapping_protection(std::istream &maps, uintptr_t address, size_t si
 bool apply_mapping_read_write(const RootHelperProtectionSnapshot &snapshot,
                               const MappingProtectionWriter &write, std::string *error) {
     error->clear();
-    if (!valid_snapshot(snapshot, error)) return false;
+    if (!valid_snapshot(snapshot, error))
+        return false;
     for (size_t index = 0; index < snapshot.ranges.size(); ++index) {
         const auto &range = snapshot.ranges[index];
         std::string detail;
-        if (write(range, range.protection | PROT_READ | PROT_WRITE, &detail)) continue;
+        if (write(range, range.protection | PROT_READ | PROT_WRITE, &detail))
+            continue;
         *error = "unable to make target writable: " + range_failure(range, detail);
         // A lost RPC reply can mean the failing range was already changed.
         // Include it in rollback rather than assuming failure means no effect.
@@ -130,12 +135,14 @@ bool apply_mapping_read_write(const RootHelperProtectionSnapshot &snapshot,
 bool restore_mapping_protection(const RootHelperProtectionSnapshot &snapshot,
                                 const MappingProtectionWriter &write, std::string *error) {
     error->clear();
-    if (!valid_snapshot(snapshot, error)) return false;
+    if (!valid_snapshot(snapshot, error))
+        return false;
     bool restored = true;
     for (const auto &range : snapshot.ranges) {
         std::string detail;
         if (!write(range, range.protection, &detail)) {
-            if (!error->empty()) *error += "; ";
+            if (!error->empty())
+                *error += "; ";
             *error += "unable to restore target protection: " + range_failure(range, detail);
             restored = false;
         }

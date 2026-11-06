@@ -30,7 +30,8 @@ bool append_utf8(uint32_t value, std::string *out) {
         bytes[size++] = static_cast<char>(0x80 | ((value >> 6) & 0x3f));
         bytes[size++] = static_cast<char>(0x80 | (value & 0x3f));
     }
-    if (out->size() > HookEventSink::kMaximumPayloadBytes - size) return false;
+    if (out->size() > HookEventSink::kMaximumPayloadBytes - size)
+        return false;
     out->append(bytes, size);
     return true;
 }
@@ -43,7 +44,8 @@ bool string_to_utf8(JNIEnv *env, jstring value, std::string *out) {
     }
     const bool is_string = env->IsInstanceOf(value, string_class) == JNI_TRUE;
     env->DeleteLocalRef(string_class);
-    if (!is_string) return false;
+    if (!is_string)
+        return false;
     const jsize length = env->GetStringLength(value);
     if (env->ExceptionCheck() || length < 0) {
         env->ExceptionClear();
@@ -51,7 +53,8 @@ bool string_to_utf8(JNIEnv *env, jstring value, std::string *out) {
     }
     // Each UTF-16 code unit requires at least one output byte. Reject large
     // inputs before JNI can allocate or pin a whole-string character copy.
-    if (static_cast<size_t>(length) > HookEventSink::kMaximumPayloadBytes) return false;
+    if (static_cast<size_t>(length) > HookEventSink::kMaximumPayloadBytes)
+        return false;
     out->clear();
     out->reserve(static_cast<size_t>(length));
     jchar units[1024];
@@ -73,7 +76,8 @@ bool string_to_utf8(JNIEnv *env, jstring value, std::string *out) {
                         return false;
                     continue;
                 }
-                if (!append_utf8(0xfffd, out)) return false;
+                if (!append_utf8(0xfffd, out))
+                    return false;
             }
             if (unit >= 0xd800 && unit <= 0xdbff) {
                 high_surrogate = unit;
@@ -88,12 +92,10 @@ bool string_to_utf8(JNIEnv *env, jstring value, std::string *out) {
     return high_surrogate == 0 || append_utf8(0xfffd, out);
 }
 
-}  // namespace
+} // namespace
 
-extern "C" int dejavu_hook_emit(
-    dejavu_hook_context *context,
-    const char *topic,
-    void *string_object) {
+extern "C" int dejavu_hook_emit(dejavu_hook_context *context, const char *topic,
+                                void *string_object) {
     if (context == nullptr || context->env == nullptr || topic == nullptr) {
         return DEJAVU_HOOK_ERROR_ARGUMENT;
     }
@@ -117,11 +119,8 @@ extern "C" int dejavu_hook_emit(
     return DEJAVU_HOOK_OK;
 }
 
-extern "C" int dejavu_hook_emit_text(
-    dejavu_hook_context *,
-    const char *topic,
-    const char *data,
-    unsigned long size) {
+extern "C" int dejavu_hook_emit_text(dejavu_hook_context *, const char *topic, const char *data,
+                                     unsigned long size) {
     if (topic == nullptr || (data == nullptr && size != 0)) {
         return DEJAVU_HOOK_ERROR_ARGUMENT;
     }

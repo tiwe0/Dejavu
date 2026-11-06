@@ -102,9 +102,11 @@ void test_local_pages_do_not_depend_on_helper_connectivity(int original_protecti
     assert(root_helper_restore(saved, &error) && error.empty());
     assert(scenario.property_reads == 0 && scenario.connections.empty());
     assert(scenario.local_requests.size() == 2);
-    assert(scenario.local_requests[0] == std::make_tuple(kSavedStart, kSavedLength,
-                                                       original_protection | PROT_READ | PROT_WRITE));
-    assert(scenario.local_requests[1] == std::make_tuple(kSavedStart, kSavedLength, original_protection));
+    assert(
+        scenario.local_requests[0] ==
+        std::make_tuple(kSavedStart, kSavedLength, original_protection | PROT_READ | PROT_WRITE));
+    assert(scenario.local_requests[1] ==
+           std::make_tuple(kSavedStart, kSavedLength, original_protection));
 }
 
 void test_local_denial_falls_back_to_helper(int original_protection) {
@@ -144,7 +146,8 @@ void test_helper_connection_failure_closes_socket_and_keeps_snapshot() {
     assert(!root_helper_apply_read_write(saved, &error));
     assert(error.find("unable to connect to root helper") != std::string::npos);
     assert(scenario.local_requests.size() == 2 && scenario.connections.size() == 2);
-    for (const auto &entry : scenario.connections) assert(entry.closed && !entry.connected);
+    for (const auto &entry : scenario.connections)
+        assert(entry.closed && !entry.connected);
     // A later retry may succeed locally, even while stale helper properties remain.
     scenario.local_denied = false;
     assert(root_helper_restore(saved, &error) && error.empty());
@@ -156,16 +159,18 @@ void test_helper_connection_failure_closes_socket_and_keeps_snapshot() {
 extern "C" int __system_property_get(const char *name, char *value) {
     ++scenario.property_reads;
     value[0] = '\0';
-    if (!scenario.helper_configured) return 0;
-    const std::string text = std::strcmp(name, "debug.dejavu.root.port") == 0
-                                 ? "39401" : std::string(64, 'a');
+    if (!scenario.helper_configured)
+        return 0;
+    const std::string text =
+        std::strcmp(name, "debug.dejavu.root.port") == 0 ? "39401" : std::string(64, 'a');
     std::memcpy(value, text.c_str(), text.size() + 1);
     return static_cast<int>(text.size());
 }
 
 int root_client_test_mprotect(void *address, size_t size, int protection) {
     scenario.local_requests.emplace_back(reinterpret_cast<uintptr_t>(address), size, protection);
-    if (!scenario.local_denied) return 0;
+    if (!scenario.local_denied)
+        return 0;
     errno = EACCES;
     return -1;
 }
@@ -220,5 +225,6 @@ int main() {
         test_denied_local_without_helper_reports_failure(protection);
     }
     test_helper_connection_failure_closes_socket_and_keeps_snapshot();
-    std::puts("OK: real root helper client uses local-first RX/XOM apply and restore, with IPC fallback");
+    std::puts(
+        "OK: real root helper client uses local-first RX/XOM apply and restore, with IPC fallback");
 }

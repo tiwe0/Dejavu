@@ -9,24 +9,36 @@ std::string captured;
 unsigned int emitted = 0;
 unsigned int dropped = 0;
 bool enabled = true;
-void reset() { captured.clear(); emitted = 0; dropped = 0; }
+void reset() {
+    captured.clear();
+    emitted = 0;
+    dropped = 0;
+}
 void send(JNIEnv &env) {
     dejavu_hook_context context{};
     context.env = &env;
     assert(dejavu_hook_emit(&context, "test", &env) == DEJAVU_HOOK_OK);
 }
+} // namespace
+HookEventSink::HookEventSink() : state_(nullptr) {
 }
-HookEventSink::HookEventSink() : state_(nullptr) {}
 HookEventSink::~HookEventSink() = default;
-HookEventSink &HookEventSink::instance() { static HookEventSink sink; return sink; }
+HookEventSink &HookEventSink::instance() {
+    static HookEventSink sink;
+    return sink;
+}
 bool HookEventSink::emit(const char *, const char *data, size_t size) {
     captured.assign(data, size);
     ++emitted;
     return true;
 }
 // Defined without using production internals; serialisation is the real source.
-void HookEventSink::record_drop() { ++dropped; }
-bool HookEventSink::active() const { return enabled; }
+void HookEventSink::record_drop() {
+    ++dropped;
+}
+bool HookEventSink::active() const {
+    return enabled;
+}
 
 int main() {
     JNIEnv env;
@@ -42,7 +54,9 @@ int main() {
     reset();
     env.text = {0xd800, 'a', 0xdc00, 0xd800, 0xdc00};
     send(env);
-    assert(captured == "\xef\xbf\xbd" "a" "\xef\xbf\xbd\xf0\x90\x80\x80");
+    assert(captured == "\xef\xbf\xbd"
+                       "a"
+                       "\xef\xbf\xbd\xf0\x90\x80\x80");
     std::puts("OK: unpaired surrogates become U+FFFD");
 
     reset();
@@ -102,11 +116,13 @@ int main() {
         failing.text = u"recovered 😀";
         send(failing);
         assert(emitted == 1 && dropped == 1 && captured == "recovered 😀");
-        std::puts(failure == JNIEnv::Failure::find_class
-            ? "OK: class lookup failure clears JNI exceptions and the next event recovers"
+        std::puts(
+            failure == JNIEnv::Failure::find_class
+                ? "OK: class lookup failure clears JNI exceptions and the next event recovers"
             : failure == JNIEnv::Failure::string_length
-            ? "OK: length lookup failure clears JNI exceptions and the next event recovers"
-            : "OK: mid-string JNI failure drops the partial payload and the next event recovers");
+                ? "OK: length lookup failure clears JNI exceptions and the next event recovers"
+                : "OK: mid-string JNI failure drops the partial payload and the next event "
+                  "recovers");
     }
     reset();
     enabled = false;

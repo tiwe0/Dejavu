@@ -57,8 +57,12 @@ bool stream_context_usable(const std::shared_ptr<PluginHostContext> &context) {
 struct LifecycleGuard {
     std::atomic<bool> &busy;
     bool entered;
-    explicit LifecycleGuard(std::atomic<bool> &value) : busy(value), entered(!busy.exchange(true)) {}
-    ~LifecycleGuard() { if (entered) busy.store(false); }
+    explicit LifecycleGuard(std::atomic<bool> &value) : busy(value), entered(!busy.exchange(true)) {
+    }
+    ~LifecycleGuard() {
+        if (entered)
+            busy.store(false);
+    }
 };
 
 constexpr char kLogTag[] = "DejavuPlugin";
@@ -107,14 +111,22 @@ struct PluginContextGuard {
 
 struct LoadingPluginGuard {
     size_t previous = g_loading_plugin_index;
-    explicit LoadingPluginGuard(size_t index) { g_loading_plugin_index = index; }
-    ~LoadingPluginGuard() { g_loading_plugin_index = previous; }
+    explicit LoadingPluginGuard(size_t index) {
+        g_loading_plugin_index = index;
+    }
+    ~LoadingPluginGuard() {
+        g_loading_plugin_index = previous;
+    }
 };
 
 struct UnlockedCallback {
     std::unique_lock<std::recursive_mutex> &lock;
-    explicit UnlockedCallback(std::unique_lock<std::recursive_mutex> &value) : lock(value) { lock.unlock(); }
-    ~UnlockedCallback() { lock.lock(); }
+    explicit UnlockedCallback(std::unique_lock<std::recursive_mutex> &value) : lock(value) {
+        lock.unlock();
+    }
+    ~UnlockedCallback() {
+        lock.lock();
+    }
 };
 
 #include "jit_prelude_generated.h"
@@ -142,7 +154,6 @@ using JitInitFunction = int (*)();
 using JitShutdownFunction = void (*)();
 using JitStringFunction = const char *(*)();
 using JitUnloadSafeFunction = int (*)();
-
 
 std::atomic<PluginManager *> g_jit_manager{nullptr};
 thread_local std::string g_jit_last_error;
@@ -347,8 +358,8 @@ extern "C" int dejavu_jit_register(const char *namespace_name, const char *funct
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     return manager->register_jit_function(namespace_name, function_name,
-                                                reinterpret_cast<void *>(function), context, error,
-                                                error_size)
+                                          reinterpret_cast<void *>(function), context, error,
+                                          error_size)
                ? DEJAVU_OK
                : DEJAVU_ERROR_INVALID_ARGUMENT;
 }
@@ -373,8 +384,7 @@ extern "C" void *dejavu_jit_get_app_class_loader(void) {
 
 extern "C" int dejavu_jit_mem_read(unsigned long long address, void *buffer, unsigned long size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
         return -1;
     }
     return PluginManagerHostMemRead(manager, static_cast<uintptr_t>(address), buffer,
@@ -384,8 +394,7 @@ extern "C" int dejavu_jit_mem_read(unsigned long long address, void *buffer, uns
 extern "C" int dejavu_jit_mem_write(unsigned long long address, const void *buffer,
                                     unsigned long size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
         return -1;
     }
     return PluginManagerHostMemWrite(manager, static_cast<uintptr_t>(address), buffer,
@@ -395,8 +404,7 @@ extern "C" int dejavu_jit_mem_write(unsigned long long address, const void *buff
 extern "C" int dejavu_jit_mem_query(unsigned long long address, unsigned long long *start,
                                     unsigned long long *end, unsigned int *prot) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MEM)) {
         return -1;
     }
     uintptr_t host_start = 0;
@@ -418,8 +426,7 @@ extern "C" int dejavu_jit_mem_query(unsigned long long address, unsigned long lo
 
 extern "C" void *dejavu_jit_module_resolve(const char *library, const char *symbol) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MODULE)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_MODULE)) {
         return nullptr;
     }
     return PluginManagerHostModuleResolve(manager, library, symbol);
@@ -428,8 +435,7 @@ extern "C" void *dejavu_jit_module_resolve(const char *library, const char *symb
 extern "C" int dejavu_jit_hook_install(void *target, void *replacement, void **original,
                                        char *error, unsigned long error_size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
         std::snprintf(error, error_size, "plugin lacks hook capability");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
@@ -439,25 +445,22 @@ extern "C" int dejavu_jit_hook_install(void *target, void *replacement, void **o
 
 extern "C" int dejavu_jit_hook_uninstall(void *target, char *error, unsigned long error_size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_HOOK)) {
         std::snprintf(error, error_size, "plugin lacks hook capability");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    return PluginManagerHostHookUninstall(manager, target, error,
-                                          static_cast<size_t>(error_size));
+    return PluginManagerHostHookUninstall(manager, target, error, static_cast<size_t>(error_size));
 }
 
 extern "C" int dejavu_jit_fs_read(const char *path, void *buffer, unsigned long capacity,
                                   unsigned long *size_read) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return -1;
     }
     size_t actual_size = 0;
-    const int status = PluginManagerHostFsRead(manager, path, buffer,
-                                               static_cast<size_t>(capacity), &actual_size);
+    const int status =
+        PluginManagerHostFsRead(manager, path, buffer, static_cast<size_t>(capacity), &actual_size);
     if (size_read != nullptr) {
         *size_read = static_cast<unsigned long>(actual_size);
     }
@@ -466,8 +469,7 @@ extern "C" int dejavu_jit_fs_read(const char *path, void *buffer, unsigned long 
 
 extern "C" int dejavu_jit_fs_write(const char *path, const void *data, unsigned long size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return -1;
     }
     return PluginManagerHostFsWrite(manager, path, data, static_cast<size_t>(size));
@@ -475,8 +477,7 @@ extern "C" int dejavu_jit_fs_write(const char *path, const void *data, unsigned 
 
 extern "C" int dejavu_jit_fs_exists(const char *path) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return 0;
     }
     return PluginManagerHostFsExists(manager, path);
@@ -484,8 +485,7 @@ extern "C" int dejavu_jit_fs_exists(const char *path) {
 
 extern "C" int dejavu_jit_fs_size(const char *path, unsigned long long *size) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return -1;
     }
     return PluginManagerHostFsSize(manager, path, size);
@@ -493,8 +493,7 @@ extern "C" int dejavu_jit_fs_size(const char *path, unsigned long long *size) {
 
 extern "C" int dejavu_jit_fs_remove(const char *path) {
     PluginManager *manager = g_jit_manager.load();
-    if (manager == nullptr ||
-        !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
+    if (manager == nullptr || !manager->active_plugin_has_capability(DEJAVU_PLUGIN_CAP_FS)) {
         return -1;
     }
     return PluginManagerHostFsRemove(manager, path);
@@ -526,8 +525,8 @@ extern "C" int dejavu_jit_stream_close(int handle) {
     return PluginManagerHostStreamClose(manager, handle);
 }
 
-extern "C" int dejavu_jit_stream_listen(unsigned int transport, const char *endpoint,
-                                        int backlog, char *error, unsigned long error_size) {
+extern "C" int dejavu_jit_stream_listen(unsigned int transport, const char *endpoint, int backlog,
+                                        char *error, unsigned long error_size) {
     PluginManager *manager = g_jit_manager.load();
     if (manager == nullptr) {
         std::snprintf(error, error_size, "plugin manager is not initialized");
@@ -552,9 +551,8 @@ extern "C" int dejavu_jit_stream_read(int handle, void *buffer, unsigned long ca
         return -1;
     }
     size_t actual = 0;
-    const int status = PluginManager::host_stream_read(manager, handle, buffer,
-                                                       static_cast<size_t>(capacity), timeout_ms,
-                                                       &actual);
+    const int status = PluginManager::host_stream_read(
+        manager, handle, buffer, static_cast<size_t>(capacity), timeout_ms, &actual);
     if (size_read != nullptr) {
         *size_read = static_cast<unsigned long>(actual);
     }
@@ -568,7 +566,10 @@ extern "C" void *dejavu_jit_stream_capture_context(void) {
 
 extern "C" int dejavu_jit_stream_bind_context(void *context) {
     PluginManager *manager = g_jit_manager.load();
-    if (context == nullptr) { g_worker_stream_context.reset(); return 0; }
+    if (context == nullptr) {
+        g_worker_stream_context.reset();
+        return 0;
+    }
     return manager != nullptr ? manager->bind_stream_context(context) : -1;
 }
 
@@ -685,23 +686,29 @@ PluginManager::~PluginManager() {
 
 void PluginManager::shutdown() {
     LifecycleGuard operation(lifecycle_active_);
-    if (!operation.entered) return;
+    if (!operation.entered)
+        return;
     std::vector<Plugin *> targets;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        for (const auto &plugin : plugins_) if (plugin->loaded) targets.push_back(plugin.get());
+        for (const auto &plugin : plugins_)
+            if (plugin->loaded)
+                targets.push_back(plugin.get());
     }
     bool retained = false;
     for (Plugin *plugin : targets) {
         std::string status, error;
         if (!finish_unload(plugin, &status, &error)) {
-            log_line(ANDROID_LOG_ERROR, ("plugin teardown retained " + plugin->name + ": " + error).c_str());
+            log_line(ANDROID_LOG_ERROR,
+                     ("plugin teardown retained " + plugin->name + ": " + error).c_str());
             retained = true;
         }
     }
-    if (retained) return;
+    if (retained)
+        return;
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (g_jit_manager == this) g_jit_manager = nullptr;
+    if (g_jit_manager == this)
+        g_jit_manager = nullptr;
     destroy_jit_cache();
 }
 
@@ -730,31 +737,41 @@ void PluginManager::initialize_plugin_context(Plugin *plugin) {
 
 size_t PluginManager::index_for_context(void *opaque) const {
     const auto context = find_host_context(opaque);
-    if (!context || !context->alive.load() || context->manager != this) return kPluginIndexNone;
+    if (!context || !context->alive.load() || context->manager != this)
+        return kPluginIndexNone;
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     for (size_t i = 0; i < plugins_.size(); ++i)
-        if (plugins_[i]->context == context) return i;
+        if (plugins_[i]->context == context)
+            return i;
     return kPluginIndexNone;
 }
 
 void *PluginManager::capture_stream_context() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     const size_t index = active_plugin_index();
-    if (index == kPluginIndexNone) return nullptr;
-    if (index >= plugins_.size() || plugins_[index]->retiring ||
-        plugins_[index]->cleanup_pending ||
-        (plugins_[index]->capabilities & DEJAVU_PLUGIN_CAP_STREAM) == 0) return nullptr;
-    if (!plugins_[index]->context) initialize_plugin_context(plugins_[index].get());
-    return stream_context_usable(plugins_[index]->context) ? plugins_[index]->context.get() : nullptr;
+    if (index == kPluginIndexNone)
+        return nullptr;
+    if (index >= plugins_.size() || plugins_[index]->retiring || plugins_[index]->cleanup_pending ||
+        (plugins_[index]->capabilities & DEJAVU_PLUGIN_CAP_STREAM) == 0)
+        return nullptr;
+    if (!plugins_[index]->context)
+        initialize_plugin_context(plugins_[index].get());
+    return stream_context_usable(plugins_[index]->context) ? plugins_[index]->context.get()
+                                                           : nullptr;
 }
 
 int PluginManager::bind_stream_context(void *opaque) {
-    if (opaque == nullptr) { g_worker_stream_context.reset(); return 0; }
+    if (opaque == nullptr) {
+        g_worker_stream_context.reset();
+        return 0;
+    }
     const auto context = find_host_context(opaque);
-    if (!stream_context_usable(context) || context->manager != this) return -1;
+    if (!stream_context_usable(context) || context->manager != this)
+        return -1;
     // Known callbacks may only bind their own identity; absence of TLS requires
     // a credential explicitly captured by the owning plugin before starting.
-    if (has_plugin_scope() && capture_stream_context() != opaque) return -1;
+    if (has_plugin_scope() && capture_stream_context() != opaque)
+        return -1;
     g_worker_stream_context = context;
     return 0;
 }
@@ -817,7 +834,10 @@ void PluginManager::autoload_from_property() {
 
 bool PluginManager::load_plugin(const std::string &path, std::string *status, std::string *error) {
     LifecycleGuard operation(lifecycle_active_);
-    if (!operation.entered) { *error = "plugin lifecycle operation is already active"; return false; }
+    if (!operation.entered) {
+        *error = "plugin lifecycle operation is already active";
+        return false;
+    }
 
     std::unique_lock<std::recursive_mutex> lock(mutex_);
     refresh_allowed_paths();
@@ -969,7 +989,8 @@ void PluginManager::prepare_plugin_for_unload(size_t plugin_index) {
     Plugin *plugin = plugins_[plugin_index].get();
     PluginContextGuard context_guard(plugin_index, plugins_[plugin_index]->context);
     if (plugin->jit) {
-        if (plugin->jit_prepare != nullptr) plugin->jit_prepare();
+        if (plugin->jit_prepare != nullptr)
+            plugin->jit_prepare();
     } else if (plugin->descriptor != nullptr &&
                plugin->descriptor->struct_size >=
                    offsetof(DejavuPluginDescriptor, on_unload_prepare) +
@@ -984,29 +1005,36 @@ bool PluginManager::remove_plugin(size_t plugin_index, std::string *error) {
         *error = "unknown plugin index";
         return false;
     }
-    if (!remove_hooks_for(plugin_index, error)) return false;
+    if (!remove_hooks_for(plugin_index, error))
+        return false;
     invalidate_entries(plugin_index);
-    if (plugins_[plugin_index]->context) plugins_[plugin_index]->context->alive.store(false);
+    if (plugins_[plugin_index]->context)
+        plugins_[plugin_index]->context->alive.store(false);
     plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(plugin_index));
     for (auto &entry : entries_) {
-        if (entry->plugin_index > plugin_index) --entry->plugin_index;
+        if (entry->plugin_index > plugin_index)
+            --entry->plugin_index;
     }
     for (auto &hook : hooks_) {
-        if (hook.plugin_index > plugin_index) --hook.plugin_index;
+        if (hook.plugin_index > plugin_index)
+            --hook.plugin_index;
     }
     return true;
 }
 
 size_t PluginManager::hook_count_for(size_t plugin_index) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    return static_cast<size_t>(std::count_if(hooks_.begin(), hooks_.end(),
-        [plugin_index](const HookRecord &record) { return record.plugin_index == plugin_index; }));
+    return static_cast<size_t>(
+        std::count_if(hooks_.begin(), hooks_.end(), [plugin_index](const HookRecord &record) {
+            return record.plugin_index == plugin_index;
+        }));
 }
 
 bool PluginManager::active_plugin_has_capability(uint32_t capability) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     const size_t index = active_plugin_index();
-    if (index == kPluginIndexNone) return false;
+    if (index == kPluginIndexNone)
+        return false;
     return index < plugins_.size() && (plugins_[index]->capabilities & capability) != 0;
 }
 
@@ -1014,19 +1042,22 @@ uint64_t PluginManager::stream_owner_for_context() const {
     if (has_plugin_scope()) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         const size_t index = active_plugin_index();
-        if (index == kPluginIndexNone || index >= plugins_.size()) return 0;
+        if (index == kPluginIndexNone || index >= plugins_.size())
+            return 0;
         const auto &plugin = plugins_[index];
         return !plugin->retiring && !plugin->cleanup_pending &&
-               (plugin->capabilities & DEJAVU_PLUGIN_CAP_STREAM) != 0
-                   ? plugin->stream_owner_token : 0;
+                       (plugin->capabilities & DEJAVU_PLUGIN_CAP_STREAM) != 0
+                   ? plugin->stream_owner_token
+                   : 0;
     }
     return stream_context_usable(g_worker_stream_context) &&
                    g_worker_stream_context->manager == this
-               ? g_worker_stream_context->owner : 0;
+               ? g_worker_stream_context->owner
+               : 0;
 }
 
-int PluginManager::install_owned_hook(void *target, void *replacement, void **original,
-                                      char *error, size_t error_size) {
+int PluginManager::install_owned_hook(void *target, void *replacement, void **original, char *error,
+                                      size_t error_size) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     const size_t index = active_plugin_index();
     if (index == kPluginIndexNone || index >= plugins_.size() || plugins_[index]->cleanup_pending) {
@@ -1034,7 +1065,7 @@ int PluginManager::install_owned_hook(void *target, void *replacement, void **or
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     if (std::any_of(hooks_.begin(), hooks_.end(),
-                   [target](const HookRecord &record) { return record.target == target; })) {
+                    [target](const HookRecord &record) { return record.target == target; })) {
         std::snprintf(error, error_size, "hook target is already owned by a plugin");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
@@ -1063,7 +1094,8 @@ int PluginManager::install_owned_hook(void *target, void *replacement, void **or
     }
     *original = nullptr;
     const int status = DobbyHook(target, replacement, original);
-    hooks_[record_index].installed = status == 0 || (*original != nullptr && DobbyIsHooked(target) > 0);
+    hooks_[record_index].installed =
+        status == 0 || (*original != nullptr && DobbyIsHooked(target) > 0);
     std::string restore_error;
     const bool restored = root_helper_restore(protection, &restore_error);
     hooks_[record_index].permissions_dirty = !restored;
@@ -1086,16 +1118,19 @@ bool PluginManager::uninstall_hook_record(size_t record_index, std::string *erro
         if (!root_helper_apply_read_write(record.protection, error)) {
             std::string restore_error;
             record.permissions_dirty = !root_helper_restore(record.protection, &restore_error);
-            if (record.permissions_dirty) *error += "; permission cleanup failed: " + restore_error;
+            if (record.permissions_dirty)
+                *error += "; permission cleanup failed: " + restore_error;
             return false;
         }
         const int status = DobbyDestroy(record.target);
-        if (status == 0) record.installed = false;
+        if (status == 0)
+            record.installed = false;
         std::string restore_error;
         record.permissions_dirty = !root_helper_restore(record.protection, &restore_error);
         if (status != 0) {
             *error = "DobbyDestroy failed with status " + std::to_string(status);
-            if (record.permissions_dirty) *error += "; permission cleanup failed: " + restore_error;
+            if (record.permissions_dirty)
+                *error += "; permission cleanup failed: " + restore_error;
             return false;
         }
         if (record.permissions_dirty) {
@@ -1103,7 +1138,8 @@ bool PluginManager::uninstall_hook_record(size_t record_index, std::string *erro
             return false;
         }
     } else if (record.permissions_dirty) {
-        if (!root_helper_restore(record.protection, error)) return false;
+        if (!root_helper_restore(record.protection, error))
+            return false;
         record.permissions_dirty = false;
     }
     hooks_.erase(hooks_.begin() + static_cast<std::ptrdiff_t>(record_index));
@@ -1118,9 +1154,11 @@ bool PluginManager::uninstall_owned_hook(void *target, char *error, size_t error
         return false;
     }
     for (size_t position = 0; position < hooks_.size(); ++position) {
-        if (hooks_[position].target != target || hooks_[position].plugin_index != index) continue;
+        if (hooks_[position].target != target || hooks_[position].plugin_index != index)
+            continue;
         std::string detail;
-        if (uninstall_hook_record(position, &detail)) return true;
+        if (uninstall_hook_record(position, &detail))
+            return true;
         std::snprintf(error, error_size, "%s", detail.c_str());
         return false;
     }
@@ -1132,10 +1170,15 @@ bool PluginManager::remove_hooks_for(size_t plugin_index, std::string *error) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     bool removed = true;
     for (size_t position = 0; position < hooks_.size();) {
-        if (hooks_[position].plugin_index != plugin_index) { ++position; continue; }
+        if (hooks_[position].plugin_index != plugin_index) {
+            ++position;
+            continue;
+        }
         std::string detail;
-        if (uninstall_hook_record(position, &detail)) continue;
-        if (!error->empty()) *error += "; ";
+        if (uninstall_hook_record(position, &detail))
+            continue;
+        if (!error->empty())
+            *error += "; ";
         *error += detail;
         removed = false;
         ++position;
@@ -1155,7 +1198,8 @@ bool PluginManager::valid_namespace(const std::string &value) {
 }
 
 bool PluginManager::load_plugin_locked(const std::string &path, std::string *status,
-                                       std::string *error, std::unique_lock<std::recursive_mutex> &manager_lock) {
+                                       std::string *error,
+                                       std::unique_lock<std::recursive_mutex> &manager_lock) {
     PluginContextGuard metadata_scope(kPluginIndexNone, nullptr);
     if (!whitelisted_path(path)) {
         *error =
@@ -1289,8 +1333,9 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         LoadingPluginGuard loading(plugin_index);
         PluginContextGuard initializer_scope(plugin_index, plugins_[plugin_index]->context);
         UnlockedCallback unlocked(manager_lock);
-        init_status = descriptor->initialize(&plugins_[plugin_index]->host, &plugins_[plugin_index]->state,
-                                             plugin_error, sizeof(plugin_error));
+        init_status =
+            descriptor->initialize(&plugins_[plugin_index]->host, &plugins_[plugin_index]->state,
+                                   plugin_error, sizeof(plugin_error));
     }
     if (init_status != 0) {
         *error = plugin_error[0] != '\0' ? plugin_error : "plugin initialize failed";
@@ -1403,7 +1448,10 @@ void PluginManager::destroy_jit_cache() {
 bool PluginManager::load_jit_plugin(const std::string &path, std::string *status,
                                     std::string *error) {
     LifecycleGuard operation(lifecycle_active_);
-    if (!operation.entered) { *error = "plugin lifecycle operation is already active"; return false; }
+    if (!operation.entered) {
+        *error = "plugin lifecycle operation is already active";
+        return false;
+    }
 
     std::unique_lock<std::recursive_mutex> lock(mutex_);
     refresh_allowed_paths();
@@ -1411,7 +1459,8 @@ bool PluginManager::load_jit_plugin(const std::string &path, std::string *status
 }
 
 bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string *status,
-                                           std::string *error, std::unique_lock<std::recursive_mutex> &manager_lock) {
+                                           std::string *error,
+                                           std::unique_lock<std::recursive_mutex> &manager_lock) {
     PluginContextGuard metadata_scope(kPluginIndexNone, nullptr);
     if (engine_ == nullptr || runtime_ == nullptr) {
         *error = "JIT plugins require the Lua control engine; load after start_control";
@@ -1609,15 +1658,25 @@ bool PluginManager::register_jit_function(const char *namespace_name, const char
 bool PluginManager::unload_plugin(const std::string &name, std::string *status,
                                   std::string *error) {
     LifecycleGuard operation(lifecycle_active_);
-    if (!operation.entered) { *error = "plugin lifecycle operation is already active"; return false; }
+    if (!operation.entered) {
+        *error = "plugin lifecycle operation is already active";
+        return false;
+    }
     Plugin *target = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (const auto &plugin : plugins_)
-            if (plugin->name == name && plugin->loaded) { target = plugin.get(); break; }
-        if (target == nullptr) { *error = "plugin not loaded: " + name; return false; }
+            if (plugin->name == name && plugin->loaded) {
+                target = plugin.get();
+                break;
+            }
+        if (target == nullptr) {
+            *error = "plugin not loaded: " + name;
+            return false;
+        }
         const bool failed_initialization_cleanup = !target->initialized && target->cleanup_pending;
-        if (!failed_initialization_cleanup && (target->flags & DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE) == 0) {
+        if (!failed_initialization_cleanup &&
+            (target->flags & DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE) == 0) {
             *error = "plugin is not marked unload-safe; remove its hooks explicitly or restart";
             return false;
         }
@@ -1631,8 +1690,14 @@ bool PluginManager::finish_unload(Plugin *target, std::string *status, std::stri
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (size_t i = 0; i < plugins_.size(); ++i)
-            if (plugins_[i].get() == target) { index = i; break; }
-        if (index == kPluginIndexNone) { *error = "plugin is no longer loaded"; return false; }
+            if (plugins_[i].get() == target) {
+                index = i;
+                break;
+            }
+        if (index == kPluginIndexNone) {
+            *error = "plugin is no longer loaded";
+            return false;
+        }
         // Callback admission and this target's quiescence check use the same mutex.
         for (const auto &entry : entries_) {
             if (entry->plugin_index == index && entry->in_flight.load() != 0) {
@@ -1641,26 +1706,30 @@ bool PluginManager::finish_unload(Plugin *target, std::string *status, std::stri
             }
         }
         target->retiring = true;
-        if (target->context) target->context->retiring.store(true);
+        if (target->context)
+            target->context->retiring.store(true);
         prepare = target->initialized && !target->prepare_complete && !target->cleanup_pending;
         target->cleanup_pending = true;
         invalidate_entries(index);
     }
     // Cancel network waits before callbacks join workers. Neither action may
     // hold manager mutex: workers may be completing their final host call.
-    if (target->stream_owner_token != 0) streams_->retire_owner(target->stream_owner_token);
+    if (target->stream_owner_token != 0)
+        streams_->retire_owner(target->stream_owner_token);
     if (prepare) {
         prepare_plugin_for_unload(index);
         target->prepare_complete = true;
     }
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        if (!remove_hooks_for(index, error)) return false;
+        if (!remove_hooks_for(index, error))
+            return false;
     }
     if (target->initialized) {
         PluginContextGuard context_guard(index, plugins_[index]->context);
         if (target->jit) {
-            if (target->jit_shutdown != nullptr) target->jit_shutdown();
+            if (target->jit_shutdown != nullptr)
+                target->jit_shutdown();
         } else if (target->descriptor != nullptr && target->descriptor->shutdown != nullptr) {
             target->descriptor->shutdown(target->state);
         }
@@ -1669,14 +1738,17 @@ bool PluginManager::finish_unload(Plugin *target, std::string *status, std::stri
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     const std::string name = target->name;
     if (target->jit && target->jit_module != nullptr) {
-        if (target->jit_cache_owned) release_jit_module(target->jit_cache_key, true);
-        else if (runtime_ != nullptr) runtime_->module_destroy(target->jit_module);
+        if (target->jit_cache_owned)
+            release_jit_module(target->jit_cache_key, true);
+        else if (runtime_ != nullptr)
+            runtime_->module_destroy(target->jit_module);
         target->jit_module = nullptr;
     } else if (!target->jit && target->handle != nullptr) {
         dlclose(target->handle);
         target->handle = nullptr;
     }
-    if (!remove_plugin(index, error)) return false;
+    if (!remove_plugin(index, error))
+        return false;
     *status = name + " unloaded";
     return true;
 }
@@ -1713,7 +1785,10 @@ bool PluginManager::register_lua(dejavu_control_session *session, std::string *e
 bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engine *engine,
                                    JNIEnv *env, jobject app_class_loader, std::string *error) {
     LifecycleGuard operation(lifecycle_active_);
-    if (!operation.entered) { *error = "plugin lifecycle operation is already active"; return false; }
+    if (!operation.entered) {
+        *error = "plugin lifecycle operation is already active";
+        return false;
+    }
 
     if (session == nullptr) {
         *error = "invalid plugin control session";
@@ -1748,14 +1823,14 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
             {"dejavu_jit_fs_size", reinterpret_cast<const void *>(&dejavu_jit_fs_size)},
             {"dejavu_jit_fs_remove", reinterpret_cast<const void *>(&dejavu_jit_fs_remove)},
             {"dejavu_jit_stream_open", reinterpret_cast<const void *>(&dejavu_jit_stream_open)},
-            {"dejavu_jit_stream_capture_context", reinterpret_cast<const void *>(&dejavu_jit_stream_capture_context)},
-            {"dejavu_jit_stream_bind_context", reinterpret_cast<const void *>(&dejavu_jit_stream_bind_context)},
+            {"dejavu_jit_stream_capture_context",
+             reinterpret_cast<const void *>(&dejavu_jit_stream_capture_context)},
+            {"dejavu_jit_stream_bind_context",
+             reinterpret_cast<const void *>(&dejavu_jit_stream_bind_context)},
             {"dejavu_jit_stream_write", reinterpret_cast<const void *>(&dejavu_jit_stream_write)},
             {"dejavu_jit_stream_close", reinterpret_cast<const void *>(&dejavu_jit_stream_close)},
-            {"dejavu_jit_stream_listen",
-             reinterpret_cast<const void *>(&dejavu_jit_stream_listen)},
-            {"dejavu_jit_stream_accept",
-             reinterpret_cast<const void *>(&dejavu_jit_stream_accept)},
+            {"dejavu_jit_stream_listen", reinterpret_cast<const void *>(&dejavu_jit_stream_listen)},
+            {"dejavu_jit_stream_accept", reinterpret_cast<const void *>(&dejavu_jit_stream_accept)},
             {"dejavu_jit_stream_read", reinterpret_cast<const void *>(&dejavu_jit_stream_read)},
             {"dejavu_jit_set_error", reinterpret_cast<const void *>(&dejavu_jit_set_error)},
             {"dejavu_jit_arg_type", reinterpret_cast<const void *>(&dejavu_jit_arg_type)},
@@ -1800,8 +1875,8 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
     pending_entries_.clear();
     for (size_t index = 0; index < plugins_.size(); ++index) {
         auto *plugin = plugins_[index].get();
-        if (plugin->loaded && !plugin->cleanup_pending && !plugin->control_ready && plugin->descriptor != nullptr &&
-            plugin->descriptor->on_control_ready != nullptr) {
+        if (plugin->loaded && !plugin->cleanup_pending && !plugin->control_ready &&
+            plugin->descriptor != nullptr && plugin->descriptor->on_control_ready != nullptr) {
             PluginContextGuard context_guard(index, plugins_[index]->context);
             UnlockedCallback unlocked(lock);
             plugin->descriptor->on_control_ready(plugin->state);
@@ -1821,7 +1896,8 @@ int PluginManager::host_register_function(void *host_context, const char *namesp
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     const auto context = find_host_context(host_context);
-    const size_t plugin_index = context ? manager->index_for_context(host_context) : g_loading_plugin_index;
+    const size_t plugin_index =
+        context ? manager->index_for_context(host_context) : g_loading_plugin_index;
     if (plugin_index == kPluginIndexNone || plugin_index != g_loading_plugin_index) {
         std::snprintf(error, error_size,
                       "plugin functions can only be registered during initialize()");
@@ -1896,7 +1972,8 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
         index = entry->plugin_index;
         if (!entry->valid || entry->function == nullptr ||
             index >= entry->manager->plugins_.size() || entry->manager->plugins_[index]->retiring ||
-            !entry->manager->plugins_[index]->loaded || !entry->manager->plugins_[index]->initialized) {
+            !entry->manager->plugins_[index]->loaded ||
+            !entry->manager->plugins_[index]->initialized) {
             std::snprintf(error, error_size, "plugin function is no longer loaded");
             return DEJAVU_ERROR_LUA_EXECUTE;
         }
@@ -1907,13 +1984,15 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
     }
     struct InFlightGuard {
         Entry *entry;
-        ~InFlightGuard() { entry->in_flight.fetch_sub(1, std::memory_order_release); }
+        ~InFlightGuard() {
+            entry->in_flight.fetch_sub(1, std::memory_order_release);
+        }
     } guard{entry};
     PluginContextGuard plugin_guard(index, context_scope);
     int status;
     try {
-        status = entry->function(session, entry->context, arguments, argument_count, result,
-                                 error, error_size);
+        status = entry->function(session, entry->context, arguments, argument_count, result, error,
+                                 error_size);
         if (status == DEJAVU_OK && result != nullptr &&
             result->type == DEJAVU_VALUE_HOST_FUNCTION) {
             if (result->host_function == nullptr) {
@@ -1938,13 +2017,16 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
                         }
                     }
                     if (binding == nullptr) {
-                        std::snprintf(error, error_size, "plugin returned an unknown managed host function");
+                        std::snprintf(error, error_size,
+                                      "plugin returned an unknown managed host function");
                         status = DEJAVU_ERROR_INVALID_ARGUMENT;
                     }
                 } else {
                     for (const auto &candidate : manager->entries_) {
-                        if (candidate->valid && candidate->returned && candidate->plugin_index == owner &&
-                            candidate->function == result->host_function && candidate->context == result->host_context) {
+                        if (candidate->valid && candidate->returned &&
+                            candidate->plugin_index == owner &&
+                            candidate->function == result->host_function &&
+                            candidate->context == result->host_context) {
                             binding = candidate.get();
                             break;
                         }
@@ -1972,9 +2054,11 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
                    result->string_value != nullptr) {
             // Lua copies a returned string only after this trampoline returns.
             // Detach borrowed module data while the plugin is still pinned.
-            if (result->string_size == std::numeric_limits<size_t>::max()) throw std::bad_alloc();
+            if (result->string_size == std::numeric_limits<size_t>::max())
+                throw std::bad_alloc();
             char *copy = static_cast<char *>(std::malloc(result->string_size + 1));
-            if (copy == nullptr) throw std::bad_alloc();
+            if (copy == nullptr)
+                throw std::bad_alloc();
             std::memcpy(copy, result->string_value, result->string_size);
             copy[result->string_size] = '\0';
             result->string_value = copy;
@@ -1992,10 +2076,11 @@ int PluginManager::trampoline(dejavu_control_session *session, void *context,
     }
     if (status != DEJAVU_OK && result != nullptr) {
         const auto *runtime = entry->manager->runtime_;
-        if (result->type == DEJAVU_VALUE_FUNCTION && session != nullptr &&
-            runtime != nullptr && runtime->control_session_release_function != nullptr)
+        if (result->type == DEJAVU_VALUE_FUNCTION && session != nullptr && runtime != nullptr &&
+            runtime->control_session_release_function != nullptr)
             runtime->control_session_release_function(session, result->function_value);
-        if (runtime != nullptr && runtime->value_release != nullptr) runtime->value_release(result);
+        if (runtime != nullptr && runtime->value_release != nullptr)
+            runtime->value_release(result);
         else {
             if (result->type == DEJAVU_VALUE_STRING && result->owned)
                 std::free(const_cast<char *>(result->string_value));
@@ -2385,11 +2470,12 @@ int PluginManagerHostHookInstall(void *host_context, void *target, void *replace
     const size_t native_index = manager->index_for_context(host_context);
     const auto native_context = find_host_context(host_context);
     if (native_context && (native_index == kPluginIndexNone ||
-        (native_context->capabilities & DEJAVU_PLUGIN_CAP_HOOK) == 0)) {
+                           (native_context->capabilities & DEJAVU_PLUGIN_CAP_HOOK) == 0)) {
         std::snprintf(error, error_size, "invalid native hook context");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    PluginContextGuard guard(native_index != kPluginIndexNone ? native_index : active_plugin_index(),
+    PluginContextGuard guard(native_index != kPluginIndexNone ? native_index
+                                                              : active_plugin_index(),
                              native_context ? native_context : g_current_plugin_context);
     return manager->install_owned_hook(target, replacement, original, error, error_size);
 }
@@ -2404,11 +2490,12 @@ int PluginManagerHostHookUninstall(void *host_context, void *target, char *error
     const size_t native_index = manager->index_for_context(host_context);
     const auto native_context = find_host_context(host_context);
     if (native_context && (native_index == kPluginIndexNone ||
-        (native_context->capabilities & DEJAVU_PLUGIN_CAP_HOOK) == 0)) {
+                           (native_context->capabilities & DEJAVU_PLUGIN_CAP_HOOK) == 0)) {
         std::snprintf(error, error_size, "invalid native hook context");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
-    PluginContextGuard guard(native_index != kPluginIndexNone ? native_index : active_plugin_index(),
+    PluginContextGuard guard(native_index != kPluginIndexNone ? native_index
+                                                              : active_plugin_index(),
                              native_context ? native_context : g_current_plugin_context);
     if (!manager->uninstall_owned_hook(target, error, error_size)) {
         return DEJAVU_ERROR_INVALID_ARGUMENT;
@@ -2421,7 +2508,8 @@ int PluginManagerHostHookUninstall(void *host_context, void *target, char *error
 namespace {
 uint64_t host_stream_owner(void *opaque, PluginManager *manager) {
     const auto context = find_host_context(opaque);
-    if (context) return stream_context_usable(context) ? context->owner : 0;
+    if (context)
+        return stream_context_usable(context) ? context->owner : 0;
     return manager != nullptr ? manager->stream_owner_for_context() : 0;
 }
 } // namespace
@@ -2436,15 +2524,18 @@ int PluginManager::host_stream_open(void *host_context, uint32_t transport, cons
     }
     std::string detail;
     const int handle = manager->streams_->open(token, transport, endpoint, &detail);
-    if (handle == 0) std::snprintf(error, error_size, "%s", detail.c_str());
+    if (handle == 0)
+        std::snprintf(error, error_size, "%s", detail.c_str());
     return handle;
 }
 
-int PluginManager::host_stream_write(void *host_context, int handle, const void *data, size_t size) {
+int PluginManager::host_stream_write(void *host_context, int handle, const void *data,
+                                     size_t size) {
     auto *manager = from_host_context(host_context);
     const uint64_t token = host_stream_owner(host_context, manager);
     return token != 0 && (data != nullptr || size == 0)
-               ? manager->streams_->write(handle, data, size, token) : -1;
+               ? manager->streams_->write(handle, data, size, token)
+               : -1;
 }
 
 int PluginManager::host_stream_close(void *host_context, int handle) {
@@ -2453,8 +2544,8 @@ int PluginManager::host_stream_close(void *host_context, int handle) {
     return token != 0 ? manager->streams_->close(handle, token) : -1;
 }
 
-int PluginManager::host_stream_listen(void *host_context, uint32_t transport,
-                                      const char *endpoint, int backlog, char *error, size_t error_size) {
+int PluginManager::host_stream_listen(void *host_context, uint32_t transport, const char *endpoint,
+                                      int backlog, char *error, size_t error_size) {
     auto *manager = from_host_context(host_context);
     const uint64_t token = host_stream_owner(host_context, manager);
     if (manager == nullptr || endpoint == nullptr || token == 0) {
@@ -2463,7 +2554,8 @@ int PluginManager::host_stream_listen(void *host_context, uint32_t transport,
     }
     std::string detail;
     const int handle = manager->streams_->listen(token, transport, endpoint, backlog, &detail);
-    if (handle == 0) std::snprintf(error, error_size, "%s", detail.c_str());
+    if (handle == 0)
+        std::snprintf(error, error_size, "%s", detail.c_str());
     return handle;
 }
 
@@ -2473,17 +2565,23 @@ int PluginManager::host_stream_accept(void *host_context, int listener_handle, i
     return token != 0 ? manager->streams_->accept(listener_handle, timeout_ms, token) : -1;
 }
 
-int PluginManager::host_stream_read(void *host_context, int handle, void *buffer,
-                                    size_t capacity, int timeout_ms, size_t *size_read) {
-    if (size_read != nullptr) *size_read = 0;
+int PluginManager::host_stream_read(void *host_context, int handle, void *buffer, size_t capacity,
+                                    int timeout_ms, size_t *size_read) {
+    if (size_read != nullptr)
+        *size_read = 0;
     auto *manager = from_host_context(host_context);
     const uint64_t token = host_stream_owner(host_context, manager);
-    return token != 0 ? manager->streams_->read(handle, buffer, capacity, timeout_ms, size_read, token) : -1;
+    return token != 0
+               ? manager->streams_->read(handle, buffer, capacity, timeout_ms, size_read, token)
+               : -1;
 }
 
 int PluginManager::stream_listen(uint64_t owner_token, uint32_t transport,
                                  const std::string &endpoint, int backlog, std::string *error) {
-    if (owner_token == 0) { *error = "missing stream owner"; return 0; }
+    if (owner_token == 0) {
+        *error = "missing stream owner";
+        return 0;
+    }
     return streams_->listen(owner_token, transport, endpoint, backlog, error);
 }
 
@@ -2493,7 +2591,9 @@ int PluginManager::stream_accept(int listener_handle, int timeout_ms, uint64_t o
 
 int PluginManager::stream_read(int handle, void *buffer, size_t capacity, int timeout_ms,
                                size_t *size_read, uint64_t owner_token) {
-    return owner_token != 0 ? streams_->read(handle, buffer, capacity, timeout_ms, size_read, owner_token) : -1;
+    return owner_token != 0
+               ? streams_->read(handle, buffer, capacity, timeout_ms, size_read, owner_token)
+               : -1;
 }
 
 int PluginManager::stream_write(int handle, const void *data, size_t size, uint64_t owner_token) {

@@ -33,8 +33,8 @@ class StreamService {
              std::string *error);
     // Bind a TCP listener. The endpoint is host:port; use 0.0.0.0 to accept
     // connections from outside the app process (network permission required).
-    int listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
-               int backlog, std::string *error);
+    int listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint, int backlog,
+               std::string *error);
     // An expected_owner other than zero atomically checks ownership with lookup.
     // Zero is reserved for internal callers that already hold trusted handles.
     // Accept one pending TCP connection. Returns a positive handle, 0 on

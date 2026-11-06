@@ -73,8 +73,7 @@ bool split_endpoint(const std::string &endpoint, std::string *host, uint16_t *po
     return true;
 }
 
-bool parse_numeric_address(const std::string &host, sockaddr_storage *storage,
-                            socklen_t *length);
+bool parse_numeric_address(const std::string &host, sockaddr_storage *storage, socklen_t *length);
 
 int connect_endpoint(uint32_t transport, const std::string &endpoint, std::string *error) {
     std::string host;
@@ -176,8 +175,7 @@ int connect_endpoint(uint32_t transport, const std::string &endpoint, std::strin
     return fd;
 }
 
-bool parse_numeric_address(const std::string &host, sockaddr_storage *storage,
-                            socklen_t *length) {
+bool parse_numeric_address(const std::string &host, sockaddr_storage *storage, socklen_t *length) {
     sockaddr_in ipv4 = {};
     if (inet_pton(AF_INET, host.c_str(), &ipv4.sin_addr) == 1) {
         ipv4.sin_family = AF_INET;
@@ -336,11 +334,16 @@ struct StreamService::Stream {
 
     ~Stream() {
         active.store(false);
-        if (worker.joinable()) worker.join();
-        if (kcp != nullptr) ikcp_release(kcp);
-        if (fd >= 0) ::close(fd);
-        if (cancel_read_fd >= 0) ::close(cancel_read_fd);
-        if (cancel_write_fd >= 0) ::close(cancel_write_fd);
+        if (worker.joinable())
+            worker.join();
+        if (kcp != nullptr)
+            ikcp_release(kcp);
+        if (fd >= 0)
+            ::close(fd);
+        if (cancel_read_fd >= 0)
+            ::close(cancel_read_fd);
+        if (cancel_write_fd >= 0)
+            ::close(cancel_write_fd);
     }
 };
 
@@ -384,7 +387,8 @@ void cancel_stream(StreamService::Stream *stream) {
 
 void close_stream(const std::shared_ptr<StreamService::Stream> &stream) {
     cancel_stream(stream.get());
-    if (stream->worker.joinable()) stream->worker.join();
+    if (stream->worker.joinable())
+        stream->worker.join();
     // Wait for current I/O without closing/reusing its fd. Remaining queued
     // operations retain the Stream and fail on active=false before using it.
     std::scoped_lock lock(stream->mutex, stream->read_mutex);
@@ -396,38 +400,48 @@ void close_stream(const std::shared_ptr<StreamService::Stream> &stream) {
     }
 }
 
-bool lock_reader(StreamService::Stream *stream, int timeout_ms,
-                 StreamClock::time_point deadline, std::unique_lock<std::timed_mutex> *lock) {
-    if (!stream->active.load()) return false;
-    if (timeout_ms == 0) return lock->try_lock();
-    if (timeout_ms > 0) return lock->try_lock_until(deadline);
+bool lock_reader(StreamService::Stream *stream, int timeout_ms, StreamClock::time_point deadline,
+                 std::unique_lock<std::timed_mutex> *lock) {
+    if (!stream->active.load())
+        return false;
+    if (timeout_ms == 0)
+        return lock->try_lock();
+    if (timeout_ms > 0)
+        return lock->try_lock_until(deadline);
     while (stream->active.load()) {
-        if (lock->try_lock_for(std::chrono::milliseconds(10))) return true;
+        if (lock->try_lock_for(std::chrono::milliseconds(10)))
+            return true;
     }
     return false;
 }
 
 // Return 1 for readable data, 0 for a deadline, and -1 for cancellation/error.
-int wait_readable(StreamService::Stream *stream, int timeout_ms,
-                  StreamClock::time_point deadline) {
+int wait_readable(StreamService::Stream *stream, int timeout_ms, StreamClock::time_point deadline) {
     for (;;) {
-        if (!stream->active.load()) return -1;
+        if (!stream->active.load())
+            return -1;
         int wait_ms = -1;
         if (timeout_ms == 0) {
             wait_ms = 0;
         } else if (timeout_ms > 0) {
             const auto remaining = deadline - StreamClock::now();
-            if (remaining <= StreamClock::duration::zero()) return 0;
-            wait_ms = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count()) + 1;
+            if (remaining <= StreamClock::duration::zero())
+                return 0;
+            wait_ms =
+                static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count()) +
+                1;
         }
-        pollfd descriptors[2] = {{stream->fd, POLLIN, 0},
-                                 {stream->cancel_read_fd, POLLIN, 0}};
+        pollfd descriptors[2] = {{stream->fd, POLLIN, 0}, {stream->cancel_read_fd, POLLIN, 0}};
         const int ready = poll(descriptors, 2, wait_ms);
-        if (ready < 0 && errno == EINTR) continue;
-        if (!stream->active.load() || descriptors[1].revents != 0) return -1;
-        if (ready == 0) return 0;
-        if (ready < 0 || (descriptors[0].revents & (POLLERR | POLLNVAL)) != 0) return -1;
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (!stream->active.load() || descriptors[1].revents != 0)
+            return -1;
+        if (ready == 0)
+            return 0;
+        if (ready < 0 || (descriptors[0].revents & (POLLERR | POLLNVAL)) != 0)
+            return -1;
         return 1; // POLLHUP must reach recv(), which returns EOF after buffered data.
     }
 }
@@ -501,8 +515,8 @@ int StreamService::open(uint64_t owner_token, uint32_t transport, const std::str
         *error = "unsupported stream transport";
         return 0;
     }
-    if (transport == DEJAVU_STREAM_TRANSPORT_TCP &&
-        !prepare_cancellation(stream.get(), error)) return 0;
+    if (transport == DEJAVU_STREAM_TRANSPORT_TCP && !prepare_cancellation(stream.get(), error))
+        return 0;
     return register_stream(stream, owner_token, error);
 }
 
@@ -526,8 +540,8 @@ int StreamService::open_kcp(Stream *stream, const std::string &endpoint, std::st
     return 0;
 }
 
-int StreamService::listen(uint64_t owner_token, uint32_t transport,
-                           const std::string &endpoint, int backlog, std::string *error) {
+int StreamService::listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
+                          int backlog, std::string *error) {
     if (transport != DEJAVU_STREAM_TRANSPORT_TCP) {
         *error = "stream listen supports TCP only";
         return 0;
@@ -539,26 +553,30 @@ int StreamService::listen(uint64_t owner_token, uint32_t transport,
     if (stream->fd < 0) {
         return 0;
     }
-    if (transport == DEJAVU_STREAM_TRANSPORT_TCP &&
-        !prepare_cancellation(stream.get(), error)) return 0;
+    if (transport == DEJAVU_STREAM_TRANSPORT_TCP && !prepare_cancellation(stream.get(), error))
+        return 0;
     return register_stream(stream, owner_token, error);
 }
 
 int StreamService::accept(int listener_handle, int timeout_ms, uint64_t expected_owner) {
-    const auto deadline = StreamClock::now() + std::chrono::milliseconds(
-        timeout_ms < 0 ? 0 : timeout_ms);
+    const auto deadline =
+        StreamClock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     auto listener = find(listener_handle, expected_owner);
-    if (listener == nullptr || !listener->listener) return -1;
+    if (listener == nullptr || !listener->listener)
+        return -1;
     std::unique_lock<std::timed_mutex> reader(listener->read_mutex, std::defer_lock);
     if (!lock_reader(listener.get(), timeout_ms, deadline, &reader))
         return listener->active.load() ? 0 : -1;
     int fd = -1;
     for (;;) {
         const int ready = wait_readable(listener.get(), timeout_ms, deadline);
-        if (ready <= 0) return ready;
+        if (ready <= 0)
+            return ready;
         fd = ::accept(listener->fd, nullptr, nullptr);
-        if (fd >= 0) break;
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+        if (fd >= 0)
+            break;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            continue;
         return -1;
     }
     const int flags = fcntl(fd, F_GETFL, 0);
@@ -573,15 +591,17 @@ int StreamService::accept(int listener_handle, int timeout_ms, uint64_t expected
     stream->transport = DEJAVU_STREAM_TRANSPORT_TCP;
     stream->fd = fd;
     std::string error;
-    if (!prepare_cancellation(stream.get(), &error)) return -1;
+    if (!prepare_cancellation(stream.get(), &error))
+        return -1;
     std::lock_guard<std::mutex> lock(mutex_);
     const auto entry = streams_.find(listener_handle);
     const auto owner = owners_.find(listener_handle);
     // Owner cleanup and accepted-connection publication use the same lock.
-    if (entry == streams_.end() || entry->second != listener ||
-        owner == owners_.end() || !listener->active.load() ||
-        retired_owners_.count(owner->second) != 0) return -1;
-    if (next_handle_ == std::numeric_limits<int>::max()) return -1;
+    if (entry == streams_.end() || entry->second != listener || owner == owners_.end() ||
+        !listener->active.load() || retired_owners_.count(owner->second) != 0)
+        return -1;
+    if (next_handle_ == std::numeric_limits<int>::max())
+        return -1;
     const int handle = next_handle_++;
     streams_[handle] = stream;
     owners_[handle] = owner->second;
@@ -590,40 +610,49 @@ int StreamService::accept(int listener_handle, int timeout_ms, uint64_t expected
 
 int StreamService::read(int handle, void *buffer, size_t capacity, int timeout_ms,
                         size_t *size_read, uint64_t expected_owner) {
-    const auto deadline = StreamClock::now() + std::chrono::milliseconds(
-        timeout_ms < 0 ? 0 : timeout_ms);
-    if (size_read != nullptr) *size_read = 0;
-    if (buffer == nullptr && capacity != 0) return -1;
+    const auto deadline =
+        StreamClock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
+    if (size_read != nullptr)
+        *size_read = 0;
+    if (buffer == nullptr && capacity != 0)
+        return -1;
     auto stream = find(handle, expected_owner);
-    if (stream == nullptr || stream->listener ||
-        stream->transport != DEJAVU_STREAM_TRANSPORT_TCP) return -1;
+    if (stream == nullptr || stream->listener || stream->transport != DEJAVU_STREAM_TRANSPORT_TCP)
+        return -1;
     std::unique_lock<std::timed_mutex> read_lock(stream->read_mutex, std::defer_lock);
     if (!lock_reader(stream.get(), timeout_ms, deadline, &read_lock))
         return stream->active.load() ? 0 : -1;
     for (;;) {
-        if (!stream->active.load()) return -1;
+        if (!stream->active.load())
+            return -1;
         if (stream->read_buffer.size() >= 4) {
             uint32_t network_length = 0;
             std::memcpy(&network_length, stream->read_buffer.data(), sizeof(network_length));
             const size_t length = ntohl(network_length);
-            if (length > kMaximumStreamRecord || length > capacity) return -1;
+            if (length > kMaximumStreamRecord || length > capacity)
+                return -1;
             if (stream->read_buffer.size() >= 4 + length) {
-                if (length != 0) std::memcpy(buffer, stream->read_buffer.data() + 4, length);
+                if (length != 0)
+                    std::memcpy(buffer, stream->read_buffer.data() + 4, length);
                 stream->read_buffer.erase(0, 4 + length);
-                if (size_read != nullptr) *size_read = length;
+                if (size_read != nullptr)
+                    *size_read = length;
                 return 1;
             }
         }
         const int ready = wait_readable(stream.get(), timeout_ms, deadline);
-        if (ready <= 0) return ready;
+        if (ready <= 0)
+            return ready;
         char chunk[65536];
         const ssize_t count = recv(stream->fd, chunk, sizeof(chunk), MSG_DONTWAIT);
         if (count > 0) {
             stream->read_buffer.append(chunk, static_cast<size_t>(count));
             continue;
         }
-        if (count == 0) return -1;
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+        if (count == 0)
+            return -1;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            continue;
         return -1;
     }
 }
@@ -633,12 +662,13 @@ std::shared_ptr<StreamService::Stream> StreamService::find(int handle, uint64_t 
     const auto iterator = streams_.find(handle);
     const auto owner = owners_.find(handle);
     if (iterator == streams_.end() || owner == owners_.end() ||
-        (expected_owner != 0 && owner->second != expected_owner)) return nullptr;
+        (expected_owner != 0 && owner->second != expected_owner))
+        return nullptr;
     return iterator->second;
 }
 
-int StreamService::register_stream(const std::shared_ptr<Stream> &stream,
-                                   uint64_t owner_token, std::string *error) {
+int StreamService::register_stream(const std::shared_ptr<Stream> &stream, uint64_t owner_token,
+                                   std::string *error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (retired_owners_.count(owner_token) != 0) {
         *error = "stream owner is retired";
@@ -711,7 +741,8 @@ int StreamService::close(int handle, uint64_t expected_owner) {
         const auto iterator = streams_.find(handle);
         const auto owner = owners_.find(handle);
         if (iterator == streams_.end() || owner == owners_.end() ||
-            (expected_owner != 0 && owner->second != expected_owner)) return -1;
+            (expected_owner != 0 && owner->second != expected_owner))
+            return -1;
         stream = iterator->second;
         streams_.erase(iterator);
         owners_.erase(owner);
@@ -742,8 +773,10 @@ size_t StreamService::close_owner(uint64_t owner_token) {
         }
     }
     // Cancel every stream before waiting for any operation to finish.
-    for (const auto &stream : streams) cancel_stream(stream.get());
-    for (const auto &stream : streams) close_stream(stream);
+    for (const auto &stream : streams)
+        cancel_stream(stream.get());
+    for (const auto &stream : streams)
+        close_stream(stream);
     return streams.size();
 }
 

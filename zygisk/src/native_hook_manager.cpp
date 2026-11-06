@@ -194,8 +194,9 @@ void *resolve_target(const std::string &module_name, const std::string &symbol_n
 // The saved range remains immutable even if Dobby splits the VMA.
 class SavedProtectionScope {
   public:
-    SavedProtectionScope(const RootHelperProtectionSnapshot &snapshot,
-                         std::atomic<bool> &pending) : snapshot_(snapshot), pending_(pending) {}
+    SavedProtectionScope(const RootHelperProtectionSnapshot &snapshot, std::atomic<bool> &pending)
+        : snapshot_(snapshot), pending_(pending) {
+    }
     ~SavedProtectionScope() {
         if (pending_.load(std::memory_order_acquire)) {
             std::string ignored;
@@ -203,11 +204,13 @@ class SavedProtectionScope {
         }
     }
     bool restore(std::string *error) {
-        if (!pending_.load(std::memory_order_acquire)) return true;
+        if (!pending_.load(std::memory_order_acquire))
+            return true;
         const bool restored = root_helper_restore(snapshot_, error);
         pending_.store(!restored, std::memory_order_release);
         return restored;
     }
+
   private:
     const RootHelperProtectionSnapshot &snapshot_;
     std::atomic<bool> &pending_;
@@ -279,7 +282,8 @@ bool NativeHookManager::initialize(DejavuRuntime *runtime, dejavu_engine *engine
         {"dejavu_native_original_by_id",
          reinterpret_cast<const void *>(dejavu_native_original_by_id)},
         {"dejavu_native_hit_by_id", reinterpret_cast<const void *>(dejavu_native_hit_by_id)},
-        {"dejavu_native_original_context", reinterpret_cast<const void *>(dejavu_native_original_context)},
+        {"dejavu_native_original_context",
+         reinterpret_cast<const void *>(dejavu_native_original_context)},
         {"dejavu_native_hit_context", reinterpret_cast<const void *>(dejavu_native_hit_context)},
         {"dejavu_native_log", reinterpret_cast<const void *>(dejavu_native_log)},
         {"dejavu_native_call_argument",
@@ -347,14 +351,15 @@ void NativeHookManager::publish_original(void *original, size_t patch_size, void
         Record *head = callback_records_.load(std::memory_order_acquire);
         do {
             record->callback_next = head;
-        } while (!callback_records_.compare_exchange_weak(head, record,
-                     std::memory_order_release, std::memory_order_acquire));
+        } while (!callback_records_.compare_exchange_weak(head, record, std::memory_order_release,
+                                                          std::memory_order_acquire));
     }
 }
 
 void NativeHookManager::release_unexposed(Record *record) {
     if (record->exposed.load(std::memory_order_acquire) ||
-        record->restore_pending.load(std::memory_order_acquire)) return;
+        record->restore_pending.load(std::memory_order_acquire))
+        return;
     if (record->module != nullptr) {
         runtime_->module_destroy(record->module);
         record->module = nullptr;
@@ -383,7 +388,8 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
     record->module_name = module_name;
     record->symbol_name = symbol_name;
     record->target = resolve_target(module_name, symbol_name, &record->module_handle, error);
-    if (record->target == nullptr) return false;
+    if (record->target == nullptr)
+        return false;
     if (DobbyIsHooked(record->target) != 0) {
         *error = "target already has a native hook";
         release_unexposed(record);
@@ -397,11 +403,11 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
     std::snprintf(context_address, sizeof(context_address), "0x%llxULL",
                   static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(record)));
     std::string full_source = "#define DEJAVU_NATIVE_HOOK_ID " + std::to_string(record->id) +
-        "ULL\n#define DEJAVU_NATIVE_CONTEXT " + context_address + "\n" + kNativePreamble + source;
+                              "ULL\n#define DEJAVU_NATIVE_CONTEXT " + context_address + "\n" +
+                              kNativePreamble + source;
     char compile_error[1024] = {};
-    const int compile_status = runtime_->engine_compile(engine_, full_source.c_str(),
-                                                        &record->module, compile_error,
-                                                        sizeof(compile_error));
+    const int compile_status = runtime_->engine_compile(
+        engine_, full_source.c_str(), &record->module, compile_error, sizeof(compile_error));
     if (compile_status != DEJAVU_OK) {
         *error = compile_error[0] != '\0' ? compile_error : "native hook compilation failed";
         release_unexposed(record);
@@ -423,15 +429,17 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
     SavedProtectionScope permissions(record->protection, record->restore_pending);
     if (!root_helper_apply_read_write(record->protection, error)) {
         std::string cleanup;
-        if (!permissions.restore(&cleanup)) *error += "; protection restore pending: " + cleanup;
+        if (!permissions.restore(&cleanup))
+            *error += "; protection restore pending: " + cleanup;
         release_unexposed(record);
         *error = "native hook " + std::to_string(hook_id) + ": " + *error;
         return false;
     }
-    const int hook_status = DobbyHookWithPrepare(record->target, replacement,
-                                                publish_original, record);
+    const int hook_status =
+        DobbyHookWithPrepare(record->target, replacement, publish_original, record);
     record->active.store(record->exposed.load(std::memory_order_acquire) &&
-                         DobbyIsHooked(record->target) != 0, std::memory_order_release);
+                             DobbyIsHooked(record->target) != 0,
+                         std::memory_order_release);
     std::string restore_error;
     const bool restored = permissions.restore(&restore_error);
     if (hook_status != 0 || !restored) {
@@ -439,16 +447,18 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
         // target library reference and context until process exit, even on error.
         release_unexposed(record);
         *error = "native hook " + std::to_string(hook_id) + ": ";
-        if (hook_status != 0) *error += "DobbyHook failed with status " + std::to_string(hook_status);
-        if (!restored) *error += (hook_status != 0 ? "; " : "") +
-            std::string("protection restore pending: ") + restore_error;
+        if (hook_status != 0)
+            *error += "DobbyHook failed with status " + std::to_string(hook_status);
+        if (!restored)
+            *error += (hook_status != 0 ? "; " : "") + std::string("protection restore pending: ") +
+                      restore_error;
         if (record->active.load(std::memory_order_acquire))
-            *error += "; hook remains installed; retry native.uninstall(" + std::to_string(hook_id) + ")";
+            *error +=
+                "; hook remains installed; retry native.uninstall(" + std::to_string(hook_id) + ")";
         return false;
     }
-    LOGD("native hook %llu installed: %s!%s target=%p original=%p",
-         hook_id, module_name.c_str(), symbol_name.c_str(), record->target,
-         record->original.load(std::memory_order_acquire));
+    LOGD("native hook %llu installed: %s!%s target=%p original=%p", hook_id, module_name.c_str(),
+         symbol_name.c_str(), record->target, record->original.load(std::memory_order_acquire));
     return true;
 }
 
@@ -477,7 +487,8 @@ bool NativeHookManager::uninstall_locked(unsigned long long id, std::string *err
     SavedProtectionScope permissions(record->protection, record->restore_pending);
     if (!root_helper_apply_read_write(record->protection, error)) {
         std::string cleanup;
-        if (!permissions.restore(&cleanup)) *error += "; protection restore pending: " + cleanup;
+        if (!permissions.restore(&cleanup))
+            *error += "; protection restore pending: " + cleanup;
         return false;
     }
     int status = 0;
@@ -489,8 +500,9 @@ bool NativeHookManager::uninstall_locked(unsigned long long id, std::string *err
     const bool restored = permissions.restore(&restore_error);
     if (status != 0 || !restored) {
         *error = status != 0 ? "DobbyDestroy failed with status " + std::to_string(status) : "";
-        if (!restored) *error += (status != 0 ? "; " : "") +
-            std::string("protection restore pending: ") + restore_error;
+        if (!restored)
+            *error += (status != 0 ? "; " : "") + std::string("protection restore pending: ") +
+                      restore_error;
         return false;
     }
     release_unexposed(record);
@@ -540,7 +552,8 @@ std::string NativeHookManager::list() const {
         }
         output += std::to_string(id);
         output += record->active.load(std::memory_order_acquire) ? " active " : " uninstalled ";
-        if (record->restore_pending.load(std::memory_order_acquire)) output += "protection-pending ";
+        if (record->restore_pending.load(std::memory_order_acquire))
+            output += "protection-pending ";
         output += record->module_name;
         output += "#";
         output += record->symbol_name;
@@ -658,7 +671,8 @@ void NativeHookManager::shutdown() {
                 // There is no safe quiescence proof for arbitrary native C callbacks.
                 // The OS reclaims this pinned state when the process exits.
                 entry.second.release();
-            } else release_unexposed(record);
+            } else
+                release_unexposed(record);
         }
         records_.clear();
     }
@@ -673,13 +687,15 @@ void *NativeHookManager::original_for_context(unsigned long long context) {
 
 void NativeHookManager::hit_for_context(unsigned long long context) {
     auto *record = reinterpret_cast<Record *>(static_cast<uintptr_t>(context));
-    if (record != nullptr) record->hits.fetch_add(1, std::memory_order_relaxed);
+    if (record != nullptr)
+        record->hits.fetch_add(1, std::memory_order_relaxed);
 }
 
 void *NativeHookManager::original_for_id(unsigned long long id) {
     for (Record *record = callback_records_.load(std::memory_order_acquire); record != nullptr;
          record = record->callback_next) {
-        if (record->id == id) return record->original.load(std::memory_order_acquire);
+        if (record->id == id)
+            return record->original.load(std::memory_order_acquire);
     }
     return nullptr;
 }
