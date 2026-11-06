@@ -40,10 +40,10 @@ class ExecTimeoutTest(unittest.TestCase):
                 index = command.index("--timeout")
                 self.assertEqual(command[index + 1], "60.5")
 
-    def test_cli_default_preserves_ten_second_rpc_timeout(self):
+    def test_cli_default_allows_server_execution_window(self):
         command = self.forwarded_command("-e", "return true")
         index = command.index("--timeout")
-        self.assertEqual(float(command[index + 1]), 10.0)
+        self.assertEqual(float(command[index + 1]), 40.0)
 
     def test_cli_rejects_nonpositive_or_nonfinite_timeouts(self):
         for value in ("0", "-1", "nan", "inf", "-inf"):

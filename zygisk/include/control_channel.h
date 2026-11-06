@@ -4,7 +4,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include <chrono>
 #include <string>
+
+using DejavuControlDeadline = std::chrono::steady_clock::time_point;
 
 constexpr size_t kDejavuMaximumControlScriptSize = 1024 * 1024;
 constexpr size_t kDejavuControlSocketNameCapacity = 64;
@@ -39,19 +42,33 @@ struct DejavuControlRpcMessage {
     std::string payload;
 };
 
-bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size);
-bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size);
+bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size,
+                               DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size,
+                                DejavuControlDeadline deadline = DejavuControlDeadline::max());
 bool dejavu_control_file_path(const std::string &process_name, std::string *path);
 bool dejavu_control_write_client_info(
-    int fd, pid_t pid, const std::string &process_name);
-bool dejavu_control_read_client_info(int fd, DejavuControlClientInfo *info);
-bool dejavu_control_write_endpoint(int fd, const DejavuControlEndpoint &endpoint);
-bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint);
+    int fd, pid_t pid, const std::string &process_name,
+    DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_read_client_info(int fd, DejavuControlClientInfo *info,
+                                     DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_write_endpoint(int fd, const DejavuControlEndpoint &endpoint,
+                                   DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint,
+                                  DejavuControlDeadline deadline = DejavuControlDeadline::max());
 bool dejavu_control_write_authentication(
-    int fd, const DejavuControlEndpoint &endpoint);
+    int fd, const DejavuControlEndpoint &endpoint,
+    DejavuControlDeadline deadline = DejavuControlDeadline::max());
 bool dejavu_control_read_authentication(
-    int fd, const DejavuControlEndpoint &endpoint);
-bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message);
-bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message);
+    int fd, const DejavuControlEndpoint &endpoint,
+    DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
+                              DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
+                             DejavuControlDeadline deadline = DejavuControlDeadline::max());
 int dejavu_control_open_listener(DejavuControlEndpoint *endpoint);
-int dejavu_control_connect(const DejavuControlEndpoint &endpoint);
+int dejavu_control_connect(const DejavuControlEndpoint &endpoint,
+                           DejavuControlDeadline deadline = DejavuControlDeadline::max());
+bool dejavu_control_peer_is_root(int fd);
+bool dejavu_control_relay_rpc(int *agent_fd, const DejavuControlRpcMessage &request,
+                              DejavuControlRpcMessage *response, DejavuControlDeadline deadline);

@@ -26,6 +26,7 @@ namespace {
 constexpr char kLogTag[] = "DejavuZygisk";
 constexpr char kAgentPath[] = "lib/arm64-v8a/libdejavu_agent.so";
 constexpr int kAgentRelayTimeoutSeconds = 30;
+constexpr int kClientIoTimeoutSeconds = 2;
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, kLogTag, __VA_ARGS__)
@@ -50,9 +51,8 @@ struct FileIdentity {
     bool exists = false;
 };
 
-FileIdentity file_identity(const std::string &path) {
-    struct stat status = {};
-    if (stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode) || status.st_size < 0 ||
+FileIdentity file_identity(const struct stat &status) {
+    if (!S_ISREG(status.st_mode) || status.st_size < 0 ||
         status.st_size > static_cast<off_t>(kDejavuMaximumControlScriptSize)) {
         return {};
     }
@@ -61,19 +61,23 @@ FileIdentity file_identity(const std::string &path) {
     };
 }
 
+FileIdentity file_identity(const std::string &path) {
+    struct stat status = {};
+    return stat(path.c_str(), &status) == 0 ? file_identity(status) : FileIdentity{};
+}
+
 bool operator==(const FileIdentity &left, const FileIdentity &right) {
     return left.inode == right.inode && left.size == right.size && left.seconds == right.seconds &&
            left.nanoseconds == right.nanoseconds && left.exists == right.exists;
 }
 
-bool read_control_file(const std::string &path, std::string *script) {
-    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+bool read_control_file(const std::string &path, std::string *script, FileIdentity *identity) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return false;
     }
     struct stat status = {};
-    if (fstat(fd, &status) != 0 || status.st_size < 0 ||
-        status.st_size > static_cast<off_t>(kDejavuMaximumControlScriptSize)) {
+    if (fstat(fd, &status) != 0 || !file_identity(status).exists) {
         close(fd);
         return false;
     }
@@ -90,8 +94,13 @@ bool read_control_file(const std::string &path, std::string *script) {
         }
         offset += static_cast<size_t>(count);
     }
+    struct stat after = {};
+    const bool unchanged = fstat(fd, &after) == 0 && file_identity(status) == file_identity(after);
     close(fd);
-    return true;
+    if (unchanged) {
+        *identity = file_identity(status);
+    }
+    return unchanged;
 }
 
 bool process_is_alive(pid_t pid) {
@@ -101,11 +110,6 @@ bool process_is_alive(pid_t pid) {
 bool set_close_on_exec(int fd) {
     const int flags = fcntl(fd, F_GETFD);
     return flags >= 0 && fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
-}
-
-bool set_receive_timeout(int fd, int seconds) {
-    const timeval timeout = {seconds, 0};
-    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
 }
 
 bool peer_matches_process(int fd, pid_t expected_pid) {
@@ -120,14 +124,11 @@ int accept_control_client(int listener, const DejavuControlEndpoint &endpoint, p
     if (fd < 0) {
         return -1;
     }
-    if (!set_close_on_exec(fd) || !set_receive_timeout(fd, 2) ||
-        (expected_pid > 0 && !peer_matches_process(fd, expected_pid)) ||
-        !dejavu_control_read_authentication(fd, endpoint) ||
-        !dejavu_control_write_frame(fd, nullptr, 0)) {
-        close(fd);
-        return -1;
-    }
-    if (!set_receive_timeout(fd, 0)) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
+    if (!set_close_on_exec(fd) || (expected_pid > 0 && !peer_matches_process(fd, expected_pid)) ||
+        !dejavu_control_read_authentication(fd, endpoint, deadline) ||
+        !dejavu_control_write_frame(fd, nullptr, 0, deadline)) {
         close(fd);
         return -1;
     }
@@ -183,89 +184,18 @@ bool write_endpoint_metadata(const std::string &path, pid_t pid,
     return written;
 }
 
-DejavuControlRpcMessage rpc_error(uint64_t request_id, int32_t status, const char *message) {
-    return {
-        DejavuControlRpcType::kExecuteResponse,
-        request_id,
-        status,
-        message,
-    };
-}
-
-bool relay_rpc(int *agent_control, const DejavuControlRpcMessage &request,
-               DejavuControlRpcMessage *response) {
-    if (agent_control == nullptr || response == nullptr) {
-        return false;
-    }
-    if (request.type == DejavuControlRpcType::kReconnectRequest) {
-        if (!request.payload.empty()) {
-            *response = {
-                DejavuControlRpcType::kReconnectResponse,
-                request.request_id,
-                DEJAVU_CONTROL_RPC_PROTOCOL_ERROR,
-                "reconnect request payload must be empty",
-            };
-            return true;
-        }
-        if (*agent_control >= 0) {
-            close(*agent_control);
-            *agent_control = -1;
-        }
-        *response = {
-            DejavuControlRpcType::kReconnectResponse,
-            request.request_id,
-            DEJAVU_CONTROL_RPC_OK,
-            "Agent reconnect requested",
-        };
-        return true;
-    }
-    if (request.type != DejavuControlRpcType::kExecuteRequest) {
-        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_PROTOCOL_ERROR,
-                              "execute request required");
-        return true;
-    }
-    if (*agent_control < 0) {
-        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
-                              "target Agent is not connected");
-        return true;
-    }
-    if (!set_receive_timeout(*agent_control, kAgentRelayTimeoutSeconds)) {
-        close(*agent_control);
-        *agent_control = -1;
-        *response = rpc_error(request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
-                              "unable to arm the Agent relay timeout");
-        return true;
-    }
-    DejavuControlRpcMessage agent_response;
-    const bool wrote = dejavu_control_write_rpc(*agent_control, request);
-    const bool read = wrote && dejavu_control_read_rpc(*agent_control, &agent_response);
-    const int read_errno = read ? 0 : errno;
-    if (!wrote || !read || agent_response.type != DejavuControlRpcType::kExecuteResponse ||
-        agent_response.request_id != request.request_id) {
-        const bool timed_out =
-            wrote && !read &&
-            (read_errno == EAGAIN || read_errno == EWOULDBLOCK || read_errno == ETIMEDOUT);
-        close(*agent_control);
-        *agent_control = -1;
-        *response = rpc_error(
-            request.request_id, DEJAVU_CONTROL_RPC_UNAVAILABLE,
-            timed_out ? "target Agent did not respond in time; a Lua session may be blocked"
-                      : "target Agent disconnected; retry the command");
-        return true;
-    }
-    *response = std::move(agent_response);
-    return true;
-}
-
 void handle_cli_client(int client, int *agent_control) {
-    if (!set_receive_timeout(client, 30)) {
-        close(client);
-        return;
-    }
     DejavuControlRpcMessage request;
     DejavuControlRpcMessage response;
-    if (dejavu_control_read_rpc(client, &request) && relay_rpc(agent_control, request, &response)) {
-        dejavu_control_write_rpc(client, response);
+    const auto read_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
+    if (dejavu_control_read_rpc(client, &request, read_deadline) &&
+        dejavu_control_relay_rpc(agent_control, request, &response,
+                                 std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(kAgentRelayTimeoutSeconds))) {
+        dejavu_control_write_rpc(client, response,
+                                 std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(kClientIoTimeoutSeconds));
     }
     close(client);
 }
@@ -273,7 +203,9 @@ void handle_cli_client(int client, int *agent_control) {
 void companion_handler(int client) {
     LOGI("companion connected: fd=%d", client);
     DejavuControlClientInfo client_info;
-    if (!dejavu_control_read_client_info(client, &client_info)) {
+    if (!dejavu_control_read_client_info(client, &client_info,
+                                         std::chrono::steady_clock::now() +
+                                             std::chrono::seconds(kClientIoTimeoutSeconds))) {
         LOGE("companion failed to read client info: fd=%d", client);
         close(client);
         return;
@@ -292,7 +224,9 @@ void companion_handler(int client) {
     if (agent_listener < 0 || cli_listener < 0 ||
         !endpoint_metadata_path(client_info, &metadata_path) ||
         !write_endpoint_metadata(metadata_path, client_info.pid, cli_endpoint) ||
-        !dejavu_control_write_endpoint(client, agent_endpoint)) {
+        !dejavu_control_write_endpoint(client, agent_endpoint,
+                                       std::chrono::steady_clock::now() +
+                                           std::chrono::seconds(kClientIoTimeoutSeconds))) {
         LOGE("companion failed to open RPC sockets for %s", client_info.process_name.c_str());
         if (agent_listener >= 0) {
             close(agent_listener);
@@ -362,8 +296,9 @@ void companion_handler(int client) {
             continue;
         }
         std::string script;
-        if (!read_control_file(path, &script)) {
-            break;
+        FileIdentity read_identity;
+        if (!read_control_file(path, &script, &read_identity) || read_identity == observed) {
+            continue;
         }
         const DejavuControlRpcMessage request = {
             DejavuControlRpcType::kExecuteRequest,
@@ -372,13 +307,18 @@ void companion_handler(int client) {
             std::move(script),
         };
         DejavuControlRpcMessage response;
-        if (!relay_rpc(&agent_control, request, &response)) {
+        if (!dejavu_control_relay_rpc(&agent_control, request, &response,
+                                      std::chrono::steady_clock::now() +
+                                          std::chrono::seconds(kAgentRelayTimeoutSeconds))) {
             break;
         }
-        if (response.status == DEJAVU_CONTROL_RPC_UNAVAILABLE) {
+        // Retry a file only when it is certain that the Agent never received it.
+        // A lost response must consume this version to avoid replaying mutations.
+        if (response.status == DEJAVU_CONTROL_RPC_UNAVAILABLE &&
+            response.payload == "target Agent is not connected") {
             continue;
         }
-        observed = current;
+        observed = read_identity;
         if (response.status == DEJAVU_CONTROL_RPC_OK) {
             LOGI("file control applied: request=%llu",
                  static_cast<unsigned long long>(request.request_id));
@@ -476,8 +416,11 @@ class DejavuZygiskModule final : public zygisk::ModuleBase {
             LOGE("connectCompanion failed for %s: fd=%d", process_name, fd);
             return false;
         }
-        const bool connected = dejavu_control_write_client_info(fd, getpid(), process_name) &&
-                               dejavu_control_read_endpoint(fd, endpoint);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
+        const bool connected =
+            dejavu_control_write_client_info(fd, getpid(), process_name, deadline) &&
+            dejavu_control_read_endpoint(fd, endpoint, deadline);
         close(fd);
         if (!connected) {
             LOGE("companion did not provide a control endpoint for %s", process_name);

@@ -196,7 +196,7 @@ Useful options:
 -s, --serial SERIAL     adb serial (or set ADB_SERIAL)
 -e, --execute CODE      execute an inline Lua snippet and exit
 --wait SECONDS          wait for PID/Agent metadata (default: 5)
---timeout SECONDS       socket operation timeout (default: 10)
+--timeout SECONDS       RPC exchange deadline (default: 40)
 -i, --repl              keep the CLI session open and execute one Lua line at a time
 --watch FILE            execute FILE immediately, then re-run it after each save
 --reconnect             reconnect and verify the same-PID Agent channel
@@ -234,13 +234,26 @@ ADB_SERIAL=c44d68aa \
   ./zygisk/scripts/dejavuctl --reconnect -p bin.mt.plus
 ```
 
-`--repl` and `--watch` reuse the same reconnect semantics when the Agent channel
-drops. When the PID stays the same, the existing Lua state and installed hooks
-remain available after the reconnect. If the app restarts and the PID changes,
-`dejavuctl` reattaches to the new Agent and reports that transition.
+`--repl` and `--watch` recover the connection for subsequent commands after an
+Agent channel failure. A script is retried automatically only when the companion
+explicitly confirms that no Agent received it, with at most one reconnect retry.
+A timeout, lost response or post-dispatch disconnect reports **execution outcome
+unknown** and never automatically replays that script: its side effects may
+already have happened. Check the target state before deliberately trying again.
+When the PID stays the same, Lua state and installed hooks survive reconnection.
+If the app restarts and the PID changes, `dejavuctl` reattaches to the new Agent
+and reports that transition.
+
+The default CLI and Android client response timeout is 40 seconds. Lua stream
+waits share a 25-second evaluation budget, inside the companion's 30-second
+relay deadline. The companion uses absolute monotonic deadlines for handshake,
+frame reads and response writes, so a slow or non-reading peer cannot hold its
+control loop indefinitely. A client timeout does not cancel running Lua.
+The Agent checks that its Unix-socket peer is root before sending its token.
 
 The legacy file-control path is still available for compatibility. It watches
-`run/<process>.lua` and is useful when diagnosing the RPC path:
+`run/<process>.lua` and is useful when diagnosing the RPC path. An uncertain
+execution consumes that file version rather than replaying it on reconnect:
 
 ```sh
 ADB_SERIAL=c44d68aa \

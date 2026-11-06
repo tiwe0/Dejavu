@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="cafe.ivory.dejavu.rpcsmoke">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <application android:label="Dejavu RPC Smoke" android:debuggable="true" />
+    <instrumentation android:name="dejavu.tests.RpcAndroidInstrumentation"
+        android:targetPackage="cafe.ivory.dejavu" android:functionalTest="true" />
+</manifest>

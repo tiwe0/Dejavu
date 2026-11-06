@@ -39,6 +39,11 @@ mkdir -p "${OUT_DIR}"
 "${OUT_DIR}/control_channel_test"
 
 "${CXX}" -std=c++17 -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/src/control_channel.cpp" \
+    "${ROOT_DIR}/tests/control_relay_test.cpp" -o "${OUT_DIR}/control_relay_test"
+"${OUT_DIR}/control_relay_test"
+
+"${CXX}" -std=c++17 -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
     "${ROOT_DIR}/src/mapping_protection.cpp" \
     "${ROOT_DIR}/tests/mapping_protection_test.cpp" -o "${OUT_DIR}/mapping_protection_test"
 "${OUT_DIR}/mapping_protection_test"
@@ -125,6 +130,8 @@ PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m py_compile "${ROOT_DIR}/scripts/dejavuctl"
 PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
     python3 -m unittest "${ROOT_DIR}/tests/dejavuctl_test.py"
+PYTHONPYCACHEPREFIX="${OUT_DIR}/python" \
+    python3 "${ROOT_DIR}/tests/deploy_agent_test.py"
 "${ROOT_DIR}/scripts/dejavuctl" --help >/dev/null
 echo "OK: dejavuctl syntax and argument parser"
 

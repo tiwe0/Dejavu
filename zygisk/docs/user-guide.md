@@ -636,7 +636,7 @@ ADB_SERIAL=c44d68aa \
 -p, --process PROCESS   目标进程，默认 bin.mt.plus
 -s, --serial SERIAL     adb serial，也可使用 ADB_SERIAL
 --wait SECONDS          等待 Agent endpoint，默认 5 秒
---timeout SECONDS       socket 超时，默认 10 秒
+--timeout SECONDS       RPC 交换总期限，默认 40 秒
 -e, --execute CODE      执行一段内联 Lua 代码后退出
 -i, --repl              保持会话并按行执行 Lua，直到 exit/quit/EOF
 --watch FILE            先执行一次 FILE，再在每次保存后自动重新执行
@@ -666,6 +666,12 @@ Watch 模式会在进入时先执行一次当前文件内容，然后通过轮�
 ADB_SERIAL=c44d68aa \
   ./zygisk/scripts/dejavuctl --watch /absolute/path/to/live-control.lua -p bin.mt.plus
 ```
+
+请求超时或丢失回复时，脚本可能已经产生副作用，CLI 会报告“执行结果未知”，
+不会自动重放。只有 companion 明确确认 Agent 尚未收到请求时，才允许一次重连重试。
+REPL/watch 会为下一条命令恢复连接；再次执行上一条脚本前应先核对目标状态。
+App 和 CLI 默认等待 40 秒，覆盖 Lua stream 等待的 25 秒预算及 companion 的
+30 秒 relay 期限。缩短客户端超时不会取消目标里的 Lua 执行。
 
 Agent 通道断开时会以 100 ms 到 5 s 的指数退避自动重连。只要 PID 没有
 改变，Lua 状态和已安装 hook 会保留：

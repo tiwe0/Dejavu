@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -36,9 +37,14 @@ DEFAULT_PROCESS = "bin.mt.plus"
 RECONNECT_BACKOFF_INITIAL = 0.1
 RECONNECT_BACKOFF_MAX = 5.0
 WATCH_POLL_INTERVAL = 0.25
+ADB_TIMEOUT = 5.0
 
 
 class ControlError(RuntimeError):
+    pass
+
+
+class OutcomeUnknownError(ControlError):
     pass
 
 
@@ -54,7 +60,7 @@ def exclusive_cli_session():
         os.close(lock_fd)
 
 
-def adb_command(serial, *arguments, check=True):
+def adb_command(serial, *arguments, check=True, timeout=ADB_TIMEOUT):
     command = [os.environ.get("ADB", "adb")]
     if serial:
         command.extend(["-s", serial])
@@ -66,7 +72,10 @@ def adb_command(serial, *arguments, check=True):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as error:
+        raise ControlError("adb command timed out") from error
     except FileNotFoundError as error:
         raise ControlError("adb was not found in PATH") from error
     except subprocess.CalledProcessError as error:
@@ -129,29 +138,47 @@ def wait_for_metadata(serial, process_name, wait_seconds):
             time.sleep(0.1)
 
 
-def read_exact(connection, size):
+def remaining_io_time(deadline):
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise socket.timeout("RPC exchange deadline exceeded")
+    return remaining
+
+
+def set_io_deadline(connection, deadline):
+    if deadline is not None:
+        connection.settimeout(remaining_io_time(deadline))
+
+
+def read_exact(connection, size, deadline=None):
     chunks = []
     remaining = size
     while remaining:
+        set_io_deadline(connection, deadline)
         chunk = connection.recv(remaining)
         if not chunk:
             raise ControlError("RPC connection closed unexpectedly")
         chunks.append(chunk)
         remaining -= len(chunk)
+    remaining_io_time(deadline)
     return b"".join(chunks)
 
 
-def write_frame(connection, payload):
+def write_frame(connection, payload, deadline=None):
     if len(payload) > MAX_PAYLOAD_SIZE + RPC_HEADER.size:
         raise ControlError("RPC frame is too large")
+    set_io_deadline(connection, deadline)
     connection.sendall(FRAME_HEADER.pack(len(payload)) + payload)
+    remaining_io_time(deadline)
 
 
-def read_frame(connection, maximum_size):
-    (size,) = FRAME_HEADER.unpack(read_exact(connection, FRAME_HEADER.size))
+def read_frame(connection, maximum_size, deadline=None):
+    (size,) = FRAME_HEADER.unpack(read_exact(connection, FRAME_HEADER.size, deadline))
     if size > maximum_size:
         raise ControlError(f"RPC frame exceeds {maximum_size} bytes")
-    return read_exact(connection, size)
+    return read_exact(connection, size, deadline)
 
 
 def execute_once(port, token, request_type, expected_response_type, script, timeout):
@@ -164,16 +191,20 @@ def execute_once(port, token, request_type, expected_response_type, script, time
         request_id,
         len(script),
     ) + script
+    deadline = time.monotonic() + timeout
     with socket.create_connection(("127.0.0.1", port), timeout=timeout) as connection:
-        connection.settimeout(timeout)
-        write_frame(connection, token)
-        if read_frame(connection, 0):
+        write_frame(connection, token, deadline)
+        if read_frame(connection, 0, deadline):
             raise ControlError("invalid authentication acknowledgement")
-        write_frame(connection, request)
-        response = read_frame(connection, RPC_HEADER.size + MAX_PAYLOAD_SIZE)
+        # sendall can fail after writing part or all of the request.
+        try:
+            write_frame(connection, request, deadline)
+            response = read_frame(connection, RPC_HEADER.size + MAX_PAYLOAD_SIZE, deadline)
+        except (ControlError, OSError) as error:
+            raise outcome_unknown(error) from error
 
     if len(response) < RPC_HEADER.size:
-        raise ControlError("truncated RPC response")
+        raise outcome_unknown("truncated RPC response")
     magic, version, response_type, status, response_id, payload_size = RPC_HEADER.unpack(
         response[: RPC_HEADER.size]
     )
@@ -187,8 +218,16 @@ def execute_once(port, token, request_type, expected_response_type, script, time
         or payload_size != len(payload)
         or payload_size > MAX_PAYLOAD_SIZE
     ):
-        raise ControlError("invalid RPC response")
+        raise outcome_unknown("invalid RPC response")
     return status, payload
+
+
+def remove_forward(serial, port):
+    try:
+        adb_command(serial, "forward", "--remove", f"tcp:{port}")
+    except (ControlError, OSError) as error:
+        print_error(f"warning: could not remove adb forward tcp:{port}; "
+                    f"mapping may remain: {error}")
 
 
 @contextmanager
@@ -201,7 +240,7 @@ def forwarded_port(serial, socket_name):
     try:
         yield port
     finally:
-        adb_command(serial, "forward", "--remove", f"tcp:{port}", check=False)
+        remove_forward(serial, port)
 
 
 def execute_with_port(
@@ -278,9 +317,13 @@ def print_error(error):
 
 
 def is_reconnectable_status(status, payload):
-    return status == RPC_UNAVAILABLE and payload in (
-        b"target Agent is not connected",
-        b"target Agent disconnected; retry the command",
+    return status == RPC_UNAVAILABLE and payload == b"target Agent is not connected"
+
+
+def outcome_unknown(detail):
+    return OutcomeUnknownError(
+        f"execution outcome unknown: {detail}; command was not replayed; "
+        "inspect target state before retrying"
     )
 
 
@@ -303,9 +346,13 @@ def read_command(prompt):
     return input(prompt) + "\n"
 
 
+def stat_identity(stat_result):
+    return (stat_result.st_dev, stat_result.st_ino,
+            stat_result.st_mtime_ns, stat_result.st_size)
+
+
 def file_identity(path):
-    stat_result = path.stat()
-    return stat_result.st_mtime_ns, stat_result.st_size
+    return stat_identity(path.stat())
 
 
 def wait_for_watch_change(path, current_identity):
@@ -320,7 +367,7 @@ def wait_for_watch_change(path, current_identity):
                 print_error(message)
                 reported_error = message
             continue
-        if latest_identity != current_identity or reported_error is not None:
+        if latest_identity != current_identity:
             return latest_identity
 
 
@@ -334,6 +381,7 @@ class ControlSession:
         self.socket_name = None
         self.token = None
         self.port = None
+        self.reconnect_pending = False
 
     def __enter__(self):
         self.refresh_metadata(wait_seconds=self.wait_seconds)
@@ -344,7 +392,7 @@ class ControlSession:
 
     def close(self):
         if self.port is not None:
-            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
+            remove_forward(self.serial, self.port)
             self.port = None
 
     def refresh_metadata(self, wait_seconds=None):
@@ -360,7 +408,7 @@ class ControlSession:
         )
         port = self.port
         if metadata_changed and self.port is not None:
-            adb_command(self.serial, "forward", "--remove", f"tcp:{self.port}", check=False)
+            remove_forward(self.serial, self.port)
             self.port = None
             port = None
         if port is None:
@@ -376,6 +424,8 @@ class ControlSession:
         return self.pid
 
     def execute(self, script):
+        if self.reconnect_pending:
+            self.reconnect()
         if self.port is None:
             self.refresh_metadata(wait_seconds=self.wait_seconds)
         return execute_with_port(
@@ -406,13 +456,22 @@ class ControlSession:
                     RPC_RECONNECT_REQUEST,
                     RPC_RECONNECT_RESPONSE,
                     b"",
-                    self.timeout,
-                    self.wait_seconds,
+                    self.timeout if single_attempt_only else min(
+                        self.timeout, max(0.001, deadline - time.monotonic())),
+                    0 if single_attempt_only else max(0.0, deadline - time.monotonic()),
                 )
                 if status != RPC_OK:
                     last_error = render_rpc_error(self.pid, status, payload)
                 else:
-                    status, payload = self.execute(b"return true")
+                    remaining = deadline - time.monotonic()
+                    if not single_attempt_only and remaining <= 0:
+                        raise ControlError("Agent reconnect deadline exceeded")
+                    status, payload = execute_with_port(
+                        self.port, self.token, RPC_EXECUTE_REQUEST, RPC_EXECUTE_RESPONSE,
+                        b"return true",
+                        self.timeout if single_attempt_only else min(self.timeout, remaining),
+                        0 if single_attempt_only else remaining,
+                    )
                     if status == RPC_OK and payload == b"true":
                         if self.pid != previous_pid:
                             print(
@@ -422,6 +481,7 @@ class ControlSession:
                         else:
                             print(f"dejavuctl: reconnected to pid {self.pid}", file=sys.stderr)
                         sys.stderr.flush()
+                        self.reconnect_pending = False
                         return
                     last_error = (
                         render_rpc_error(self.pid, status, payload)
@@ -466,7 +526,10 @@ def parse_arguments():
     )
     parser.add_argument("-s", "--serial", default=os.environ.get("ADB_SERIAL"))
     parser.add_argument("--wait", type=float, default=5.0, metavar="SECONDS")
-    parser.add_argument("--timeout", type=float, default=10.0, metavar="SECONDS")
+    parser.add_argument(
+        "--timeout", type=float, default=40.0, metavar="SECONDS",
+        help="RPC RPC exchange deadline in seconds (default: 40); does not cancel remote Lua",
+    )
     arguments = parser.parse_args()
     arguments.script = None
     arguments.process_arg = None
@@ -496,8 +559,9 @@ def parse_arguments():
         parser.error("use exactly one of a script file, --execute, --repl, --watch or --reconnect")
     if arguments.process_option and arguments.process_arg:
         parser.error("process name was specified twice")
-    if arguments.wait < 0 or arguments.timeout <= 0:
-        parser.error("--wait must be non-negative and --timeout must be positive")
+    if (not math.isfinite(arguments.wait) or not math.isfinite(arguments.timeout)
+            or arguments.wait < 0 or arguments.timeout <= 0):
+        parser.error("--wait must be finite and non-negative and --timeout must be finite and positive")
     return arguments
 
 
@@ -520,26 +584,45 @@ def validate_script(script):
     return script
 
 
+def load_script_snapshot(path_text):
+    # Bind the bytes and watch identity to the same open file. Atomic saves may
+    # replace the pathname between observation and opening; in-place edits must
+    # finish before a snapshot can be dispatched.
+    for _ in range(3):
+        try:
+            with Path(path_text).open("rb") as source:
+                before = stat_identity(os.fstat(source.fileno()))
+                script = source.read(MAX_PAYLOAD_SIZE + 1)
+                after = stat_identity(os.fstat(source.fileno()))
+        except OSError as error:
+            raise ControlError(f"cannot read {path_text}: {error}") from error
+        if before == after:
+            validate_script(script)
+            return script, after
+    raise ControlError(f"cannot read {path_text}: file changed while reading")
+
+
 def load_script_file(path_text):
-    try:
-        script = Path(path_text).read_bytes()
-    except OSError as error:
-        raise ControlError(f"cannot read {path_text}: {error}") from error
-    validate_script(script)
-    return script
+    return load_script_snapshot(path_text)[0]
 
 
 def execute_with_reconnect(session, script):
-    while True:
+    # Only an explicit pre-dispatch rejection proves replay is safe. One
+    # reconnect attempt also prevents a permanently missing Agent looping forever.
+    for attempt in range(2):
         try:
             status, payload = session.execute(script)
-        except (ControlError, OSError, socket.error) as error:
-            if not is_reconnectable_error(error):
-                raise
-            print_error(f"{error}; requesting Agent reconnect")
-            session.reconnect()
-            continue
-        if not is_reconnectable_status(status, payload):
+        except (ControlError, OSError) as error:
+            if isinstance(error, OutcomeUnknownError) or is_reconnectable_error(error):
+                session.reconnect_pending = True
+                if isinstance(error, OutcomeUnknownError):
+                    raise
+                raise outcome_unknown(error) from error
+            raise
+        if status == RPC_UNAVAILABLE and not is_reconnectable_status(status, payload):
+            session.reconnect_pending = True
+            raise outcome_unknown(payload.decode("utf-8", errors="replace"))
+        if not is_reconnectable_status(status, payload) or attempt == 1:
             return status, payload
         print_error(
             f"{render_rpc_error(session.pid, status, payload)}; requesting Agent reconnect"
@@ -548,14 +631,7 @@ def execute_with_reconnect(session, script):
 
 
 def execute_with_status_reconnect(session, script):
-    while True:
-        status, payload = session.execute(script)
-        if not is_reconnectable_status(status, payload):
-            return status, payload
-        print_error(
-            f"{render_rpc_error(session.pid, status, payload)}; reconnecting Agent and retrying"
-        )
-        session.reconnect()
+    return execute_with_reconnect(session, script)
 
 
 def run_repl(session):
@@ -592,16 +668,19 @@ def run_watch(session, file_path):
         current_identity = file_identity(path)
     except OSError as error:
         raise ControlError(f"cannot watch {file_path}: {error}") from error
+    last_dispatched_identity = None
     while True:
         try:
             try:
-                script = load_script_file(file_path)
-                status, payload = execute_with_reconnect(session, script)
-                if status == RPC_OK:
-                    print_payload(payload)
-                else:
-                    had_error = True
-                    print_error(render_rpc_error(session.pid, status, payload))
+                script, current_identity = load_script_snapshot(file_path)
+                if current_identity != last_dispatched_identity:
+                    last_dispatched_identity = current_identity
+                    status, payload = execute_with_reconnect(session, script)
+                    if status == RPC_OK:
+                        print_payload(payload)
+                    else:
+                        had_error = True
+                        print_error(render_rpc_error(session.pid, status, payload))
                 current_identity = wait_for_watch_change(path, current_identity)
             except (ControlError, OSError, socket.error) as error:
                 had_error = True

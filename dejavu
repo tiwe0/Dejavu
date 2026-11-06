@@ -411,7 +411,7 @@ def command_deploy_agent(args: argparse.Namespace) -> int:
     print(f"deploying agent for {args.process}")
     result = subprocess.run(["bash", str(script)], env=env)
     if result.returncode != 0:
-        fail("agent deployment failed; existing module files were left unchanged")
+        fail("agent deployment failed; inspect the deployment output and any retained rollback backup")
     if not args.no_restart:
         restart_target(args, args.process, args.activity)
         print(f"restarted {args.process}")
@@ -1088,8 +1088,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = subparsers.add_parser("exec", help="run Lua in the target process")
     sub.add_argument("-p", "--process", default="bin.mt.plus")
     sub.add_argument(
-        "--timeout", type=positive_timeout, default=10.0, metavar="SECONDS",
-        help="RPC socket timeout in seconds (default: 10); does not cancel remote Lua",
+        "--timeout", type=positive_timeout, default=40.0, metavar="SECONDS",
+        help="RPC exchange deadline in seconds (default: 40); does not cancel remote Lua",
     )
     source = sub.add_mutually_exclusive_group(required=True)
     source.add_argument("-e", "--code", help="inline Lua code")

@@ -9,17 +9,18 @@ fun main(args: Array<String>) {
         )
         return
     }
-    val endpoint = selectRpcEndpoint(
+    fun select(process: String, names: Sequence<String>) = selectRpcEndpoint(process, names, setOf(123, 9))
+    val endpoint = select(
         "com.example",
         sequenceOf("com.example.other.456.rpc", "com.example.123.rpc"),
     )
     check(endpoint == RpcEndpoint("com.example.123.rpc", 123))
-    check(selectRpcEndpoint("com.example", sequenceOf("comXexample.123.rpc")) == null)
-    check(selectRpcEndpoint("com.example", sequenceOf("com.example.0.rpc")) == null)
-    check(selectRpcEndpoint("com.example", sequenceOf("com.example.-1.rpc")) == null)
-    check(selectRpcEndpoint("com.example", sequenceOf("com.example.999999999999.rpc")) == null)
-    check(selectRpcEndpoint("com.example", sequenceOf("com.example.123.tmp.rpc")) == null)
-    check(selectRpcEndpoint("com.example:worker", sequenceOf("com.example:worker.9.rpc"))?.pid == 9)
+    check(select("com.example", sequenceOf("comXexample.123.rpc")) == null)
+    check(select("com.example", sequenceOf("com.example.0.rpc")) == null)
+    check(select("com.example", sequenceOf("com.example.-1.rpc")) == null)
+    check(select("com.example", sequenceOf("com.example.999999999999.rpc")) == null)
+    check(select("com.example", sequenceOf("com.example.123.tmp.rpc")) == null)
+    check(select("com.example:worker", sequenceOf("com.example:worker.9.rpc"))?.pid == 9)
 
     val plugin = PluginInfo("demo", "1", true, false, "0x0", false, "/demo.so")
     val initial = ConsoleUiState(
@@ -69,6 +70,7 @@ fun main(args: Array<String>) {
     check(RootShell.commandArguments(command) { true }.first() == "/system/bin/su")
     check(RootShell.commandArguments(command) { false } == listOf("su", "-M", "-c", command))
     println("OK: exact RPC endpoint, selection reset and su resolution")
+    runRpcRegressionTests()
     runPluginPackageRegressionTests()
     runPluginEventDecoderTests()
     runPluginEventProjectionTests()

@@ -182,14 +182,16 @@ class DejavuAgent final {
                      static_cast<unsigned long long>(request.request_id), response.payload.c_str());
             }
         }
-        return dejavu_control_write_rpc(control, response);
+        return dejavu_control_write_rpc(control, response,
+                                        std::chrono::steady_clock::now() + std::chrono::seconds(2));
     }
 
     void run_live_control() {
         unsigned int retry_delay_ms = 100;
         bool unavailable_logged = false;
         while (true) {
-            const int control = dejavu_control_connect(control_endpoint_);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            const int control = dejavu_control_connect(control_endpoint_, deadline);
             if (control < 0) {
                 if (!unavailable_logged) {
                     LOGE("RPC control unavailable, retrying: %s", strerror(errno));
@@ -201,8 +203,9 @@ class DejavuAgent final {
                 continue;
             }
             std::string acknowledgement;
-            if (!dejavu_control_write_authentication(control, control_endpoint_) ||
-                !dejavu_control_read_frame(control, &acknowledgement, 0)) {
+            if (!dejavu_control_peer_is_root(control) ||
+                !dejavu_control_write_authentication(control, control_endpoint_, deadline) ||
+                !dejavu_control_read_frame(control, &acknowledgement, 0, deadline)) {
                 if (!unavailable_logged) {
                     LOGE("RPC control authentication failed, retrying");
                     unavailable_logged = true;

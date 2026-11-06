@@ -1,7 +1,7 @@
 package cafe.ivory.dejavu.data
 
 object LuaPackageScripts {
-    private fun quote(value: String): String = buildString {
+    internal fun quote(value: String): String = buildString {
         append('"')
         value.forEach { character ->
             when {

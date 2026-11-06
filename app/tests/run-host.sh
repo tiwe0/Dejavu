@@ -20,8 +20,12 @@ fi
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginEventDecoder.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginEventProjection.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RpcEndpoint.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/DejavuRpc.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RpcDeadline.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RootShell.kt" \
     "${APP_DIR}/tests/stubs/android/graphics/Bitmap.kt" \
+    "${APP_DIR}/tests/stubs/android/net/LocalSocket.kt" \
+    "${APP_DIR}/tests/RpcRegressionTest.kt" \
     "${APP_DIR}/tests/ConsoleRegressionTest.kt" \
     "${APP_DIR}/tests/PluginPackageRegressionTest.kt" \
     "${APP_DIR}/tests/PluginEventDecoderTest.kt" \

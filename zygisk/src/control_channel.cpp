@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,37 +39,110 @@ struct EndpointHeader {
 
 static_assert(sizeof(EndpointHeader) == sizeof(uint32_t) * 4);
 
-bool read_all(int fd, void *buffer, size_t size) {
+bool deadline_is_live(DejavuControlDeadline deadline) {
+    if (deadline != DejavuControlDeadline::max() && std::chrono::steady_clock::now() >= deadline) {
+        errno = ETIMEDOUT;
+        return false;
+    }
+    return true;
+}
+
+bool wait_ready(int fd, short events, DejavuControlDeadline deadline) {
+    for (;;) {
+        if (!deadline_is_live(deadline)) {
+            return false;
+        }
+        int timeout = -1;
+        if (deadline != DejavuControlDeadline::max()) {
+            const auto remaining = deadline - std::chrono::steady_clock::now();
+            // Round up so a fractional millisecond does not expire early.
+            const auto milliseconds =
+                std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
+            timeout = milliseconds > std::numeric_limits<int>::max()
+                          ? std::numeric_limits<int>::max()
+                          : static_cast<int>(milliseconds);
+            if (timeout <= 0) {
+                errno = ETIMEDOUT;
+                return false;
+            }
+        }
+        pollfd descriptor = {fd, events, 0};
+        const int result = poll(&descriptor, 1, timeout);
+        if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        if (result < 0) {
+            return false;
+        }
+        if (result == 0) {
+            continue;
+        }
+        if (descriptor.revents & POLLNVAL) {
+            errno = EBADF;
+            return false;
+        }
+        // HUP may accompany final buffered bytes. Let recv/send consume data
+        // or report the real terminal error rather than dropping that data.
+        return true;
+    }
+}
+
+bool set_nonblocking(int fd) {
+    const int flags = fcntl(fd, F_GETFL);
+    return flags >= 0 && ((flags & O_NONBLOCK) != 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
+}
+
+bool read_all(int fd, void *buffer, size_t size, DejavuControlDeadline deadline) {
+    if (!set_nonblocking(fd))
+        return false;
     auto *bytes = static_cast<unsigned char *>(buffer);
     size_t offset = 0;
     while (offset < size) {
-        const ssize_t count = read(fd, bytes + offset, size - offset);
-        if (count < 0 && errno == EINTR) {
+        if (!deadline_is_live(deadline))
+            return false;
+        const ssize_t count = recv(fd, bytes + offset, size - offset, MSG_DONTWAIT);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!wait_ready(fd, POLLIN, deadline))
+                return false;
             continue;
         }
-        if (count <= 0) {
+        if (count <= 0)
             return false;
-        }
         offset += static_cast<size_t>(count);
     }
     return true;
 }
 
-bool write_all(int fd, const void *buffer, size_t size) {
+bool write_all(int fd, const void *buffer, size_t size, DejavuControlDeadline deadline) {
+    // Darwin can block large sends despite MSG_DONTWAIT on a blocking socket.
+    if (!set_nonblocking(fd))
+        return false;
     const auto *bytes = static_cast<const unsigned char *>(buffer);
+#ifdef SO_NOSIGPIPE
+    const int enabled = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0)
+        return false;
+#endif
     size_t offset = 0;
     while (offset < size) {
+        if (!deadline_is_live(deadline))
+            return false;
+        int flags = MSG_DONTWAIT;
 #ifdef MSG_NOSIGNAL
-        const ssize_t count = send(fd, bytes + offset, size - offset, MSG_NOSIGNAL);
-#else
-        const ssize_t count = write(fd, bytes + offset, size - offset);
+        flags |= MSG_NOSIGNAL;
 #endif
-        if (count < 0 && errno == EINTR) {
+        const ssize_t count = send(fd, bytes + offset, size - offset, flags);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!wait_ready(fd, POLLOUT, deadline))
+                return false;
             continue;
         }
-        if (count <= 0) {
+        if (count <= 0)
             return false;
-        }
         offset += static_cast<size_t>(count);
     }
     return true;
@@ -76,24 +150,19 @@ bool write_all(int fd, const void *buffer, size_t size) {
 
 bool is_process_character(char value) {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
-        (value >= '0' && value <= '9') || value == '.' || value == '_' || value == '-' ||
-        value == ':';
+           (value >= '0' && value <= '9') || value == '.' || value == '_' || value == '-' ||
+           value == ':';
 }
 
 bool is_socket_name_character(char value) {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
-        (value >= '0' && value <= '9') || value == '.' || value == '_' || value == '-';
+           (value >= '0' && value <= '9') || value == '.' || value == '_' || value == '-';
 }
 
 bool endpoint_is_valid(const DejavuControlEndpoint &endpoint) {
-    const size_t name_size = strnlen(
-        endpoint.socket_name, kDejavuControlSocketNameCapacity);
-    if (name_size < sizeof(kSocketNamePrefix) ||
-        name_size == kDejavuControlSocketNameCapacity ||
-        strncmp(
-            endpoint.socket_name,
-            kSocketNamePrefix,
-            sizeof(kSocketNamePrefix) - 1) != 0) {
+    const size_t name_size = strnlen(endpoint.socket_name, kDejavuControlSocketNameCapacity);
+    if (name_size < sizeof(kSocketNamePrefix) || name_size == kDejavuControlSocketNameCapacity ||
+        strncmp(endpoint.socket_name, kSocketNamePrefix, sizeof(kSocketNamePrefix) - 1) != 0) {
         return false;
     }
     for (size_t index = 0; index < name_size; ++index) {
@@ -113,7 +182,17 @@ bool read_random(void *buffer, size_t size) {
     if (fd < 0) {
         return false;
     }
-    const bool success = read_all(fd, buffer, size);
+    auto *bytes = static_cast<unsigned char *>(buffer);
+    size_t offset = 0;
+    while (offset < size) {
+        const ssize_t count = read(fd, bytes + offset, size - offset);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            break;
+        offset += static_cast<size_t>(count);
+    }
+    const bool success = offset == size;
     close(fd);
     return success;
 }
@@ -124,10 +203,7 @@ bool generate_endpoint(DejavuControlEndpoint *endpoint) {
         return false;
     }
     constexpr char hex[] = "0123456789abcdef";
-    memcpy(
-        endpoint->socket_name,
-        kSocketNamePrefix,
-        sizeof(kSocketNamePrefix) - 1);
+    memcpy(endpoint->socket_name, kSocketNamePrefix, sizeof(kSocketNamePrefix) - 1);
     size_t offset = sizeof(kSocketNamePrefix) - 1;
     for (size_t index = 0; index < 16; ++index) {
         endpoint->socket_name[offset++] = hex[random[index] >> 4];
@@ -138,10 +214,8 @@ bool generate_endpoint(DejavuControlEndpoint *endpoint) {
     return endpoint_is_valid(*endpoint);
 }
 
-bool fill_abstract_address(
-    const DejavuControlEndpoint &endpoint,
-    sockaddr_un *address,
-    socklen_t *address_size) {
+bool fill_abstract_address(const DejavuControlEndpoint &endpoint, sockaddr_un *address,
+                           socklen_t *address_size) {
     if (address == nullptr || address_size == nullptr || !endpoint_is_valid(endpoint)) {
         return false;
     }
@@ -152,8 +226,7 @@ bool fill_abstract_address(
     memset(address, 0, sizeof(*address));
     address->sun_family = AF_UNIX;
     memcpy(address->sun_path + 1, endpoint.socket_name, name_size);
-    *address_size = static_cast<socklen_t>(
-        offsetof(sockaddr_un, sun_path) + 1 + name_size);
+    *address_size = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + name_size);
     return true;
 }
 
@@ -165,6 +238,13 @@ int open_unix_socket() {
     const int flags = fcntl(fd, F_GETFD);
     if (flags < 0 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != 0) {
         close(fd);
+        return -1;
+    }
+    const int status_flags = fcntl(fd, F_GETFL);
+    if (status_flags < 0 || fcntl(fd, F_SETFL, status_flags | O_NONBLOCK) != 0) {
+        const int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
         return -1;
     }
     return fd;
@@ -208,43 +288,43 @@ uint64_t read_u64_le(const char *input) {
 
 bool rpc_type_is_valid(DejavuControlRpcType type) {
     return type == DejavuControlRpcType::kExecuteRequest ||
-        type == DejavuControlRpcType::kExecuteResponse ||
-        type == DejavuControlRpcType::kReconnectRequest ||
-        type == DejavuControlRpcType::kReconnectResponse;
+           type == DejavuControlRpcType::kExecuteResponse ||
+           type == DejavuControlRpcType::kReconnectRequest ||
+           type == DejavuControlRpcType::kReconnectResponse;
 }
 
 bool rpc_type_is_request(DejavuControlRpcType type) {
     return type == DejavuControlRpcType::kExecuteRequest ||
-        type == DejavuControlRpcType::kReconnectRequest;
+           type == DejavuControlRpcType::kReconnectRequest;
 }
 
 bool rpc_status_is_valid(int32_t status) {
-    return status == DEJAVU_CONTROL_RPC_OK ||
-        status == DEJAVU_CONTROL_RPC_EXECUTION_ERROR ||
-        status == DEJAVU_CONTROL_RPC_UNAVAILABLE ||
-        status == DEJAVU_CONTROL_RPC_PROTOCOL_ERROR;
+    return status == DEJAVU_CONTROL_RPC_OK || status == DEJAVU_CONTROL_RPC_EXECUTION_ERROR ||
+           status == DEJAVU_CONTROL_RPC_UNAVAILABLE || status == DEJAVU_CONTROL_RPC_PROTOCOL_ERROR;
 }
 
-}  // namespace
+} // namespace
 
-bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size) {
+bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size,
+                               DejavuControlDeadline deadline) {
     uint32_t size = 0;
-    if (fd < 0 || payload == nullptr || !read_all(fd, &size, sizeof(size)) ||
+    if (fd < 0 || payload == nullptr || !read_all(fd, &size, sizeof(size), deadline) ||
         size > maximum_size) {
         return false;
     }
     payload->resize(size);
-    return size == 0 || read_all(fd, payload->data(), size);
+    return size == 0 || read_all(fd, payload->data(), size, deadline);
 }
 
-bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size) {
+bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size,
+                                DejavuControlDeadline deadline) {
     if (fd < 0 || payload_size > std::numeric_limits<uint32_t>::max() ||
         (payload == nullptr && payload_size != 0)) {
         return false;
     }
     const uint32_t size = static_cast<uint32_t>(payload_size);
-    return write_all(fd, &size, sizeof(size)) &&
-        (size == 0 || write_all(fd, payload, size));
+    return write_all(fd, &size, sizeof(size), deadline) &&
+           (size == 0 || write_all(fd, payload, size, deadline));
 }
 
 bool dejavu_control_file_path(const std::string &process_name, std::string *path) {
@@ -260,8 +340,8 @@ bool dejavu_control_file_path(const std::string &process_name, std::string *path
     return true;
 }
 
-bool dejavu_control_write_client_info(
-    int fd, pid_t pid, const std::string &process_name) {
+bool dejavu_control_write_client_info(int fd, pid_t pid, const std::string &process_name,
+                                      DejavuControlDeadline deadline) {
     std::string unused;
     if (pid <= 0 || !dejavu_control_file_path(process_name, &unused)) {
         return false;
@@ -275,13 +355,14 @@ bool dejavu_control_write_client_info(
     std::string payload(sizeof(header) + process_name.size(), '\0');
     memcpy(payload.data(), &header, sizeof(header));
     memcpy(payload.data() + sizeof(header), process_name.data(), process_name.size());
-    return dejavu_control_write_frame(fd, payload.data(), payload.size());
+    return dejavu_control_write_frame(fd, payload.data(), payload.size(), deadline);
 }
 
-bool dejavu_control_read_client_info(int fd, DejavuControlClientInfo *info) {
+bool dejavu_control_read_client_info(int fd, DejavuControlClientInfo *info,
+                                     DejavuControlDeadline deadline) {
     std::string payload;
     if (info == nullptr ||
-        !dejavu_control_read_frame(fd, &payload, sizeof(ClientInfoHeader) + 128) ||
+        !dejavu_control_read_frame(fd, &payload, sizeof(ClientInfoHeader) + 128, deadline) ||
         payload.size() < sizeof(ClientInfoHeader)) {
         return false;
     }
@@ -304,7 +385,8 @@ bool dejavu_control_read_client_info(int fd, DejavuControlClientInfo *info) {
     return true;
 }
 
-bool dejavu_control_write_endpoint(int fd, const DejavuControlEndpoint &endpoint) {
+bool dejavu_control_write_endpoint(int fd, const DejavuControlEndpoint &endpoint,
+                                   DejavuControlDeadline deadline) {
     if (!endpoint_is_valid(endpoint)) {
         return false;
     }
@@ -315,25 +397,21 @@ bool dejavu_control_write_endpoint(int fd, const DejavuControlEndpoint &endpoint
         name_size,
         kDejavuControlTokenSize,
     };
-    std::string payload(
-        sizeof(header) + name_size + kDejavuControlTokenSize, '\0');
+    std::string payload(sizeof(header) + name_size + kDejavuControlTokenSize, '\0');
     memcpy(payload.data(), &header, sizeof(header));
     memcpy(payload.data() + sizeof(header), endpoint.socket_name, name_size);
-    memcpy(
-        payload.data() + sizeof(header) + name_size,
-        endpoint.token,
-        kDejavuControlTokenSize);
-    return dejavu_control_write_frame(fd, payload.data(), payload.size());
+    memcpy(payload.data() + sizeof(header) + name_size, endpoint.token, kDejavuControlTokenSize);
+    return dejavu_control_write_frame(fd, payload.data(), payload.size(), deadline);
 }
 
-bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint) {
+bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint,
+                                  DejavuControlDeadline deadline) {
     std::string payload;
     if (endpoint == nullptr ||
-        !dejavu_control_read_frame(
-            fd,
-            &payload,
-            sizeof(EndpointHeader) + kDejavuControlSocketNameCapacity - 1 +
-                kDejavuControlTokenSize) ||
+        !dejavu_control_read_frame(fd, &payload,
+                                   sizeof(EndpointHeader) + kDejavuControlSocketNameCapacity - 1 +
+                                       kDejavuControlTokenSize,
+                                   deadline) ||
         payload.size() < sizeof(EndpointHeader)) {
         return false;
     }
@@ -348,10 +426,8 @@ bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint) {
     }
     DejavuControlEndpoint parsed = {};
     memcpy(parsed.socket_name, payload.data() + sizeof(header), header.socket_name_size);
-    memcpy(
-        parsed.token,
-        payload.data() + sizeof(header) + header.socket_name_size,
-        header.token_size);
+    memcpy(parsed.token, payload.data() + sizeof(header) + header.socket_name_size,
+           header.token_size);
     if (!endpoint_is_valid(parsed)) {
         return false;
     }
@@ -359,25 +435,24 @@ bool dejavu_control_read_endpoint(int fd, DejavuControlEndpoint *endpoint) {
     return true;
 }
 
-bool dejavu_control_write_authentication(
-    int fd, const DejavuControlEndpoint &endpoint) {
+bool dejavu_control_write_authentication(int fd, const DejavuControlEndpoint &endpoint,
+                                         DejavuControlDeadline deadline) {
     return endpoint_is_valid(endpoint) &&
-        dejavu_control_write_frame(fd, endpoint.token, sizeof(endpoint.token));
+           dejavu_control_write_frame(fd, endpoint.token, sizeof(endpoint.token), deadline);
 }
 
-bool dejavu_control_read_authentication(
-    int fd, const DejavuControlEndpoint &endpoint) {
+bool dejavu_control_read_authentication(int fd, const DejavuControlEndpoint &endpoint,
+                                        DejavuControlDeadline deadline) {
     std::string token;
     return endpoint_is_valid(endpoint) &&
-        dejavu_control_read_frame(fd, &token, kDejavuControlTokenSize) &&
-        token.size() == kDejavuControlTokenSize &&
-        constant_time_equal(
-            reinterpret_cast<const uint8_t *>(token.data()),
-            endpoint.token,
-            kDejavuControlTokenSize);
+           dejavu_control_read_frame(fd, &token, kDejavuControlTokenSize, deadline) &&
+           token.size() == kDejavuControlTokenSize &&
+           constant_time_equal(reinterpret_cast<const uint8_t *>(token.data()), endpoint.token,
+                               kDejavuControlTokenSize);
 }
 
-bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message) {
+bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
+                              DejavuControlDeadline deadline) {
     if (!rpc_type_is_valid(message.type) || message.request_id == 0 ||
         !rpc_status_is_valid(message.status) ||
         message.payload.size() > kDejavuMaximumControlScriptSize ||
@@ -394,14 +469,15 @@ bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message) {
     if (!message.payload.empty()) {
         memcpy(payload.data() + kRpcHeaderSize, message.payload.data(), message.payload.size());
     }
-    return dejavu_control_write_frame(fd, payload.data(), payload.size());
+    return dejavu_control_write_frame(fd, payload.data(), payload.size(), deadline);
 }
 
-bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message) {
+bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
+                             DejavuControlDeadline deadline) {
     std::string payload;
     if (message == nullptr ||
-        !dejavu_control_read_frame(
-            fd, &payload, kRpcHeaderSize + kDejavuMaximumControlScriptSize) ||
+        !dejavu_control_read_frame(fd, &payload, kRpcHeaderSize + kDejavuMaximumControlScriptSize,
+                                   deadline) ||
         payload.size() < kRpcHeaderSize || read_u32_le(payload.data()) != kRpcMagic ||
         read_u32_le(payload.data() + 4) != kControlProtocolVersion) {
         return false;
@@ -410,8 +486,7 @@ bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message) {
     const int32_t status = static_cast<int32_t>(read_u32_le(payload.data() + 12));
     const uint64_t request_id = read_u64_le(payload.data() + 16);
     const uint32_t payload_size = read_u32_le(payload.data() + 24);
-    if (!rpc_type_is_valid(type) || request_id == 0 ||
-        !rpc_status_is_valid(status) ||
+    if (!rpc_type_is_valid(type) || request_id == 0 || !rpc_status_is_valid(status) ||
         payload_size > kDejavuMaximumControlScriptSize ||
         payload.size() != kRpcHeaderSize + payload_size ||
         (rpc_type_is_request(type) && status != DEJAVU_CONTROL_RPC_OK)) {
@@ -452,21 +527,89 @@ int dejavu_control_open_listener(DejavuControlEndpoint *endpoint) {
     return -1;
 }
 
-int dejavu_control_connect(const DejavuControlEndpoint &endpoint) {
+int dejavu_control_connect(const DejavuControlEndpoint &endpoint, DejavuControlDeadline deadline) {
     sockaddr_un address = {};
     socklen_t address_size = 0;
-    if (!fill_abstract_address(endpoint, &address, &address_size)) {
+    if (!deadline_is_live(deadline) || !fill_abstract_address(endpoint, &address, &address_size)) {
         return -1;
     }
     const int fd = open_unix_socket();
-    if (fd < 0) {
+    if (fd < 0)
         return -1;
+    bool connected = connect(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0;
+    if (!connected && (errno == EINPROGRESS || errno == EINTR)) {
+        if (wait_ready(fd, POLLOUT, deadline)) {
+            int socket_error = 0;
+            socklen_t error_size = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0) {
+                connected = socket_error == 0;
+                if (!connected)
+                    errno = socket_error;
+            }
+        }
     }
-    if (connect(fd, reinterpret_cast<const sockaddr *>(&address), address_size) != 0) {
+    if (!connected) {
         const int connect_error = errno;
         close(fd);
         errno = connect_error;
         return -1;
     }
     return fd;
+}
+
+bool dejavu_control_peer_is_root(int fd) {
+#if defined(__linux__)
+    struct ucred credentials = {};
+    socklen_t size = sizeof(credentials);
+    return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) == 0 &&
+           size == sizeof(credentials) && credentials.uid == 0;
+#elif defined(__APPLE__)
+    uid_t uid = static_cast<uid_t>(-1);
+    gid_t gid = static_cast<gid_t>(-1);
+    return getpeereid(fd, &uid, &gid) == 0 && uid == 0;
+#else
+    (void)fd;
+    return false;
+#endif
+}
+
+bool dejavu_control_relay_rpc(int *agent_fd, const DejavuControlRpcMessage &request,
+                              DejavuControlRpcMessage *response, DejavuControlDeadline deadline) {
+    if (agent_fd == nullptr || response == nullptr)
+        return false;
+    *response = {DejavuControlRpcType::kExecuteResponse, request.request_id,
+                 DEJAVU_CONTROL_RPC_PROTOCOL_ERROR, "execute request required"};
+    if (request.type == DejavuControlRpcType::kReconnectRequest) {
+        response->type = DejavuControlRpcType::kReconnectResponse;
+        if (!request.payload.empty()) {
+            response->payload = "reconnect request payload must be empty";
+            return true;
+        }
+        if (*agent_fd >= 0)
+            close(*agent_fd);
+        *agent_fd = -1;
+        response->status = DEJAVU_CONTROL_RPC_OK;
+        response->payload = "Agent reconnect requested";
+        return true;
+    }
+    if (request.type != DejavuControlRpcType::kExecuteRequest)
+        return true;
+    response->status = DEJAVU_CONTROL_RPC_UNAVAILABLE;
+    if (*agent_fd < 0) {
+        response->payload = "target Agent is not connected";
+        return true;
+    }
+    DejavuControlRpcMessage agent_response;
+    if (!dejavu_control_write_rpc(*agent_fd, request, deadline) ||
+        !dejavu_control_read_rpc(*agent_fd, &agent_response, deadline) ||
+        agent_response.type != DejavuControlRpcType::kExecuteResponse ||
+        agent_response.request_id != request.request_id) {
+        close(*agent_fd);
+        *agent_fd = -1;
+        response->payload =
+            "RPC execution outcome unknown; request may have executed; do not retry automatically";
+        return true;
+    }
+    *response = std::move(agent_response);
+    return true;
 }
