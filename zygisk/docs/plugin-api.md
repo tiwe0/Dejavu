@@ -15,7 +15,13 @@ The descriptor contains `abi_version`, `struct_size`, name/version, flags,
 optional `on_unload_prepare`. All ABI structs are
 append-only and must be validated with `struct_size`; v2 is the current frozen layout (the pre-freeze v1 descriptor had a different shape and is rejected).
 
-`initialize` receives a `DejavuPluginHost` table with stable function pointers:
+`initialize` receives a per-instance `DejavuPluginHost` table with stable function
+pointers and an opaque `host_context`. Save this instance's host table and pass
+its context unchanged to host services, including from native worker or hook
+callback threads. Contexts and stream handles are never shared between plugins.
+An initializer that returns failure must stop and join any workers it started
+before returning; the framework cancels its streams but cannot join unknown
+plugin-owned threads or call shutdown on an uninitialized state.
 
 - `register_function(host, namespace, name, function, context, error, size)`
   registers a Lua function. Namespaces must be simple identifiers and must not
@@ -29,7 +35,7 @@ append-only and must be validated with `struct_size`; v2 is the current frozen l
   services (see below).
 
 The descriptor may append optional `capabilities` bits
-(`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA`); `plugin.list()` prints them as
+(`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA/STREAM`); `plugin.list()` prints them as
 `caps=0x...`. Read the field only when `struct_size` reaches its offset.
 Capabilities are enforced: `get_interface("mem"|"module"|"hook"|"fs")` and
 the corresponding `dejavu_jit_*` helpers return failure unless the plugin
@@ -41,9 +47,13 @@ need the control session/ClassLoader should defer that work there instead of
 doing it in `initialize`.
 
 `on_unload_prepare` (read only when `struct_size` reaches its offset) is called
-before the unload-hook check; plugins install native hooks here and remove them
-before returning. If any host-tracked hook remains, unload is refused. The
-plugin's Lua entries are invalidated before `shutdown`/module teardown.
+after new callbacks are disabled and the plugin's streams are retired. Blocking
+stream reads/accepts are cancelled before this callback, which must stop and
+join the plugin's workers. The callback runs without the manager mutex. The
+framework then removes remaining owned hooks; failed unpatch/protection cleanup
+retains the module for a later unload retry. `shutdown` also runs without the
+manager mutex and precedes module teardown. An executing registered callback
+prevents its own plugin from being unloaded.
 
 The ABI lives in [`include/dejavu_plugin.h`](../../include/dejavu_plugin.h) and
 is versioned with `DEJAVU_PLUGIN_ABI_VERSION`. Plugins are built with
@@ -62,21 +72,50 @@ Through `host->get_interface`:
   `file_size`, `remove_file` for app-accessible paths. JIT plugins use
   `dejavu_jit_fs_read/write/exists/size/remove`; file reads are capped at
   16 MiB and paths at 4096 bytes.
-- **stream** (`DEJAVU_STREAM_INTERFACE_VERSION`): `open(transport, endpoint)`,
+- **stream** (`DEJAVU_STREAM_INTERFACE_VERSION`, plus append-only
+  `DEJAVU_STREAM_INTERFACE_VERSION_2`): v1 exposes `open(transport, endpoint)`,
   `write(handle, data, size)`, `close(handle)`. Transports are
   `DEJAVU_STREAM_TRANSPORT_TCP/UDP/KCP` (1/2/3); endpoint is `host:port`.
   Each write is one framed record; viewers receive the payload. Handles are
   owned by the plugin and closed automatically on unload. JIT plugins use
   `dejavu_jit_stream_open/write/close`; the `stream` capability bit must be
   declared (`DEJAVU_PLUGIN_CAP_STREAM`, 0x20).
+  v2 adds device-side RPC servers: `listen(transport, endpoint, backlog)`,
+  `accept(listener, timeout_ms)` and `read(handle, buffer, capacity,
+  timeout_ms, &size_read)`. Request it with
+  `host->get_interface("stream", 2)` (`DejavuStreamInterfaceV2`). `listen` is
+  TCP-only; the endpoint is `host:port` (no transport prefix). Bind
+  `127.0.0.1` for loopback (e.g. `adb forward`) or `0.0.0.0` for LAN peers
+  (the target process needs the INTERNET permission). `read`
+  returns exactly one record using the same framing as `write`: 1 on a record,
+  0 on timeout, -1 on EOF/error/oversized record; `timeout_ms < 0` blocks.
+  JIT equivalents are `dejavu_jit_stream_listen/accept/read`. The Lua control
+  session exposes the same server surface through
+  `hook.stream_listen/accept/read/write/close`.
+  Native v1 and v2 callers use their saved `host_context` on every operation.
+  JIT helpers use the current initializer/registered callback identity. A JIT
+  worker must explicitly bind an opaque credential captured by its owner:
+
+  ```c
+  /* In initialize() or an authorized registered callback, before spawning. */
+  void *credential = dejavu_jit_stream_capture_context();
+  /* In that plugin's worker thread. */
+  if (dejavu_jit_stream_bind_context(credential) != 0) return;
+  /* open/listen/accept/read/write/close now use this worker's owner. */
+  dejavu_jit_stream_bind_context(0); /* unbind before the worker returns */
+  ```
+
+  Capture fails without the stream capability. A known callback's identity
+  always takes precedence over a worker binding, and credentials are revoked
+  when their plugin begins unloading. Reloading creates a new identity; old
+  credentials and handles cannot be reused. Binding grants only stream access.
 - **hook** (`DEJAVU_HOOK_INTERFACE_VERSION`): `install(target, replacement,
   &original)` via Dobby and `uninstall(target)`. Hooks installed through this
   interface are owned by the calling plugin; duplicate targets and
-  non-owner uninstalls are rejected. `plugin.unload` is refused while the
-  plugin still owns any host-tracked hook: the plugin must call
-  `uninstall(target)` (usually from its shutdown path) before unload. Remaining
-  hooks are torn down only at process/PluginManager shutdown or on a failed
-  initialization.
+  non-owner uninstalls are rejected. Plugins should quiesce native callbacks
+  and remove their hooks during `on_unload_prepare`. The framework also retries
+  remaining host-tracked hooks before shutdown; failed unpatch/protection
+  restoration refuses teardown and keeps the module mapped for retry.
 
 Interface structs also carry `version` and `struct_size`; extend by appending
 fields and bumping the interface version.
@@ -115,17 +154,29 @@ plugins in `HookManager::initialize()`, before app code runs, which is useful
 for hooks that must observe process startup. Plugin Lua registrations are
 queued until the control session exists, then registered automatically.
 
-Unloading first calls optional `on_unload_prepare`, verifies that no
-host-tracked hook remains, invalidates registered Lua functions, calls
-`shutdown`, and finally `dlclose()`s (or releases the cached JIT module).
+Unloading refuses active callbacks, revokes registered and returned Lua host
+functions, retires stream handles, and calls optional `on_unload_prepare`
+without holding the manager mutex. The host then removes remaining tracked
+hooks, calls `shutdown`, and finally `dlclose()`s (or releases the cached JIT
+module). Failed hook removal retains the module so unload can be retried.
 A plugin is refused unless its descriptor sets
 `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE`; in-flight functions are also refused.
 There is currently no automatic re-load; load the path again.
 
-**Important:** host-tracked hooks must be uninstalled by the plugin before
-unload; the host enforces this. Hooks installed outside the host interface
-(e.g. direct Dobby calls) are not tracked and the plugin must remove them in
-`shutdown()`, otherwise they keep pointing into the unloaded library.
+Host functions returned as `DEJAVU_VALUE_HOST_FUNCTION` are wrapped in the
+same revocable dispatch as registered functions, including functions returned
+by another returned function. They restore the plugin's identity, count as
+in-flight during execution, and fail safely after unload or reload. Repeated
+returns of the same function/context reuse their binding. Returned callback
+contexts remain plugin-owned and must stay valid while callable; the wrapper
+does not free them. Bindings remain allocated until the manager is destroyed
+so Lua closures cannot retain freed metadata. Borrowed string results are
+copied before the plugin's in-flight reference is released; handles remain
+opaque caller-managed values.
+
+**Important:** hooks installed outside the host interface (e.g. direct Dobby
+calls) are not tracked and must be removed by the plugin before shutdown
+completes, otherwise they keep pointing into the unloaded library.
 
 ## JIT (TinyCC) plugins
 
@@ -163,8 +214,8 @@ state can survive reload until PluginManager shutdown. Example:
 [`plugins/README.md`](../../plugins/README.md) indexes the examples.
 [`plugins/hello/hello_hook_jit.c`](../../plugins/hello/hello_hook_jit.c)
 demonstrates host-owned hook teardown: it installs an `atoi` hook and calls
-`dejavu_jit_hook_uninstall` from `dejavu_jit_plugin_unload_prepare`; the host
-refuses unload while the hook is still tracked.
+`dejavu_jit_hook_uninstall` from `dejavu_jit_plugin_unload_prepare`. The host
+also retries any remaining tracked hook removal before releasing its module.
 
 [`plugins/hello/`](../../plugins/hello/plugin_entry.cpp) is a small contract
 plugin that exercises host services (mem query, module resolve), plugin

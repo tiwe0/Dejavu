@@ -65,7 +65,7 @@ make -C zygisk package
 产物为：
 
 ```text
-zygisk/dist/dejavu-zygisk-v0.7.0-arm64.zip
+zygisk/dist/dejavu-zygisk-v0.8.0-arm64.zip
 ```
 
 `package` 会自动查找 NDK 的 `llvm-strip`，并对 Loader、Agent 和
@@ -91,7 +91,7 @@ adb push ~/Downloads/dejavu-zygisk-v<release-version>-arm64.zip /sdcard/Download
 将 ZIP 复制到设备：
 
 ```sh
-adb push zygisk/dist/dejavu-zygisk-v0.7.0-arm64.zip /sdcard/Download/
+adb push zygisk/dist/dejavu-zygisk-v0.8.0-arm64.zip /sdcard/Download/
 ```
 
 在 Magisk Manager 或 APatch Manager 中选择该 ZIP 安装，然后重启设备。
@@ -372,6 +372,47 @@ ELF `.dynsym`+`.symtab`（`name<TAB>TYPE<TAB>BIND<TAB>0x地址`），
 的映射与读写权限，`mem.dump` 输出 hex+ASCII，`mem.protect` 修改页权限并
 返回旧权限（W+X/代码页修改可能被 SELinux 拒绝）。完整说明见
 `docs/agent-helpers.md`。
+
+### 7.7 设备侧 stream 服务（listen/read，v0.8.0+）
+
+v0.8.0 起 Lua 会话可以自己开 TCP 服务，把手机内进程变成可被外部调用的
+RPC/事件端点（事件上报仍用 `hook.stream_start`，两者独立）：
+
+    local listener = hook.stream_listen("127.0.0.1:18766", 4)
+    local connection = hook.stream_accept(listener, 5000)  -- 0=超时
+    local payload = hook.stream_read(connection, 65536, 5000)  -- nil=超时
+    hook.stream_write(connection, "reply:" .. payload)  -- 0=成功
+    hook.stream_close(connection)
+    hook.stream_close(listener)
+
+- `hook.stream_listen(endpoint[, backlog])`：TCP 监听，返回正句柄，失败抛 Lua 错误。
+  `127.0.0.1` 配合 `adb forward tcp:18766 tcp:18766` 最安全；绑定
+  `0.0.0.0` 可给局域网 peer 访问（目标进程需要 INTERNET 权限）。
+- `hook.stream_accept(listener[, timeout_ms])`：返回连接句柄，0 表示超时，
+  -1 表示错误；`timeout_ms` 默认 5000，允许 0–10000 ms，负值或超限会抛 Lua 错误。
+- `hook.stream_read(handle[, capacity[, timeout_ms]])`：读取一条按帧记录
+  （4 字节网络序长度 + payload，与 `hook.stream_write` 一致），返回 string；
+  nil 表示超时；EOF/记录超过 capacity 会抛 Lua 错误。`capacity` 默认
+  65536，上限 32 MiB。
+- `hook.stream_write(handle, data)`：发送一条帧记录，返回 0 成功。
+- `hook.stream_close(handle)`：关闭监听器或连接。
+
+`stream_read` 的 `timeout_ms` 默认 1000，同样只允许 0–10000 ms。
+`timeout_ms=0` 只尝试获取当前就绪的连接或帧；正数超时包含等待读锁的时间。
+Lua 管理会话和 Agent RPC 执行线程是串行的，因此不能依靠另一条 RPC 来取消
+当前等待。每次控制 eval 的 stream 等待共享 25 秒总期限，同线程再入不会重置
+期限；临近期限时会缩短本次等待，耗尽后抛 Lua 错误，下一次 eval 重新计时。
+需要无限等待的服务应放在有显式 owner 的 native/JIT worker 中，这些接口仍支持
+负超时，并能由卸载流程关闭流来取消。Lua 句柄和各插件的句柄按 owner 隔离，
+不能通过另一插件的句柄读写或关闭其连接。
+
+Lua 打开的句柄由管理会话持有，目标进程退出/管理会话销毁时统一关闭。
+对应 JIT/C 插件 ABI 为 `DejavuStreamInterfaceV2` 或
+`dejavu_jit_stream_listen/accept/read`，详见 [plugin-api.md](plugin-api.md)。
+
+设备回归（真机、Etsy 目标）：
+
+    python3 zygisk/tests/device/stream_rpc_test.py --serial <serial>
 
 ## 8. TinyCC Hook C ABI
 
@@ -659,7 +700,7 @@ make -C zygisk package
 
 # 2. 推送安装包，之后在 APatch Manager 中安装并重启
 adb -s c44d68aa push \
-  zygisk/dist/dejavu-zygisk-v0.7.0-arm64.zip \
+  zygisk/dist/dejavu-zygisk-v0.8.0-arm64.zip \
   /sdcard/Download/
 
 # 3. 确认作用域并启动 MT Manager

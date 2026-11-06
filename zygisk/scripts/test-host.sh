@@ -77,6 +77,8 @@ fi
     "${ROOT_DIR}/tests/stream_service_test.cpp" \
     "${OUT_DIR}/ikcp.o" -o "${OUT_DIR}/stream_service_test"
 "${OUT_DIR}/stream_service_test"
+bash "${ROOT_DIR}/tests/test-hook-events.sh"
+bash "${ROOT_DIR}/tests/test-lua-stream-waits.sh"
 
 "${CXX}" \
     -std=c++17 \

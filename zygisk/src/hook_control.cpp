@@ -6,9 +6,14 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <vector>
+
+#include <sys/system_properties.h>
 
 #include "hook_compile_diagnostics.h"
 #include "hook_api_runtime.h"
+#include "hook_event_sink.h"
+#include "lua_stream_wait.h"
 
 namespace {
 
@@ -448,5 +453,316 @@ int HookManager::Impl::lua_log(
     }
     LOGD("%.*s", static_cast<int>(arguments[0].string_size), arguments[0].string_value);
     result->type = DEJAVU_VALUE_NIL;
+    return DEJAVU_OK;
+}
+
+namespace {
+
+std::string stream_endpoint_from_property() {
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.dejavu.hook.stream", value) <= 0) {
+        return std::string();
+    }
+    return std::string(value);
+}
+
+}  // namespace
+
+int HookManager::Impl::lua_stream_start(
+    dejavu_control_session *,
+    void *,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    if (argument_count > 1) {
+        copy_error(error, error_size, "hook.stream_start takes zero or one string endpoint");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string endpoint;
+    if (argument_count == 1) {
+        if (arguments[0].type == DEJAVU_VALUE_STRING) {
+            endpoint = value_string(arguments[0]);
+        } else if (arguments[0].type != DEJAVU_VALUE_NIL) {
+            copy_error(error, error_size, "hook.stream_start endpoint must be a string");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+    }
+    if (endpoint.empty()) {
+        endpoint = stream_endpoint_from_property();
+    }
+    if (endpoint.empty()) {
+        copy_error(error, error_size,
+                   "hook.stream_start needs an endpoint or debug.dejavu.hook.stream");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string stream_error;
+    if (!HookEventSink::instance().start(endpoint, &stream_error)) {
+        copy_error(error, error_size, stream_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (!set_owned_string(result, "hook stream started: " + endpoint)) {
+        copy_error(error, error_size, "unable to allocate stream status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_acquire(
+    dejavu_control_session *, void *, const dejavu_value *arguments, size_t argument_count,
+    dejavu_value *result, char *error, size_t error_size) {
+    if (argument_count > 1 || (argument_count == 1 &&
+        arguments[0].type != DEJAVU_VALUE_STRING && arguments[0].type != DEJAVU_VALUE_NIL)) {
+        copy_error(error, error_size, "hook.stream_acquire expects an optional string endpoint");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string endpoint = argument_count == 1 && arguments[0].type == DEJAVU_VALUE_STRING
+        ? value_string(arguments[0]) : std::string();
+    if (endpoint.empty()) endpoint = stream_endpoint_from_property();
+    if (endpoint.empty()) {
+        copy_error(error, error_size,
+                   "hook.stream_acquire needs an endpoint or debug.dejavu.hook.stream");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    uint64_t lease = 0;
+    std::string failure;
+    if (!HookEventSink::instance().acquire(endpoint, &lease, &failure)) {
+        copy_error(error, error_size, failure);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = static_cast<long long>(lease);
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_release(
+    dejavu_control_session *, void *, const dejavu_value *arguments, size_t argument_count,
+    dejavu_value *result, char *error, size_t error_size) {
+    if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER ||
+        arguments[0].integer_value <= 0) {
+        copy_error(error, error_size, "hook.stream_release expects a positive channel lease");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    result->type = DEJAVU_VALUE_BOOLEAN;
+    result->boolean_value = HookEventSink::instance().release(
+        static_cast<uint64_t>(arguments[0].integer_value));
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_stop(
+    dejavu_control_session *,
+    void *,
+    const dejavu_value *,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    if (argument_count != 0) {
+        copy_error(error, error_size, "hook.stream_stop takes no arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    HookEventSink::instance().stop();
+    if (!set_owned_string(result, "hook stream stopped")) {
+        copy_error(error, error_size, "unable to allocate stream status");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_stats(
+    dejavu_control_session *,
+    void *,
+    const dejavu_value *,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    if (argument_count != 0) {
+        copy_error(error, error_size, "hook.stream_stats takes no arguments");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (!set_owned_string(result, HookEventSink::instance().stats())) {
+        copy_error(error, error_size, "unable to allocate stream stats");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_listen(
+    dejavu_control_session *,
+    void *context,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    auto *manager = static_cast<Impl *>(context);
+    if (argument_count < 1 || argument_count > 2 ||
+        arguments[0].type != DEJAVU_VALUE_STRING) {
+        copy_error(error, error_size, "hook.stream_listen expects endpoint[, backlog]");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    int backlog = 4;
+    if (argument_count == 2) {
+        if (arguments[1].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.stream_listen backlog must be an integer");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        const long long requested = arguments[1].integer_value;
+        backlog = requested <= 0 ? 1 : (requested > 128 ? 128 : static_cast<int>(requested));
+    }
+    std::string stream_error;
+    const int handle = manager->plugins->stream_listen(
+        dejavu_hook_manager_internal::kLuaStreamOwnerToken, DEJAVU_STREAM_TRANSPORT_TCP,
+        value_string(arguments[0]), backlog, &stream_error);
+    if (handle == 0) {
+        copy_error(error, error_size,
+                   stream_error.empty() ? "unable to listen on stream endpoint" : stream_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = handle;
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_accept(
+    dejavu_control_session *,
+    void *context,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    auto *manager = static_cast<Impl *>(context);
+    if (argument_count < 1 || argument_count > 2 ||
+        arguments[0].type != DEJAVU_VALUE_INTEGER) {
+        copy_error(error, error_size, "hook.stream_accept expects listener[, timeout_ms]");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    long long requested_timeout = 5000;
+    if (argument_count == 2) {
+        if (arguments[1].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.stream_accept timeout must be an integer");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        requested_timeout = arguments[1].integer_value;
+    }
+    int timeout_ms = 0;
+    std::string wait_error;
+    if (!LuaStreamWaitScope::limit(requested_timeout, &timeout_ms, &wait_error)) {
+        copy_error(error, error_size, wait_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    const int handle = manager->plugins->stream_accept(
+        static_cast<int>(arguments[0].integer_value), timeout_ms,
+        dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = handle;
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_read(
+    dejavu_control_session *,
+    void *context,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    auto *manager = static_cast<Impl *>(context);
+    constexpr size_t kMaximumReadCapacity = 32u * 1024u * 1024u;
+    if (argument_count < 1 || argument_count > 3 ||
+        arguments[0].type != DEJAVU_VALUE_INTEGER) {
+        copy_error(error, error_size,
+                   "hook.stream_read expects handle[, capacity[, timeout_ms]]");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    size_t capacity = 65536;
+    if (argument_count >= 2) {
+        if (arguments[1].type != DEJAVU_VALUE_INTEGER || arguments[1].integer_value <= 0 ||
+            static_cast<unsigned long long>(arguments[1].integer_value) >
+                kMaximumReadCapacity) {
+            copy_error(error, error_size, "hook.stream_read capacity is out of range");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        capacity = static_cast<size_t>(arguments[1].integer_value);
+    }
+    long long requested_timeout = 1000;
+    if (argument_count == 3) {
+        if (arguments[2].type != DEJAVU_VALUE_INTEGER) {
+            copy_error(error, error_size, "hook.stream_read timeout must be an integer");
+            return DEJAVU_ERROR_INVALID_ARGUMENT;
+        }
+        requested_timeout = arguments[2].integer_value;
+    }
+    int timeout_ms = 0;
+    std::string wait_error;
+    if (!LuaStreamWaitScope::limit(requested_timeout, &timeout_ms, &wait_error)) {
+        copy_error(error, error_size, wait_error);
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::vector<char> buffer(capacity);
+    size_t size_read = 0;
+    const int status = manager->plugins->stream_read(
+        static_cast<int>(arguments[0].integer_value), buffer.data(), capacity, timeout_ms,
+        &size_read, dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+    if (status == 0) {
+        result->type = DEJAVU_VALUE_NIL;
+        return DEJAVU_OK;
+    }
+    if (status < 0) {
+        copy_error(error, error_size,
+                   "hook.stream_read failed (closed, invalid handle, or oversized record)");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    if (!set_owned_string(result, std::string(buffer.data(), size_read))) {
+        copy_error(error, error_size, "unable to allocate stream record");
+        return DEJAVU_ERROR_OUT_OF_MEMORY;
+    }
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_write(
+    dejavu_control_session *,
+    void *context,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    auto *manager = static_cast<Impl *>(context);
+    if (argument_count != 2 || arguments[0].type != DEJAVU_VALUE_INTEGER ||
+        arguments[1].type != DEJAVU_VALUE_STRING) {
+        copy_error(error, error_size, "hook.stream_write expects handle, string");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    std::string payload = value_string(arguments[1]);
+    const int status = manager->plugins->stream_write(
+        static_cast<int>(arguments[0].integer_value), payload.data(), payload.size(),
+        dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+    result->type = DEJAVU_VALUE_INTEGER;
+    result->integer_value = status;
+    return DEJAVU_OK;
+}
+
+int HookManager::Impl::lua_stream_close(
+    dejavu_control_session *,
+    void *context,
+    const dejavu_value *arguments,
+    size_t argument_count,
+    dejavu_value *result,
+    char *error,
+    size_t error_size) {
+    auto *manager = static_cast<Impl *>(context);
+    if (argument_count != 1 || arguments[0].type != DEJAVU_VALUE_INTEGER) {
+        copy_error(error, error_size, "hook.stream_close expects a stream handle");
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    }
+    const int status = manager->plugins->stream_close(
+        static_cast<int>(arguments[0].integer_value),
+        dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+    result->type = DEJAVU_VALUE_BOOLEAN;
+    result->boolean_value = status == 0;
     return DEJAVU_OK;
 }

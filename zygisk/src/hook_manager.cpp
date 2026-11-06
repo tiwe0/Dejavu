@@ -12,6 +12,7 @@
 
 #include "hook_bridge_dex.h"
 #include "hook_api_runtime.h"
+#include "lua_stream_wait.h"
 
 namespace {
 
@@ -352,6 +353,10 @@ HookManager::HookManager() : impl_(new(std::nothrow) Impl()) {
 }
 
 HookManager::~HookManager() {
+    if (impl_ != nullptr && impl_->plugins != nullptr) {
+        impl_->plugins->stream_close_owner(
+            dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+    }
     delete impl_;
 }
 
@@ -450,6 +455,16 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
         {"uninstall", Impl::lua_uninstall},
         {"clear", Impl::lua_clear},
         {"log", Impl::lua_log},
+        {"stream_start", Impl::lua_stream_start},
+        {"stream_acquire", Impl::lua_stream_acquire},
+        {"stream_release", Impl::lua_stream_release},
+        {"stream_stop", Impl::lua_stream_stop},
+        {"stream_stats", Impl::lua_stream_stats},
+        {"stream_listen", Impl::lua_stream_listen},
+        {"stream_accept", Impl::lua_stream_accept},
+        {"stream_read", Impl::lua_stream_read},
+        {"stream_write", Impl::lua_stream_write},
+        {"stream_close", Impl::lua_stream_close},
 #if DEJAVU_RUN_DEVICE_STRESS
         {"protocol_test", Impl::lua_protocol_test},
         {"helper_test", Impl::lua_helper_test},
@@ -493,6 +508,7 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
                                         error)) {
         return false;
     }
+    LuaStreamWaitScope wait_scope;
     dejavu_value result = {};
     status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &result,
                                                   runtime_error, sizeof(runtime_error));
@@ -510,6 +526,7 @@ bool HookManager::eval_control(const std::string &script, std::string *result, s
         return false;
     }
     char runtime_error[512];
+    LuaStreamWaitScope wait_scope;
     dejavu_value value = {};
     const int status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &value,
                                                             runtime_error, sizeof(runtime_error));

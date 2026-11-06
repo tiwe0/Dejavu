@@ -288,6 +288,58 @@ shared mutable state atomic or otherwise synchronized. Calls made recursively
 on the same thread while a Dejavu callback is active bypass Dejavu callbacks
 and invoke their originals.
 
+## Non-blocking event channel
+
+Hook C can send data to the host without touching logcat and without blocking
+the hooked Java thread:
+
+```c
+int dejavu_hook_emit(dejavu_hook_context *context, const char *topic, void *string_object);
+int dejavu_hook_emit_text(
+    dejavu_hook_context *context, const char *topic, const char *data, unsigned long size);
+```
+
+`dejavu_hook_emit` serializes a Java `String` as standard UTF-8 and enqueues one
+`(topic, data)` frame; `dejavu_hook_emit_text` enqueues caller-owned bytes. The
+hook ABI never performs socket I/O: a single agent worker thread owns one TCP
+connection and drains a bounded queue (2048 frames / 8 MiB). When the channel is
+inactive or the queue is full the frame is dropped and counted, and
+`dejavu_hook_emit` still returns `DEJAVU_HOOK_OK` for a valid String so a drop
+can never turn into a logged hook failure. A non-String object is ignored.
+Emoji and embedded NUL are preserved; isolated UTF-16 surrogates become U+FFFD.
+Encoding uses bounded chunks and drops payloads larger than 4 MiB. The worker
+has connection/send deadlines, and stopping the channel cancels pending I/O
+before waiting for the worker to exit.
+
+The channel is configured from the Lua control session:
+
+```lua
+hook.stream_start("127.0.0.1:39001")  -- or no argument: debug.dejavu.hook.stream
+hook.stream_stats()                   -- "active=1 ... emitted=.. dropped=.. sent=.."
+hook.stream_stop()
+```
+
+Directory plugins should acquire a managed channel instead of replacing an
+existing one:
+
+```lua
+local lease = hook.stream_acquire("127.0.0.1:39001")
+-- install hooks, consume events, then remove hooks
+hook.stream_release(lease)
+```
+
+Acquisition fails without changing the channel when its endpoint is invalid or
+another caller owns it. The integer lease is returned only after acquisition;
+an asynchronous connection failure retains that lease until release. Releasing
+an expired lease returns `false` and never stops a replacement channel. Legacy
+`stream_start/stop` deliberately replace/stop the process-wide channel and
+invalidate any previous lease; they remain available for explicit console use.
+
+Wire format (host receiver): each record is a 4-byte big-endian frame length
+followed by a payload of a 2-byte big-endian topic length, the UTF-8 topic and
+the UTF-8 data. For example, a device connects to the host through
+`adb reverse tcp:39001 tcp:39001`, so the endpoint is `127.0.0.1:39001`.
+
 ## Stable metadata
 
 - `dejavu_hook_abi_version()` returns `DEJAVU_HOOK_ABI_VERSION` (`1`).

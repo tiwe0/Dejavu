@@ -40,6 +40,12 @@
 #define DEJAVU_HOOK_INTERFACE_VERSION 1u
 #define DEJAVU_FS_INTERFACE_VERSION 1u
 #define DEJAVU_STREAM_INTERFACE_VERSION 1u
+/*
+ * Append-only stream interface revision: adds TCP listen/accept/read for
+ * device-side RPC servers. Request it through host->get_interface("stream", 2);
+ * older plugins keep requesting version 1 and receive DejavuStreamInterface.
+ */
+#define DEJAVU_STREAM_INTERFACE_VERSION_2 2u
 
 /* Stream transports for DejavuStreamInterface.open(). */
 #define DEJAVU_STREAM_TRANSPORT_TCP 1u
@@ -103,6 +109,34 @@ typedef struct DejavuStreamInterface {
     int (*write)(void *host_context, int handle, const void *data, size_t size);
     int (*close)(void *host_context, int handle);
 } DejavuStreamInterface;
+
+typedef struct DejavuStreamInterfaceV2 {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Same three fields as DejavuStreamInterface (open/write/close). */
+    int (*open)(void *host_context, uint32_t transport, const char *endpoint, char *error,
+                size_t error_size);
+    int (*write)(void *host_context, int handle, const void *data, size_t size);
+    int (*close)(void *host_context, int handle);
+    /*
+     * Bind a TCP listener (endpoint host:port; 0.0.0.0 for all interfaces).
+     * Returns a positive listener handle or 0 on failure.
+     */
+    int (*listen)(void *host_context, uint32_t transport, const char *endpoint, int backlog,
+                  char *error, size_t error_size);
+    /*
+     * Accept one pending TCP connection. Returns a positive connection handle,
+     * 0 on timeout, or -1 on error. timeout_ms < 0 blocks indefinitely.
+     */
+    int (*accept)(void *host_context, int listener_handle, int timeout_ms);
+    /*
+     * Read exactly one framed record (matching write()'s 4-byte big-endian
+     * length prefix). Returns 1 with *size_read set, 0 on timeout, or -1 on
+     * EOF/error/record larger than capacity. timeout_ms < 0 blocks indefinitely.
+     */
+    int (*read)(void *host_context, int handle, void *buffer, size_t capacity, int timeout_ms,
+                size_t *size_read);
+} DejavuStreamInterfaceV2;
 
 typedef struct DejavuPluginHost {
     uint32_t abi_version;

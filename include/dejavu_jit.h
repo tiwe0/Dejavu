@@ -65,6 +65,18 @@ int dejavu_jit_stream_open(unsigned int transport, const char *endpoint, char *e
                            unsigned long error_size);
 int dejavu_jit_stream_write(int handle, const void *data, unsigned long size);
 int dejavu_jit_stream_close(int handle);
+/* Capture in an authorized initializer/callback, then bind in its worker.
+ * The opaque credential is revoked on unload. NULL unbinds the current worker.
+ * Binding applies only to stream APIs; it does not grant other capabilities. */
+void *dejavu_jit_stream_capture_context(void);
+int dejavu_jit_stream_bind_context(void *context);
+
+/* TCP listen/accept/read for device-side RPC servers; same framed records. */
+int dejavu_jit_stream_listen(unsigned int transport, const char *endpoint, int backlog, char *error,
+                             unsigned long error_size);
+int dejavu_jit_stream_accept(int listener_handle, int timeout_ms);
+int dejavu_jit_stream_read(int handle, void *buffer, unsigned long capacity, int timeout_ms,
+                           unsigned long *size_read);
 
 extern void dejavu_jit_set_error(const char *message);
 extern int dejavu_jit_arg_type(const DejavuJitValue *arguments, unsigned long count,

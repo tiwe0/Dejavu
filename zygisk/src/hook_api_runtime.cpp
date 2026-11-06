@@ -165,6 +165,12 @@ static inline int dejavu_hook_return_void(dejavu_hook_context *context) {
     return dejavu_hook_set_result_void(context);
 }
 extern void dejavu_hook_log(const char *message);
+/* Non-blocking event sink: serializes the String and enqueues one frame; a
+ * worker thread owns the socket. Always returns OK for a valid String so a
+ * dropped event never turns into a logged hook failure. */
+extern int dejavu_hook_emit(dejavu_hook_context *context, const char *topic, void *string_object);
+extern int dejavu_hook_emit_text(dejavu_hook_context *context, const char *topic,
+                                 const char *data, unsigned long size);
 #line 1 "hook.c"
 )DEJAVU_HOOK_API";
 
@@ -309,6 +315,8 @@ bool dejavu_hook_api_register_symbols(
         {"dejavu_hook_is_instance_of", reinterpret_cast<const void *>(dejavu_hook_is_instance_of)},
         {"dejavu_hook_call", reinterpret_cast<const void *>(dejavu_hook_call)},
         {"dejavu_hook_log", reinterpret_cast<const void *>(dejavu_hook_log)},
+        {"dejavu_hook_emit", reinterpret_cast<const void *>(dejavu_hook_emit)},
+        {"dejavu_hook_emit_text", reinterpret_cast<const void *>(dejavu_hook_emit_text)},
     };
     for (const HookSymbol &symbol : symbols) {
         if (runtime->engine_add_symbol(engine, symbol.name, symbol.address) != DEJAVU_OK) {

@@ -215,6 +215,18 @@ static inline int dejavu_hook_return_void(dejavu_hook_context *context) {
 
 void dejavu_hook_log(const char *message);
 
+/*
+ * Non-blocking event channel. dejavu_hook_emit serializes a Java String as
+ * UTF-8 and enqueues one (topic, data) frame; a worker thread owns the socket
+ * and performs all I/O, so hook callbacks never block on the network. Frames
+ * are dropped when the channel is inactive or when its bounded queue is full.
+ * A valid String always reports DEJAVU_HOOK_OK, even when the frame was
+ * dropped, so event delivery can never turn into a hook failure.
+ */
+int dejavu_hook_emit(dejavu_hook_context *context, const char *topic, void *string_object);
+int dejavu_hook_emit_text(
+    dejavu_hook_context *context, const char *topic, const char *data, unsigned long size);
+
 /* User source may define either callback. Zero means success. */
 int before_hook(dejavu_hook_context *context);
 int after_hook(dejavu_hook_context *context);

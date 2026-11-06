@@ -17,6 +17,10 @@ namespace dejavu_hook_manager_internal {
 extern HookManager *g_manager;
 extern thread_local bool g_inside_native_hook;
 
+// Stream handles opened through the Lua hook.stream_* API are owned by this
+// token and closed when the control session/hook manager is destroyed.
+inline constexpr uint64_t kLuaStreamOwnerToken = 0x4C75615F5354524DULL; // Lua_STRM
+
 } // namespace dejavu_hook_manager_internal
 
 struct HookManager::Impl {
@@ -123,4 +127,24 @@ struct HookManager::Impl {
 #endif
     static int lua_log(dejavu_control_session *, void *, const dejavu_value *, size_t,
                        dejavu_value *, char *, size_t);
+    static int lua_stream_start(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_stream_acquire(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                  dejavu_value *, char *, size_t);
+    static int lua_stream_release(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                  dejavu_value *, char *, size_t);
+    static int lua_stream_stop(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                               dejavu_value *, char *, size_t);
+    static int lua_stream_stats(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_stream_listen(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_stream_accept(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                 dejavu_value *, char *, size_t);
+    static int lua_stream_read(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                               dejavu_value *, char *, size_t);
+    static int lua_stream_write(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
+    static int lua_stream_close(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                dejavu_value *, char *, size_t);
 };

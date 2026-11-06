@@ -19,6 +19,13 @@ static int demo_function(void *session, void *context, const DejavuJitValue *arg
 
 int dejavu_jit_plugin_init(void) {
     char error[128];
+    /* Keep the v0.8 stream listen/accept/read ABI referenced so ABI headers and
+       host symbol registration cannot drift apart unnoticed. */
+    (void)dejavu_jit_stream_listen;
+    (void)dejavu_jit_stream_accept;
+    (void)dejavu_jit_stream_read;
+    (void)dejavu_jit_stream_capture_context;
+    (void)dejavu_jit_stream_bind_context;
     return dejavu_jit_register("demo", "increment", demo_function, NULL, error, sizeof(error));
 }
 

@@ -17,6 +17,7 @@
 #include "stream_service.h"
 
 struct DejavuRuntime;
+struct PluginHostContext;
 
 class PluginManager {
   public:
@@ -43,10 +44,31 @@ class PluginManager {
     bool uninstall_owned_hook(void *target, char *error, size_t error_size);
     size_t hook_count_for(size_t plugin_index) const;
     bool active_plugin_has_capability(uint32_t capability) const;
+    uint64_t stream_owner_for_context() const;
+    size_t index_for_context(void *context) const;
+    // Opaque host identities are registered per plugin instance, never inferred.
+    static PluginManager *from_host_context(void *context);
+    void *capture_stream_context();
+    int bind_stream_context(void *context);
+
     static int host_stream_open(void *host_context, uint32_t transport, const char *endpoint,
                                 char *error, size_t error_size);
     static int host_stream_write(void *host_context, int handle, const void *data, size_t size);
     static int host_stream_close(void *host_context, int handle);
+    static int host_stream_listen(void *host_context, uint32_t transport, const char *endpoint,
+                                  int backlog, char *error, size_t error_size);
+    static int host_stream_accept(void *host_context, int listener_handle, int timeout_ms);
+    static int host_stream_read(void *host_context, int handle, void *buffer, size_t capacity,
+                                int timeout_ms, size_t *size_read);
+    // Control-session (Lua) stream helpers: the caller supplies the owner token.
+    int stream_listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
+                      int backlog, std::string *error);
+    int stream_accept(int listener_handle, int timeout_ms, uint64_t owner_token);
+    int stream_read(int handle, void *buffer, size_t capacity, int timeout_ms,
+                    size_t *size_read, uint64_t owner_token);
+    int stream_write(int handle, const void *data, size_t size, uint64_t owner_token);
+    int stream_close(int handle, uint64_t owner_token);
+    size_t stream_close_owner(uint64_t owner_token);
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;
@@ -66,12 +88,14 @@ class PluginManager {
         bool permissions_dirty = false;
     };
     struct Entry {
+        PluginManager *manager = nullptr;
         size_t plugin_index = 0;
         std::string namespace_name;
         std::string function_name;
         dejavu_host_function function = nullptr;
         void *context = nullptr;
         bool valid = false;
+        bool returned = false;
         std::atomic<unsigned int> in_flight{0};
     };
     struct Plugin {
@@ -94,8 +118,15 @@ class PluginManager {
         void (*jit_shutdown)() = nullptr;
         void (*jit_prepare)() = nullptr;
         uint64_t stream_owner_token = 0;
+        std::shared_ptr<PluginHostContext> context;
+        DejavuPluginHost host = {};
+        bool retiring = false;
+        bool prepare_complete = false;
         std::string skill_text;
     };
+
+    void initialize_plugin_context(Plugin *plugin);
+    bool finish_unload(Plugin *plugin, std::string *status, std::string *error);
 
     static int host_register_function(void *host_context, const char *namespace_name,
                                       const char *function_name, dejavu_host_function function,
@@ -141,8 +172,10 @@ class PluginManager {
                           dejavu_value *, char *, size_t);
 
     bool register_entry(Entry *entry, char *error, size_t error_size);
-    bool load_plugin_locked(const std::string &path, std::string *status, std::string *error);
-    bool load_jit_plugin_locked(const std::string &path, std::string *status, std::string *error);
+    bool load_plugin_locked(const std::string &path, std::string *status, std::string *error,
+                            std::unique_lock<std::recursive_mutex> &manager_lock);
+    bool load_jit_plugin_locked(const std::string &path, std::string *status, std::string *error,
+                                std::unique_lock<std::recursive_mutex> &manager_lock);
     void autoload_from_property();
     void load_plugin_manifest();
     void refresh_allowed_paths();
@@ -175,6 +208,8 @@ class PluginManager {
     jobject app_class_loader_ = nullptr;
     DejavuPluginHost host_ = {};
     mutable std::recursive_mutex mutex_;
+    std::atomic<bool> lifecycle_active_{false};
+    std::vector<std::shared_ptr<PluginHostContext>> contexts_;
     std::vector<std::unique_ptr<Plugin>> plugins_;
     std::deque<std::unique_ptr<Entry>> entries_;
     std::vector<Entry *> pending_entries_;

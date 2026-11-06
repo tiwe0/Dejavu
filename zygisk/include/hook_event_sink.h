@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 /*
@@ -20,17 +21,24 @@ class HookEventSink {
   public:
     struct State;
 
+    static constexpr size_t kMaximumPayloadBytes = 4u * 1024u * 1024u;
     static HookEventSink &instance();
 
     // Starts (or restarts) the sink. The endpoint is "host:port" for TCP.
     // The call returns immediately; the worker connects in the background.
     bool start(const std::string &endpoint, std::string *error);
     void stop();
+    // Acquire an idle channel without replacing another caller's stream.
+    // A lease survives connection failure until released; stale releases are inert.
+    bool acquire(const std::string &endpoint, uint64_t *lease, std::string *error);
+    bool release(uint64_t lease);
     bool active() const;
 
     // Enqueues one frame. Returns false when the frame was dropped.
     bool emit(const char *topic, const char *data, size_t size);
 
+    // Account for serialization failures before a frame can be enqueued.
+    void record_drop();
     std::string stats() const;
 
   private:
