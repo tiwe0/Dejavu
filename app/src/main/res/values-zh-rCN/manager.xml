@@ -1,0 +1,23 @@
+<resources>
+    <string name="tab_tools">工具</string>
+    <string name="title_tools">工具</string>
+    <string name="navigate_back">返回</string>
+    <string name="tools_logs_detail">按 Dejavu 标签查看</string>
+
+    <string name="overview_module_detected">已检测到模块</string>
+    <string name="overview_module_missing">未检测到模块</string>
+    <string name="overview_manage_scope">管理作用域</string>
+    <string name="current_process">当前操作进程</string>
+    <string name="target_process_offline">目标进程 %1$s 未运行。请启动目标后再检查。</string>
+    <string name="overview_root">Root 权限</string>
+    <string name="overview_running">运行中</string>
+    <string name="overview_offline">离线</string>
+    <string name="overview_helper_port">端口 %1$s</string>
+
+    <string name="overview_project_title">项目与版权</string>
+    <string name="overview_source">项目源码</string>
+    <string name="overview_references">第三方项目引用</string>
+    <string name="overview_reference_components">Lua、TinyCC、LSPlant、Dobby 等</string>
+    <string name="overview_license">MIT 许可证</string>
+    <string name="overview_link_unavailable">当前没有可打开此链接的应用。</string>
+</resources>

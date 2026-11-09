@@ -11,7 +11,10 @@ import java.io.EOFException
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 
-class RpcException(message: String) : Exception(message)
+open class RpcException(message: String) : Exception(message)
+
+internal class TargetProcessNotRunning(val process: String) :
+    RpcException("target process is not running: $process")
 
 private data class RpcMetadata(val pid: Int, val socket: String, val token: ByteArray)
 
@@ -139,7 +142,7 @@ object DejavuRpc {
             it.toIntOrNull()?.takeIf { pid -> pid > 0 }
         }.toSet()
         if (running.exitCode != 0 || livePids.isEmpty()) {
-            throw RpcException("target process is not running: $process")
+            throw TargetProcessNotRunning(process)
         }
         val listing = RootShell.run("ls -1t ${RootShell.quote("$MODULE_DIR/run")}")
         if (listing.exitCode != 0) {

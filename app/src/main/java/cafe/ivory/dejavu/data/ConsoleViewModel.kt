@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.graphics.drawable.toBitmap
 import androidx.annotation.StringRes
+import cafe.ivory.dejavu.ManagerLanguage
 import cafe.ivory.dejavu.R
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,8 +21,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.security.SecureRandom
 import java.time.Instant
 import org.json.JSONObject
@@ -43,7 +42,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     private var pluginRequestSerial = 0
     private var appsLoaded = false
     private var appsLoadJob: Job? = null
+    private val logLock = Any()
     private var logProcess: Process? = null
+    private var logSerial = 0
     private var logJob: Job? = null
     private val logBuilder = StringBuilder()
     private val packageImporter = PluginPackageImporter(application)
@@ -277,7 +278,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                     bindNativeRuntime(it.copy(pluginsLoading = false, pluginsRaw = "", plugins = emptyList(),
                         nativeRuntimeKnown = false))
                 }
-                message(text(R.string.msg_plugin_list_failed, error.message ?: ""), error = true)
+                if (error !is TargetProcessNotRunning) {
+                    message(text(R.string.msg_plugin_list_failed, error.message.orEmpty()), error = true)
+                }
             }
         }
     }
@@ -390,7 +393,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         val target = _state.value.selectedTarget
         directoryJob?.cancel()
         directoryJob = viewModelScope.launch {
-            _state.update { it.copy(pluginDirectoryLoading = true, pluginDirectoryError = null) }
+            _state.update {
+                it.copy(pluginDirectoryLoading = true, pluginDirectoryError = null, directoryRuntimeError = null)
+            }
             try {
                 val (packages, artifacts, scanErrors) = withContext(Dispatchers.IO) {
                     val packages = packageImporter.list()
@@ -420,10 +425,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                             else -> DirectoryPluginState.STOPPED
                         },
                         session = status?.session.takeIf { sameTarget },
-                        error = runtime?.exceptionOrNull()?.message.takeIf { sameTarget }
-                            ?: previous[plugin.manifest.id]?.takeIf {
-                                sameTarget && status?.state == DirectoryPluginState.ERROR && it.session == status.session
-                            }?.error,
+                        error = previous[plugin.manifest.id]?.takeIf {
+                            sameTarget && status?.state == DirectoryPluginState.ERROR && it.session == status.session
+                        }?.error,
                     )
                 }
                 _state.update {
@@ -431,6 +435,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                         directoryPlugins = rows,
                         pluginDirectoryLoading = false,
                         pluginDirectoryError = scanErrors.takeIf { errors -> errors.isNotEmpty() }?.joinToString("\n"),
+                        directoryRuntimeError = runtime?.exceptionOrNull()?.takeIf { sameTarget }?.let(::runtimeError),
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -550,7 +555,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val pid = DejavuRpc.processPid(target)
                 if (serial != packageEventSerial) return@launch
-                process = RootShell.start("exec logcat --pid $pid -v raw -T $since -s ${RootShell.quote(spec.tag + ":I")} '*:S'")
+                process = RootShell.startLogcat(
+                    "--pid $pid -v raw -T $since -s ${RootShell.quote(spec.tag + ":I")} '*:S'",
+                )
                 val accepted = synchronized(packageEventLock) {
                     if (serial != packageEventSerial) false else {
                         packageEventProcess = process
@@ -599,7 +606,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                 }
             } finally {
                 expiryJob?.cancel()
-                process?.destroy()
+                RootShell.stopLogcat(process)
                 decoder.clear()
                 seen.clear()
                 synchronized(packageEventLock) {
@@ -614,7 +621,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             ++packageEventSerial
             packageEventProcess.also { packageEventProcess = null }
         }
-        process?.destroy()
+        RootShell.stopLogcat(process)
         packageEventJob?.cancel()
         packageEventJob = null
         _state.update { it.copy(packageEvents = null) }
@@ -644,74 +651,88 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         val target = _state.value.selectedTarget
             ?: return Result.failure(RpcException("Select a target first"))
         _state.update { it.copy(loading = true) }
-        return withContext(Dispatchers.IO) {
-            runCatching { DejavuRpc.execute(target, script) }
-        }.also { _state.update { it.copy(loading = false) } }
+        return try {
+            withContext(Dispatchers.IO) {
+                runCatching { DejavuRpc.execute(target, script) }
+            }
+        } finally {
+            _state.update { it.copy(loading = false) }
+        }
     }
 
     fun startLogs() {
         if (logJob?.isActive == true) return
-        logBuilder.setLength(0)
-        _state.update { it.copy(logText = "", logcatRunning = true) }
+        val serial = synchronized(logLock) {
+            logBuilder.setLength(0)
+            _state.update { it.copy(logText = "", logcatRunning = true) }
+            ++logSerial
+        }
         logJob = viewModelScope.launch(Dispatchers.IO) {
-            val process = try {
-                RootShell.start("logcat -v time -s $LOG_TAGS")
-            } catch (error: Exception) {
-                withContext(Dispatchers.Main) {
-                    _state.update { it.copy(logcatRunning = false) }
-                    message(text(R.string.msg_logcat_failed, error.message ?: ""), error = true)
-                }
-                return@launch
-            }
-            logProcess = process
-            var lastEmit = 0L
+            var process: Process? = null
             try {
-                BufferedReader(InputStreamReader(process.inputStream)).useLines { lines ->
+                process = RootShell.startLogcat("-v time -s $LOG_TAGS")
+                synchronized(logLock) {
+                    if (serial != logSerial || !isActive) return@launch
+                    logProcess = process
+                }
+                var lastEmit = 0L
+                process.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
                         // Package events have their own clear-on-close viewer;
                         // keep message frames out of the general log buffer.
                         if (_state.value.directoryPlugins.any { item ->
                                 item.plugin.manifest.events?.marker?.let { line.contains("$it ") } == true
                             }) return@forEach
-                        synchronized(logBuilder) {
+                        synchronized(logLock) {
+                            if (serial != logSerial || !isActive) return@launch
                             logBuilder.appendLine(line)
                             if (logBuilder.length > 80_000) {
                                 logBuilder.delete(0, logBuilder.length - 80_000)
                             }
-                        }
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmit >= 120) {
-                            lastEmit = now
-                            val snapshot = synchronized(logBuilder) { logBuilder.toString() }
-                            withContext(Dispatchers.Main) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastEmit >= 120) {
+                                lastEmit = now
+                                val snapshot = logBuilder.toString()
                                 _state.update { it.copy(logText = snapshot) }
                             }
                         }
                     }
                 }
-            } catch (_: Exception) {
-            } finally {
-                val snapshot = synchronized(logBuilder) { logBuilder.toString() }
-                withContext(Dispatchers.Main) {
-                    _state.update { it.copy(logcatRunning = false, logText = snapshot) }
+            } catch (error: Exception) {
+                synchronized(logLock) {
+                    if (serial == logSerial && process == null) {
+                        message(text(R.string.msg_logcat_failed, error.message.orEmpty()), error = true)
+                    }
                 }
-                logProcess = null
-                logJob = null
+            } finally {
+                RootShell.stopLogcat(process)
+                synchronized(logLock) {
+                    if (serial == logSerial) {
+                        logProcess = null
+                        _state.update { it.copy(logcatRunning = false, logText = logBuilder.toString()) }
+                    }
+                }
             }
         }
     }
 
     fun stopLogs() {
-        logProcess?.destroy()
-        logProcess = null
+        if (logJob == null) return
+        val process = synchronized(logLock) {
+            ++logSerial
+            _state.update { it.copy(logcatRunning = false, logText = logBuilder.toString()) }
+            logProcess.also { logProcess = null }
+        }
+        RootShell.stopLogcat(process)
         logJob?.cancel()
         logJob = null
-        _state.update { it.copy(logcatRunning = false) }
     }
 
     fun clearLogs() {
-        logBuilder.setLength(0)
-        _state.update { it.copy(logText = "") }
+        synchronized(logLock) {
+            logBuilder.setLength(0)
+            _state.update { it.copy(logText = "") }
+        }
     }
 
     fun message(text: String, error: Boolean = false) {
@@ -719,7 +740,12 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun text(@StringRes id: Int, vararg args: Any): String =
-        getApplication<Application>().getString(id, *args)
+        ManagerLanguage.localizedContext(getApplication<Application>())
+            .getString(id, *args)
+
+    private fun runtimeError(error: Throwable): String =
+        if (error is TargetProcessNotRunning) text(R.string.target_process_offline, error.process)
+        else error.message.orEmpty()
 
     fun consumeMessage() {
         _state.update { it.copy(lastMessage = null) }

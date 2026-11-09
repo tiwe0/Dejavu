@@ -5,7 +5,7 @@
     <string name="native_library_empty_title">未发现原生或 JIT 插件</string>
     <string name="native_library_empty_detail">导入包含 manifest.json 的原生/JIT 插件文件夹，或放入默认目录后重新扫描。</string>
     <string name="native_library_other_runtime_title">目标中注册的其他插件</string>
-    <string name="native_library_not_loaded">未在此目标中加载</string>
+    <string name="native_library_not_loaded">未加载</string>
     <string name="native_library_kind_native">原生</string>
     <string name="native_library_kind_jit">JIT</string>
 </resources>

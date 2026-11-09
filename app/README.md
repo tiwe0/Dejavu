@@ -1,4 +1,4 @@
-# Dejavu Console (Android)
+# Dejavu Manager (Android)
 
 Package: `cafe.ivory.dejavu` · version: `0.2.2`
 
@@ -34,16 +34,16 @@ the profile uses the standard Android debug signing credentials.
 
 ## What it does
 
-- **Overview** – module version, root shell, root helper endpoint, selected target.
-- **Targets** – edit `config/targets.txt`, restart target processes.
+- **Overview** – module version, root access, root helper, selected process,
+  project source, third-party notices and copyright.
+- **Scope** – edit `config/targets.txt`, select the active process and restart targets.
 - **Plugins** – reads `plugin.list()` through Dejavu's authenticated Lua RPC,
   imports Lua plugin folders, scans `/data/adb/dejavu/plugins`, starts/stops
   directory plugins and shows live events. Native plugins retain SKILL.md,
   unload and `.so`/JIT `.c` load-by-device-path.
-- **Live logs** – streams `DejavuZygisk`, `DejavuAgent`, `DejavuPlugin`,
-  `DejavuHook`, `DejavuNative`.
-- **Lua console** – executes Lua on the selected target via the same control
-  channel used by `dejavuctl`.
+- **Tools** – opens live logs for `DejavuZygisk`, `DejavuAgent`,
+  `DejavuPlugin`, `DejavuHook` and `DejavuNative`, or the Lua console for
+  the selected process via the same control channel used by `dejavuctl`.
 
 ### Data path
 
@@ -62,8 +62,8 @@ talks to the agent through its authenticated local socket.
 
 - Default: English (`values/strings.xml`)
 - Simplified Chinese: `values-zh-rCN/strings.xml`
-- Android 13+ per-app locale via `res/xml/locales_config.xml`
-- In-app language picker in the top bar (Android 13+)
+- The top-right language picker supports English, Simplified Chinese and Follow
+  system. Android 13+ shares the choice with system app-language settings.
 
 ## Notes
 

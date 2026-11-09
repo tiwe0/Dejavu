@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="package_directory_title">目录插件</string>
+    <string name="package_directory_title">本机目录插件</string>
     <string name="package_directory_description">导入插件文件夹后，可在所选进程中启动。</string>
     <string name="package_import_folder">导入文件夹</string>
     <string name="package_scan">扫描目录</string>
@@ -8,7 +8,7 @@
     <string name="package_scanning">正在扫描插件并检查运行状态…</string>
     <string name="package_empty_title">还没有目录插件</string>
     <string name="package_empty_detail">选择包含 manifest.json 的插件文件夹，或放入默认目录后重新扫描。每个插件都需要独立文件夹和清单。</string>
-    <string name="package_state_unknown">尚未检查运行状态</string>
+    <string name="package_state_unknown">状态未知</string>
     <string name="package_state_stopped">已停止</string>
     <string name="package_state_running">运行中</string>
     <string name="package_state_error">需要清理</string>
@@ -34,6 +34,6 @@
     <string name="package_stop_failed">插件停止失败：%1$s</string>
     <string name="package_events_failed">事件流读取失败：%1$s</string>
     <string name="package_invalid_snapshot">目标返回的插件状态无效，请刷新后重试。</string>
-    <string name="package_native_title">原生与 JIT 插件</string>
+    <string name="package_native_title">原生 / JIT 插件</string>
     <string name="package_device_path">加载设备路径</string>
 </resources>

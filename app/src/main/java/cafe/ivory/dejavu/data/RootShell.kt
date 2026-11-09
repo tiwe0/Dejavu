@@ -28,6 +28,22 @@ object RootShell {
         .redirectErrorStream(true)
         .start()
 
+    // The app cannot signal a root child. The shell reaps its own logcat
+    // when the app closes stdin, including when the app process exits.
+    internal fun startLogcat(arguments: String): Process = start(
+        """
+        logcat $arguments &
+        exec 1>&- 2>&-
+        IFS= read -r stop
+        kill %1
+        wait
+        """.trimIndent(),
+    )
+
+    internal fun stopLogcat(process: Process?) {
+        runCatching { process?.outputStream?.close() }
+    }
+
     fun run(command: String, timeoutSeconds: Long = 20): ShellResult =
         runWithInput(command, null, timeoutSeconds)
 

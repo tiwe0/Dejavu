@@ -1,5 +1,6 @@
 package cafe.ivory.dejavu.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,11 +16,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -27,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,12 +37,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.data.InstalledApp
 
 @Composable
 fun StatusPill(
@@ -86,26 +88,6 @@ fun SectionTitle(title: String, subtitle: String? = null, modifier: Modifier = M
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-    }
-}
-
-@Composable
-fun InfoCard(
-    modifier: Modifier = Modifier,
-    title: String,
-    subtitle: String? = null,
-    content: @Composable () -> Unit,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = CardDefaults.outlinedCardBorder(),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(title, subtitle)
-            content()
         }
     }
 }
@@ -159,31 +141,38 @@ fun TargetMenu(
     modifier: Modifier = Modifier,
     label: String? = null,
     onPickApp: (() -> Unit)? = null,
+    apps: List<InstalledApp> = emptyList(),
 ) {
     val resolvedLabel = label ?: stringResource(R.string.target_process)
+    val app = apps.firstOrNull { it.packageName == selected?.substringBefore(':') }
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         Surface(
+            modifier = Modifier.fillMaxWidth(),
             onClick = { expanded = true },
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            color = MaterialTheme.colorScheme.surface,
+            border = CardDefaults.outlinedCardBorder(),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (selected != null) ProcessIcon(app)
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        resolvedLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        selected ?: stringResource(R.string.not_selected),
+                        app?.label ?: resolvedLabel,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        selected ?: stringResource(R.string.not_selected),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -198,9 +187,16 @@ fun TargetMenu(
                 )
             }
             targets.forEach { target ->
+                val targetApp = apps.firstOrNull { it.packageName == target.substringBefore(':') }
                 DropdownMenuItem(
-                    text = { Text(target) },
-                    leadingIcon = {
+                    text = {
+                        Column {
+                            targetApp?.let { Text(it.label, fontWeight = FontWeight.Medium) }
+                            Text(target, style = MaterialTheme.typography.bodySmall)
+                        }
+                    },
+                    leadingIcon = { ProcessIcon(targetApp) },
+                    trailingIcon = {
                         if (target == selected) {
                             Icon(Icons.Rounded.CheckCircle, contentDescription = null)
                         }
@@ -226,31 +222,22 @@ fun TargetMenu(
 }
 
 @Composable
-fun TargetPicker(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        onClick = onClick,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+internal fun ProcessIcon(app: InstalledApp?, modifier: Modifier = Modifier) {
+    val bitmap = app?.icon
+    if (bitmap != null) {
+        Image(bitmap.asImageBitmap(), contentDescription = null, modifier = modifier.size(32.dp))
+    } else {
+        Box(
+            modifier = modifier.size(32.dp).clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    stringResource(R.string.target_process),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    stringResource(R.string.choose_app),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
-            Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
+            Icon(
+                Icons.Rounded.Android,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
         }
     }
 }

@@ -44,6 +44,7 @@ data class ConsoleUiState(
     val directoryPlugins: List<DirectoryPluginUi> = emptyList(),
     val pluginDirectoryLoading: Boolean = false,
     val pluginDirectoryError: String? = null,
+    val directoryRuntimeError: String? = null,
     val pluginImporting: Boolean = false,
     val pluginActionId: String? = null,
     val packageEvents: PackageEventsUi? = null,
@@ -69,5 +70,6 @@ internal fun ConsoleUiState.withSelectedTarget(target: String?): ConsoleUiState 
         },
         pluginActionId = null,
         pluginDirectoryLoading = false,
+        directoryRuntimeError = null,
         packageEvents = null,
     )

@@ -1,14 +1,14 @@
 <resources>
-    <string name="app_name">Dejavu 控制台</string>
+    <string name="app_name">Dejavu 管理器</string>
 
-    <string name="tab_home">首页</string>
-    <string name="tab_targets">目标</string>
+    <string name="tab_home">概览</string>
+    <string name="tab_targets">作用域</string>
     <string name="tab_plugins">插件</string>
     <string name="tab_logs">日志</string>
     <string name="tab_console">控制台</string>
 
-    <string name="title_home">概览</string>
-    <string name="title_targets">目标进程</string>
+    <string name="title_home">Dejavu Manager</string>
+    <string name="title_targets">作用域</string>
     <string name="title_plugins">插件</string>
     <string name="title_logs">实时日志</string>
     <string name="title_console">Lua 控制台</string>
@@ -24,31 +24,23 @@
     <string name="hero_kicker">DEJAVU</string>
     <string name="hero_title">控制平面</string>
     <string name="hero_subtitle">面向目标进程、插件与 native 算法追踪的轻量控制台。</string>
-    <string name="banner_root_required">需要 root 权限。请允许 KernelSU/Magisk 授权提示，然后刷新。</string>
 
     <string name="module_title">模块</string>
     <string name="module_subtitle">Zygisk 运行时与模块包</string>
     <string name="module_installed">已安装</string>
-    <string name="module_not_detected">未检测到</string>
-    <string name="module_version_format">Dejavu Zygisk %1$s</string>
+    <string name="module_version_format">Dejavu Zygisk · %1$s</string>
     <string name="module_missing_hint">请安装 v0.7.0+ 模块并软重启。</string>
-    <string name="root_shell_title">Root Shell</string>
     <string name="root_shell_available">su -c 可用</string>
-    <string name="root_shell_unavailable">尚未获得 root</string>
     <string name="refresh_status">刷新状态</string>
 
     <string name="helper_title">Root 辅助服务</string>
     <string name="helper_subtitle">为 native hook 临时解锁 execute-only 页面</string>
     <string name="helper_pid_detail">pid %1$s · token 每次启动随机生成，由服务发布</string>
-    <string name="helper_scope">仅对白名单目标的可执行映射执行 mprotect。</string>
 
-    <string name="active_target_title">当前目标</string>
-    <string name="active_target_subtitle">选择插件、RPC 与日志使用的进程</string>
     <string name="choose_target">选择目标</string>
     <string name="target_process">目标进程</string>
     <string name="not_selected">未选择</string>
     <string name="no_targets_configured">未配置目标</string>
-    <string name="edit_targets">编辑目标</string>
     <string name="restart">重启</string>
 
     <string name="quick_actions_title">快捷操作</string>
@@ -59,22 +51,19 @@
     <string name="quick_capture_detail">打开模板</string>
     <string name="footer">Dejavu 控制台 · 设备端控制平面</string>
 
-    <string name="targets_intro_title">目标白名单</string>
-    <string name="targets_intro_subtitle">config/targets.txt · 精确进程名</string>
-    <string name="targets_intro_body">Agent 只会加载到这些应用。修改后请重启目标进程。</string>
+    <string name="targets_intro_title">目标进程白名单</string>
+    <string name="targets_intro_subtitle">单选用于切换插件和 Lua 的当前操作进程。</string>
+    <string name="targets_intro_body">修改白名单后，请重启对应进程。</string>
     <string name="target_process_example">com.example.app</string>
     <string name="add">添加</string>
     <string name="targets_empty_title">还没有目标</string>
     <string name="targets_empty_detail">点击上方选择应用，然后重新打开该应用，让 agent 可以注入。</string>
-    <string name="target_selected">当前目标</string>
-    <string name="target_tap_select">点击选择</string>
     <string name="restart_target_desc">重启目标</string>
     <string name="remove_target_desc">移除目标</string>
     <string name="select_target_desc">选择目标</string>
 
     <string name="plugins_no_status_title">暂无插件状态</string>
     <string name="plugins_no_status_detail">选择一个正在运行的目标并刷新。RPC 端点由应用内 agent 创建。</string>
-    <string name="refresh_plugins">刷新插件</string>
     <string name="load_plugin">加载插件</string>
     <string name="load">加载</string>
     <string name="cancel">取消</string>
@@ -129,14 +118,10 @@
     <string name="language_system">跟随系统</string>
     <string name="language_english">English</string>
     <string name="language_chinese">简体中文</string>
-    <string name="language_unavailable">应用内语言切换需要 Android 13 或更高版本。</string>
     <string name="overview_title">概览</string>
     <string name="overview_subtitle">模块与控制通道的运行状态</string>
-    <string name="overview_module">模块</string>
-    <string name="overview_helper">Root 辅助服务</string>
-    <string name="overview_target">目标</string>
+    <string name="overview_helper">辅助服务</string>
     <string name="overview_root_granted">已授权</string>
-    <string name="overview_helper_running">运行中 · %1$s</string>
     <string name="quick_targets_detail">管理白名单</string>
     <string name="msg_invalid_plugin_path">请输入设备上的绝对路径，以 .so 或 .c 结尾</string>
     <string name="action_remove">移除</string>
@@ -151,20 +136,19 @@
     <string name="logs_auto_scroll">自动滚动</string>
     <string name="logs_lines">%1$d 行</string>
     <string name="console_templates">模板</string>
-    <string name="target_none_hint">添加目标后才能使用插件与 RPC。</string>
     <string name="logs_no_matches">没有匹配的日志</string>
     <string name="logs_filter_empty_detail">清除过滤条件，或等待新的 Dejavu 日志。</string>
     <string name="choose_template">选择模板</string>
     <string name="add_target">添加目标</string>
     <string name="permission_title">权限</string>
     <string name="root_required_title">需要 root 权限</string>
-    <string name="root_required_body">Dejavu Console 需要 root 才能读取模块、控制目标进程并连接认证 RPC 通道。</string>
+    <string name="root_required_body">Dejavu 管理器需要 root 才能读取模块、控制目标进程并连接认证 RPC 通道。</string>
     <string name="request_root">请求 root 权限</string>
     <string name="request_root_again">再次请求</string>
     <string name="open_manager">打开 KernelSU</string>
     <string name="root_steps_title">如何授权</string>
     <string name="root_step_1">打开 KernelSU 或 Magisk 管理器。</string>
-    <string name="root_step_2">进入超级用户，找到 Dejavu Console。</string>
+    <string name="root_step_2">进入超级用户列表，找到 Dejavu 管理器。</string>
     <string name="root_step_3">选择允许，返回此页再次请求。</string>
     <string name="root_retry_hint">已经授权？返回应用后再次请求即可。</string>
     <string name="choose_app">选择应用</string>

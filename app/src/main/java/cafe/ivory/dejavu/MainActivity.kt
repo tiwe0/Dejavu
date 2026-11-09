@@ -1,11 +1,10 @@
 package cafe.ivory.dejavu
 
-import android.app.LocaleManager
-import android.os.Build
-import android.os.Bundle
-import android.os.LocaleList
+import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,10 +12,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Home
@@ -24,8 +28,10 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,11 +46,11 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,7 +61,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -64,41 +73,59 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.ivory.dejavu.data.ConsoleViewModel
 import cafe.ivory.dejavu.ui.AppPickerSheet
 import cafe.ivory.dejavu.ui.ConsoleScreen
-import cafe.ivory.dejavu.ui.HomeScreen
 import cafe.ivory.dejavu.ui.LogsScreen
+import cafe.ivory.dejavu.ui.OverviewScreen
 import cafe.ivory.dejavu.ui.PluginsScreen
 import cafe.ivory.dejavu.ui.RootRequiredScreen
 import cafe.ivory.dejavu.ui.TargetsScreen
+import cafe.ivory.dejavu.ui.ToolsScreen
 import cafe.ivory.dejavu.ui.theme.DejavuTheme
 import kotlinx.coroutines.launch
 
-private data class Tab(
+private enum class ManagerPage(
     @param:StringRes val label: Int,
     @param:StringRes val title: Int,
     val icon: ImageVector,
-)
+) {
+    Overview(R.string.tab_home, R.string.title_home, Icons.Rounded.Home),
+    Plugins(R.string.tab_plugins, R.string.title_plugins, Icons.Rounded.Extension),
+    Scope(R.string.tab_targets, R.string.title_targets, Icons.Rounded.Tune),
+    Tools(R.string.tab_tools, R.string.title_tools, Icons.Rounded.Build),
+    Logs(R.string.tab_logs, R.string.title_logs, Icons.AutoMirrored.Rounded.Article),
+    Lua(R.string.tab_console, R.string.title_console, Icons.Rounded.Terminal),
+    ;
 
-private val tabs = listOf(
-    Tab(R.string.tab_home, R.string.title_home, Icons.Rounded.Home),
-    Tab(R.string.tab_targets, R.string.title_targets, Icons.Rounded.Tune),
-    Tab(R.string.tab_plugins, R.string.title_plugins, Icons.Rounded.Extension),
-    Tab(R.string.tab_logs, R.string.title_logs, Icons.AutoMirrored.Rounded.Article),
-    Tab(R.string.tab_console, R.string.title_console, Icons.Rounded.Terminal),
-)
+    val isToolDetail get() = this == Logs || this == Lua
+}
+
+private val tabs = ManagerPage.entries.filterNot { it.isToolDetail }
 
 class MainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(ManagerLanguage.localizedContext(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { DejavuTheme { ConsoleApp() } }
+        setContent {
+            DejavuTheme {
+                ManagerApp(onLanguageChange = { tag ->
+                    if (ManagerLanguage.set(this, tag)) recreate()
+                })
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
+private fun ManagerApp(
+    onLanguageChange: (String?) -> Unit,
+    vm: ConsoleViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var tabIndex by rememberSaveable { mutableIntStateOf(0) }
+    var page by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
     var showLanguage by remember { mutableStateOf(false) }
     var showAppPicker by remember { mutableStateOf(false) }
     val openAppPicker = {
@@ -110,6 +137,11 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     val importPluginFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.importPluginFolder(uri)
     }
+    val refreshPlugins = {
+        if (state.selectedTarget == null) vm.refreshPluginLibrary() else vm.refreshPlugins()
+    }
+    val pluginsBusy = state.pluginDirectoryLoading || state.pluginsLoading || state.pluginImporting ||
+        state.pluginActionId != null || state.nativePluginActionPath != null
 
     LaunchedEffect(state.lastMessage) {
         val message = state.lastMessage ?: return@LaunchedEffect
@@ -117,15 +149,17 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
         vm.consumeMessage()
     }
 
-    LaunchedEffect(tabIndex, state.selectedTarget, state.rootGranted) {
-        if (tabIndex != 2 || !state.rootGranted) vm.closePackageEvents()
+    LaunchedEffect(page, state.selectedTarget, state.rootGranted) {
+        if (page != ManagerPage.Plugins || !state.rootGranted) vm.closePackageEvents()
         if (!state.rootGranted) {
             vm.stopLogs()
             return@LaunchedEffect
         }
-        if (tabIndex == 3) vm.startLogs() else vm.stopLogs()
-        if (tabIndex == 2 && state.selectedTarget != null) vm.refreshPlugins()
+        if (page == ManagerPage.Logs) vm.startLogs() else vm.stopLogs()
+        if (page == ManagerPage.Plugins) refreshPlugins()
     }
+
+    BackHandler(enabled = state.rootGranted && page.isToolDetail) { page = ManagerPage.Tools }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -142,33 +176,51 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
         topBar = {
             Column {
                 TopAppBar(
+                    expandedHeight = 56.dp,
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
                     title = {
                         Text(
                             stringResource(
-                                if (state.rootGranted) tabs[tabIndex].title
+                                if (state.rootGranted) page.title
                                 else R.string.permission_title,
                             ),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
-                    actions = {
-                        IconButton(onClick = { showLanguage = true }) {
-                            Icon(
-                                Icons.Rounded.Translate,
-                                contentDescription = stringResource(R.string.language),
-                            )
+                    navigationIcon = {
+                        if (state.rootGranted && page.isToolDetail) {
+                            IconButton(onClick = { page = ManagerPage.Tools }) {
+                                Icon(
+                                    Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = stringResource(R.string.navigate_back),
+                                )
+                            }
                         }
-                        if (state.rootGranted) {
+                    },
+                    actions = {
+                        if (state.rootGranted && !page.isToolDetail) {
                             IconButton(
-                                onClick = { vm.refresh() },
-                                enabled = !state.loading,
+                                onClick = {
+                                    if (page == ManagerPage.Plugins) refreshPlugins() else vm.refresh()
+                                },
+                                enabled = !state.loading && (page != ManagerPage.Plugins || !pluginsBusy),
                             ) {
                                 Icon(
                                     Icons.Rounded.Refresh,
                                     contentDescription = stringResource(R.string.refresh_status),
                                 )
                             }
+                        }
+                        IconButton(onClick = { showLanguage = true }) {
+                            Icon(
+                                Icons.Rounded.Translate,
+                                contentDescription = stringResource(R.string.language),
+                            )
                         }
                     },
                 )
@@ -178,15 +230,18 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
             }
         },
         bottomBar = {
-            if (!state.rootGranted) return@Scaffold
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                tabs.forEachIndexed { index, tab ->
-                    NavigationBarItem(
-                        selected = tabIndex == index,
-                        onClick = { tabIndex = index },
-                        icon = { Icon(tab.icon, contentDescription = stringResource(tab.label)) },
-                        label = { Text(stringResource(tab.label)) },
-                    )
+            if (!state.rootGranted || page.isToolDetail) return@Scaffold
+            Column {
+                HorizontalDivider()
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    tabs.forEach { tab ->
+                        NavigationBarItem(
+                            selected = page == tab,
+                            onClick = { page = tab },
+                            icon = { Icon(tab.icon, contentDescription = null) },
+                            label = { Text(stringResource(tab.label)) },
+                        )
+                    }
                 }
             }
         },
@@ -223,23 +278,22 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                 }
                 return@Scaffold
             }
-            when (tabIndex) {
-                0 -> HomeScreen(
+            when (page) {
+                ManagerPage.Overview -> OverviewScreen(
                     state = state,
-                    onRefresh = { vm.refresh() },
                     onSelectTarget = { vm.selectTarget(it) },
                     onPickApp = openAppPicker,
-                    onNavigate = { tabIndex = it },
-                    onRestartTarget = { vm.restartTarget(it) },
+                    onManageScope = { page = ManagerPage.Scope },
+                    onLinkUnavailable = { vm.message(it, error = true) },
                 )
-                1 -> TargetsScreen(
+                ManagerPage.Scope -> TargetsScreen(
                     state = state,
                     onPickApp = openAppPicker,
                     onRemove = { vm.removeTarget(it) },
                     onSelect = { vm.selectTarget(it) },
                     onRestart = { vm.restartTarget(it) },
                 )
-                2 -> PluginsScreen(
+                ManagerPage.Plugins -> PluginsScreen(
                     state = state,
                     onRefresh = { vm.refreshPlugins() },
                     onSelectTarget = { vm.selectTarget(it) },
@@ -248,20 +302,25 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
                     onLoad = { target, path -> vm.loadPlugin(target, path) },
                     onLoadLibrary = { target, path -> vm.loadLibraryPlugin(target, path) },
                     onImportFolder = { importPluginFolder.launch(null) },
-                    onScanDirectory = { vm.refreshPlugins() },
+                    onScanDirectory = refreshPlugins,
                     onStartDirectory = { target, id -> vm.startDirectoryPlugin(target, id) },
                     onStopDirectory = { target, id -> vm.stopDirectoryPlugin(target, id) },
                     onDirectoryEvents = { target, id -> vm.openPackageEvents(target, id) },
                     onCloseDirectoryEvents = { vm.closePackageEvents() },
                     skillLoader = { target, name -> vm.pluginSkill(target, name) },
                 )
-                3 -> LogsScreen(
+                ManagerPage.Tools -> ToolsScreen(
+                    target = state.selectedTarget,
+                    onOpenLogs = { page = ManagerPage.Logs },
+                    onOpenLua = { page = ManagerPage.Lua },
+                )
+                ManagerPage.Logs -> LogsScreen(
                     state = state,
                     onStart = { vm.startLogs() },
                     onStop = { vm.stopLogs() },
                     onClear = { vm.clearLogs() },
                 )
-                else -> ConsoleScreen(
+                ManagerPage.Lua -> ConsoleScreen(
                     state = state,
                     onSelectTarget = { vm.selectTarget(it) },
                     onPickApp = openAppPicker,
@@ -272,7 +331,13 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
     }
 
     if (showLanguage) {
-        LanguageDialog(onDismiss = { showLanguage = false })
+        LanguageDialog(
+            onDismiss = { showLanguage = false },
+            onSelect = {
+                showLanguage = false
+                onLanguageChange(it)
+            },
+        )
     }
 
     if (showAppPicker) {
@@ -285,17 +350,8 @@ private fun ConsoleApp(vm: ConsoleViewModel = viewModel()) {
 }
 
 @Composable
-private fun LanguageDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val current = if (Build.VERSION.SDK_INT >= 33) {
-        context.getSystemService(LocaleManager::class.java)
-            .applicationLocales
-            .takeIf { !it.isEmpty }
-            ?.toLanguageTags()
-            .orEmpty()
-    } else {
-        ""
-    }
+private fun LanguageDialog(onDismiss: () -> Unit, onSelect: (String?) -> Unit) {
+    val current = ManagerLanguage.current(LocalContext.current)
     val options = listOf(
         null to stringResource(R.string.language_system),
         "en" to stringResource(R.string.language_english),
@@ -305,33 +361,18 @@ private fun LanguageDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.language_title)) },
         text = {
-            Column {
-                if (Build.VERSION.SDK_INT < 33) {
-                    Text(
-                        stringResource(R.string.language_unavailable),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            Column(Modifier.selectableGroup()) {
                 options.forEach { (tag, label) ->
-                    val selected = (tag == null && current.isEmpty()) ||
-                        (tag != null && current.startsWith(tag))
-                    androidx.compose.foundation.layout.Row(
+                    val selected = tag == current
+                    Row(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .selectable(selected, role = Role.RadioButton, onClick = { onSelect(tag) }),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(
                             selected = selected,
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= 33) {
-                                    val manager = context.getSystemService(LocaleManager::class.java)
-                                    manager.applicationLocales = if (tag == null) {
-                                        LocaleList.getEmptyLocaleList()
-                                    } else {
-                                        LocaleList.forLanguageTags(tag)
-                                    }
-                                }
-                                onDismiss()
-                            },
+                            onClick = null,
+                            modifier = Modifier.padding(start = 12.dp, end = 16.dp),
                         )
                         Text(label)
                     }

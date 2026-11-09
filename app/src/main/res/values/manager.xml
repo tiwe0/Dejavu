@@ -1,0 +1,25 @@
+<resources>
+    <string name="tab_tools">Tools</string>
+    <string name="title_tools">Tools</string>
+    <string name="navigate_back">Back</string>
+    <string name="tools_logs_detail">Filter by Dejavu tags</string>
+
+    <string name="overview_module_detected">Module detected</string>
+    <string name="overview_module_missing">Module not detected</string>
+    <string name="module_product_name" translatable="false">Dejavu Zygisk</string>
+    <string name="overview_manage_scope">Manage scope</string>
+    <string name="current_process">Current process</string>
+    <string name="target_process_offline">The process %1$s is offline. Open the target and check again.</string>
+    <string name="overview_root">Root access</string>
+    <string name="overview_running">Running</string>
+    <string name="overview_offline">Offline</string>
+    <string name="overview_helper_port">Port %1$s</string>
+
+    <string name="overview_project_title">Project and copyright</string>
+    <string name="overview_source">Source code</string>
+    <string name="overview_references">Third-party references</string>
+    <string name="overview_reference_components">Lua · TinyCC · LSPlant · Dobby</string>
+    <string name="overview_license">MIT License</string>
+    <string name="overview_copyright" translatable="false">© 2026 Ivory &lt;contact@ivory.cafe&gt;</string>
+    <string name="overview_link_unavailable">No app available to open the link.</string>
+</resources>

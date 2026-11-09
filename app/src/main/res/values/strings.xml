@@ -1,14 +1,14 @@
 <resources>
-    <string name="app_name">Dejavu Console</string>
+    <string name="app_name">Dejavu Manager</string>
 
-    <string name="tab_home">Home</string>
-    <string name="tab_targets">Targets</string>
+    <string name="tab_home">Overview</string>
+    <string name="tab_targets">Scope</string>
     <string name="tab_plugins">Plugins</string>
     <string name="tab_logs">Logs</string>
     <string name="tab_console">Console</string>
 
-    <string name="title_home">Overview</string>
-    <string name="title_targets">Targets</string>
+    <string name="title_home">Dejavu Manager</string>
+    <string name="title_targets">Scope</string>
     <string name="title_plugins">Plugins</string>
     <string name="title_logs">Live logs</string>
     <string name="title_console">Lua console</string>
@@ -24,31 +24,23 @@
     <string name="hero_kicker">DEJAVU</string>
     <string name="hero_title">Control plane</string>
     <string name="hero_subtitle">A focused console for targets, plugins and native algorithm tracing.</string>
-    <string name="banner_root_required">Root access is required. Grant the KernelSU/Magisk prompt, then refresh.</string>
 
     <string name="module_title">Module</string>
     <string name="module_subtitle">Zygisk runtime and module package</string>
     <string name="module_installed">Installed</string>
-    <string name="module_not_detected">Not detected</string>
-    <string name="module_version_format">Dejavu Zygisk %1$s</string>
+    <string name="module_version_format">Dejavu Zygisk · %1$s</string>
     <string name="module_missing_hint">Install the v0.7.0+ module and soft reboot.</string>
-    <string name="root_shell_title">Root shell</string>
     <string name="root_shell_available">su -c available</string>
-    <string name="root_shell_unavailable">No root yet</string>
     <string name="refresh_status">Refresh status</string>
 
     <string name="helper_title">Root helper</string>
     <string name="helper_subtitle">Temporary execute-only page unlock for native hooks</string>
     <string name="helper_pid_detail">pid %1$s · token is per-start and published by the service</string>
-    <string name="helper_scope">The helper only mprotects executable mappings of allowlisted targets.</string>
 
-    <string name="active_target_title">Active target</string>
-    <string name="active_target_subtitle">Choose the process used by plugins, RPC and logs</string>
     <string name="choose_target">Choose target</string>
     <string name="target_process">Target process</string>
     <string name="not_selected">Not selected</string>
     <string name="no_targets_configured">No targets configured</string>
-    <string name="edit_targets">Edit targets</string>
     <string name="restart">Restart</string>
 
     <string name="quick_actions_title">Quick actions</string>
@@ -59,22 +51,19 @@
     <string name="quick_capture_detail">Open templates</string>
     <string name="footer">Dejavu Console · on-device control plane</string>
 
-    <string name="targets_intro_title">Target allowlist</string>
-    <string name="targets_intro_subtitle">config/targets.txt · exact process names</string>
-    <string name="targets_intro_body">The agent only loads into these apps. After editing, restart the target process.</string>
+    <string name="targets_intro_title">Target process allowlist</string>
+    <string name="targets_intro_subtitle">Select the process to use for plugin and Lua actions.</string>
+    <string name="targets_intro_body">Restart the affected process after changing the allowlist.</string>
     <string name="target_process_example">com.example.app</string>
     <string name="add">Add</string>
     <string name="targets_empty_title">No targets yet</string>
     <string name="targets_empty_detail">Choose an app above, then relaunch it so the agent can attach.</string>
-    <string name="target_selected">selected target</string>
-    <string name="target_tap_select">tap to select</string>
     <string name="restart_target_desc">Restart target</string>
     <string name="remove_target_desc">Remove target</string>
     <string name="select_target_desc">Select target</string>
 
     <string name="plugins_no_status_title">No plugin status</string>
     <string name="plugins_no_status_detail">Select a running target and refresh. The RPC endpoint is created by the in-app agent.</string>
-    <string name="refresh_plugins">Refresh plugins</string>
     <string name="load_plugin">Load plugin</string>
     <string name="load">Load</string>
     <string name="cancel">Cancel</string>
@@ -129,14 +118,10 @@
     <string name="language_system">Follow system</string>
     <string name="language_english">English</string>
     <string name="language_chinese">简体中文</string>
-    <string name="language_unavailable">Per-app language requires Android 13 or newer.</string>
     <string name="overview_title">Overview</string>
     <string name="overview_subtitle">Runtime status of the module and control channel</string>
-    <string name="overview_module">Module</string>
     <string name="overview_helper">Root helper</string>
-    <string name="overview_target">Target</string>
     <string name="overview_root_granted">Granted</string>
-    <string name="overview_helper_running">Running · %1$s</string>
     <string name="quick_targets_detail">Manage allowlist</string>
     <string name="msg_invalid_plugin_path">Use an absolute device path ending in .so or .c</string>
     <string name="action_remove">Remove</string>
@@ -151,20 +136,19 @@
     <string name="logs_auto_scroll">Auto-scroll</string>
     <string name="logs_lines">%1$d lines</string>
     <string name="console_templates">Templates</string>
-    <string name="target_none_hint">Add a target to start using plugins and RPC.</string>
     <string name="logs_no_matches">No matching lines</string>
     <string name="logs_filter_empty_detail">Clear the filter or wait for new Dejavu log lines.</string>
     <string name="choose_template">Choose template</string>
     <string name="add_target">Add target</string>
     <string name="permission_title">Permission</string>
     <string name="root_required_title">Root access required</string>
-    <string name="root_required_body">Dejavu Console needs root to read the module, control targets and open the authenticated RPC channel.</string>
+    <string name="root_required_body">Dejavu Manager needs root to read the module, control targets and open the authenticated RPC channel.</string>
     <string name="request_root">Request root access</string>
     <string name="request_root_again">Request again</string>
     <string name="open_manager">Open KernelSU</string>
     <string name="root_steps_title">How to authorize</string>
     <string name="root_step_1">Open KernelSU or Magisk manager.</string>
-    <string name="root_step_2">Go to Superuser and select Dejavu Console.</string>
+    <string name="root_step_2">Open Superuser and find Dejavu Manager.</string>
     <string name="root_step_3">Choose Allow, return here and request again.</string>
     <string name="root_retry_hint">Already granted root? Request again after returning to the app.</string>
     <string name="choose_app">Choose app</string>

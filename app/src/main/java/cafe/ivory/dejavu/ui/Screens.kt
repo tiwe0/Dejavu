@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,32 +23,28 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Hub
-import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Terminal
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.VerticalAlignBottom
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -54,7 +52,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,13 +63,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,13 +77,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.ConsoleUiState
@@ -216,165 +213,6 @@ private fun RootStep(index: Int, text: String) {
 }
 
 @Composable
-fun HomeScreen(
-    state: ConsoleUiState,
-    onRefresh: () -> Unit,
-    onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
-    onNavigate: (Int) -> Unit,
-    onRestartTarget: (String) -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (!state.rootGranted) {
-            item { ErrorBanner(stringResource(R.string.banner_root_required)) }
-        }
-        item {
-            Card(
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-            ) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                    RuntimeRow(
-                        label = stringResource(R.string.overview_module),
-                        value = if (state.moduleInstalled) {
-                            stringResource(R.string.module_version_format, state.moduleVersion)
-                        } else {
-                            stringResource(R.string.module_not_detected)
-                        },
-                        positive = state.moduleInstalled,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    RuntimeRow(
-                        label = stringResource(R.string.root_shell_title),
-                        value = if (state.rootGranted) {
-                            stringResource(R.string.overview_root_granted)
-                        } else {
-                            stringResource(R.string.root_shell_unavailable)
-                        },
-                        positive = state.rootGranted,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    RuntimeRow(
-                        label = stringResource(R.string.overview_helper),
-                        value = if (state.helperRunning) {
-                            stringResource(R.string.overview_helper_running, state.helperPort)
-                        } else {
-                            stringResource(R.string.status_offline)
-                        },
-                        positive = state.helperRunning,
-                        monoValue = state.helperRunning,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    RuntimeRow(
-                        label = stringResource(R.string.overview_target),
-                        value = state.selectedTarget ?: stringResource(R.string.not_selected),
-                        positive = state.selectedTarget != null,
-                        monoValue = true,
-                    )
-                }
-            }
-        }
-        if (!state.moduleInstalled) {
-            item { Text(stringResource(R.string.module_missing_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        }
-        item {
-            InfoCard(
-                title = stringResource(R.string.active_target_title),
-                subtitle = stringResource(R.string.active_target_subtitle),
-            ) {
-                if (state.targets.isEmpty()) {
-                    TargetPicker(onClick = onPickApp)
-                    Text(
-                        stringResource(R.string.target_none_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    TargetMenu(
-                        targets = state.targets,
-                        selected = state.selectedTarget,
-                        onSelect = onSelectTarget,
-                        onPickApp = onPickApp,
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onNavigate(1) }) {
-                        Text(
-                            stringResource(
-                                if (state.targets.isEmpty()) R.string.add_target
-                                else R.string.edit_targets,
-                            ),
-                        )
-                    }
-                    if (state.selectedTarget != null) {
-                        OutlinedButton(onClick = { onRestartTarget(state.selectedTarget) }) {
-                            Text(stringResource(R.string.restart))
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Text(
-                stringResource(R.string.helper_scope),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun RuntimeRow(
-    label: String,
-    value: String,
-    positive: Boolean,
-    monoValue: Boolean = false,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape)
-                .background(
-                    if (positive) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline,
-                ),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.9f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            value,
-            style = if (monoValue) MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-            else MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1.1f),
-            textAlign = androidx.compose.ui.text.style.TextAlign.End,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
 fun TargetsScreen(
     state: ConsoleUiState,
     onPickApp: () -> Unit,
@@ -385,26 +223,25 @@ fun TargetsScreen(
     var pendingRemove by remember { mutableStateOf<String?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 104.dp),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Column(Modifier.fillMaxWidth()) {
-                Text(
-                    stringResource(R.string.targets_intro_subtitle),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    stringResource(R.string.targets_intro_body),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            SectionTitle(
+                title = stringResource(R.string.targets_intro_title),
+                subtitle = stringResource(R.string.targets_intro_subtitle),
+            )
         }
         item {
-            TargetPicker(onClick = onPickApp)
+            Button(
+                onClick = onPickApp,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.size(8.dp))
+                Text(stringResource(R.string.add_target))
+            }
         }
         if (state.targets.isEmpty()) {
             item {
@@ -421,24 +258,45 @@ fun TargetsScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = CardDefaults.outlinedCardBorder(),
                 ) {
-                    Column {
+                    Column(Modifier.selectableGroup()) {
+                        val appsByPackage = remember(state.installedApps) {
+                            state.installedApps.associateBy(InstalledApp::packageName)
+                        }
                         state.targets.forEachIndexed { index, target ->
-                            TargetRow(
-                                target = target,
-                                selected = target == state.selectedTarget,
-                                onSelect = { onSelect(target) },
-                                onRestart = { onRestart(target) },
-                                onRemove = { pendingRemove = target },
-                            )
-                            if (index != state.targets.lastIndex) {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(start = 56.dp),
-                                    color = MaterialTheme.colorScheme.outlineVariant,
+                            key(target) {
+                                TargetRow(
+                                    target = target,
+                                    app = appsByPackage[target.substringBefore(':')],
+                                    selected = target == state.selectedTarget,
+                                    onSelect = { onSelect(target) },
+                                    onRestart = { onRestart(target) },
+                                    onRemove = { pendingRemove = target },
                                 )
+                            }
+                            if (index != state.targets.lastIndex) {
+                                HorizontalDivider(Modifier.padding(horizontal = 12.dp))
                             }
                         }
                     }
                 }
+            }
+        }
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    Icons.Rounded.Info,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    stringResource(R.string.targets_intro_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -468,6 +326,7 @@ fun TargetsScreen(
 @Composable
 private fun TargetRow(
     target: String,
+    app: InstalledApp?,
     selected: Boolean,
     onSelect: () -> Unit,
     onRestart: () -> Unit,
@@ -477,23 +336,27 @@ private fun TargetRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onSelect)
-            .padding(start = 8.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = selected, onClick = onSelect)
-        Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+        RadioButton(selected = selected, onClick = null)
+        ProcessIcon(app, Modifier.size(32.dp))
+        Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+            if (app != null) {
+                Text(
+                    app.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
             Text(
                 target,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                if (selected) stringResource(R.string.target_selected)
-                else stringResource(R.string.target_tap_select),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = if (app == null) MaterialTheme.typography.bodyMedium
+                else MaterialTheme.typography.bodySmall,
+                color = if (app == null) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Box {
@@ -544,8 +407,8 @@ fun PluginsScreen(
     skillLoader: suspend (String, String) -> Result<String>,
 ) {
     val target = state.selectedTarget
-    var loadDialog by rememberSaveable(target) { mutableStateOf(false) }
-    var loadPath by rememberSaveable(target) { mutableStateOf("") }
+    var loadDialog by remember(target) { mutableStateOf(false) }
+    var loadPath by remember(target) { mutableStateOf("") }
     var loadError by remember(target) { mutableStateOf(false) }
     var skillPlugin by remember(target) { mutableStateOf<PluginInfo?>(null) }
     var skillText by remember(target) { mutableStateOf("") }
@@ -574,124 +437,113 @@ fun PluginsScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TargetMenu(
-                targets = state.targets,
-                selected = state.selectedTarget,
-                onSelect = onSelectTarget,
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            PluginControls(
+                state = state,
+                onSelectTarget = onSelectTarget,
                 onPickApp = onPickApp,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onRefresh, enabled = state.selectedTarget != null && !state.pluginsLoading) {
-                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh_plugins))
-            }
-            IconButton(onClick = onImportFolder,
-                enabled = state.rootGranted && !nativeBusy) {
-                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.package_import_folder))
-            }
-        }
-        if (state.pluginsLoading) {
-            androidx.compose.material3.LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                onImport = onImportFolder,
+                importEnabled = state.rootGranted && !nativeBusy,
             )
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        state.directoryRuntimeError?.let { error ->
+            item { ErrorBanner(error) }
+        }
+        if (state.pluginsLoading && !state.pluginDirectoryLoading && !state.pluginImporting) {
             item {
-                DirectoryPluginsSection(
-                    state = state,
-                    onImport = onImportFolder,
-                    onRescan = onScanDirectory,
-                    onStart = onStartDirectory,
-                    onStop = onStopDirectory,
-                    onEvents = onDirectoryEvents,
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
+        item {
+            DirectoryPluginsSection(
+                state = state,
+                onRescan = onScanDirectory,
+                onStart = onStartDirectory,
+                onStop = onStopDirectory,
+                onEvents = onDirectoryEvents,
+            )
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle(
+                    title = stringResource(R.string.package_native_title),
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.height(16.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.native_library_title, state.nativeLibrary.size),
-                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = { loadDialog = true },
-                        enabled = target != null && !nativeBusy) {
-                        Text(stringResource(R.string.package_device_path))
-                    }
+                TextButton(
+                    onClick = { loadDialog = true },
+                    enabled = target != null && !nativeBusy,
+                ) {
+                    Text(stringResource(R.string.package_device_path))
                 }
+            }
+        }
+        if (state.nativeLibrary.isEmpty() && !state.pluginDirectoryLoading && !state.pluginImporting) {
+            item {
+                EmptyState(
+                    title = stringResource(R.string.native_library_empty_title),
+                    detail = stringResource(R.string.native_library_empty_detail),
+                    icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
+                )
+            }
+        }
+        items(state.nativeLibrary, key = { "library:${it.artifact.path}" }) { item ->
+            NativeLibraryPluginCard(
+                item = item,
+                target = target,
+                busy = nativeBusy,
+                working = state.nativePluginActionPath == item.artifact.path,
+                onLoad = { if (target != null) onLoadLibrary(target, item.artifact.path) },
+                onUnload = { item.runtime?.let { pendingUnload = it.name } },
+                onSkill = { item.runtime?.let(showSkill) },
+            )
+        }
+        if (otherPlugins.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(16.dp))
                 Text(
-                    stringResource(R.string.native_library_description),
-                    style = MaterialTheme.typography.bodySmall,
+                    stringResource(R.string.native_library_other_runtime_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            item {
+                Text(
+                    stringResource(R.string.plugins_count, loadedCount) +
+                        " / ${otherPlugins.size}",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (state.nativeLibrary.isEmpty() && !state.pluginDirectoryLoading && !state.pluginImporting) {
-                item {
-                    EmptyState(
-                        title = stringResource(R.string.native_library_empty_title),
-                        detail = stringResource(R.string.native_library_empty_detail),
-                        icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
-                    )
-                }
-            }
-            items(state.nativeLibrary, key = { "library:${it.artifact.path}" }) { item ->
-                NativeLibraryPluginCard(
-                    item = item,
-                    target = target,
-                    busy = nativeBusy,
-                    working = state.nativePluginActionPath == item.artifact.path,
-                    onLoad = { if (target != null) onLoadLibrary(target, item.artifact.path) },
-                    onUnload = { item.runtime?.let { pendingUnload = it.name } },
-                    onSkill = { item.runtime?.let(showSkill) },
+        }
+        if (target != null && !state.nativeRuntimeKnown && !state.pluginsLoading &&
+            !state.pluginDirectoryLoading && !state.pluginImporting
+        ) {
+            item {
+                EmptyState(
+                    title = stringResource(R.string.plugins_no_status_title),
+                    detail = stringResource(R.string.plugins_no_status_detail),
+                    icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
                 )
             }
-            if (otherPlugins.isNotEmpty()) {
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        stringResource(R.string.native_library_other_runtime_title),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                }
-                item {
-                    Text(
-                        stringResource(R.string.plugins_count, loadedCount) +
-                            " / ${otherPlugins.size}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (state.plugins.isEmpty() && state.nativeLibrary.isEmpty() && !state.pluginsLoading) {
-                item {
-                    EmptyState(
-                        title = stringResource(R.string.plugins_no_status_title),
-                        detail = stringResource(R.string.plugins_no_status_detail),
-                        icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
-                    )
-                }
-                item {
-                    Button(
-                        onClick = onRefresh,
-                        enabled = state.selectedTarget != null,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(stringResource(R.string.plugins_empty_action)) }
-                }
-            }
-            items(otherPlugins, key = { "runtime:${it.name}" }) { plugin ->
-                PluginCard(
-                    plugin = plugin,
+            item {
+                OutlinedButton(
+                    onClick = onRefresh,
                     enabled = !nativeBusy,
-                    onSkill = { showSkill(plugin) },
-                    onUnload = { pendingUnload = plugin.name },
-                )
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.plugins_empty_action)) }
             }
+        }
+        items(otherPlugins, key = { "runtime:${it.name}" }) { plugin ->
+            PluginCard(
+                plugin = plugin,
+                enabled = !nativeBusy,
+                onSkill = { showSkill(plugin) },
+                onUnload = { pendingUnload = plugin.name },
+            )
         }
     }
 
@@ -802,6 +654,54 @@ fun PluginsScreen(
 
     state.packageEvents?.let { events ->
         DirectoryPluginEventsSheet(events, onCloseDirectoryEvents)
+    }
+}
+
+@Composable
+private fun PluginControls(
+    state: ConsoleUiState,
+    onSelectTarget: (String) -> Unit,
+    onPickApp: () -> Unit,
+    onImport: () -> Unit,
+    importEnabled: Boolean,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val targetMenu: @Composable (Modifier) -> Unit = { modifier ->
+            TargetMenu(
+                targets = state.targets,
+                selected = state.selectedTarget,
+                onSelect = onSelectTarget,
+                modifier = modifier,
+                onPickApp = onPickApp,
+                apps = state.installedApps,
+            )
+        }
+        val importButton: @Composable (Modifier) -> Unit = { modifier ->
+            Button(
+                onClick = onImport,
+                enabled = importEnabled,
+                modifier = modifier.heightIn(min = 48.dp),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.size(8.dp))
+                Text(stringResource(R.string.package_import_folder))
+            }
+        }
+        if (maxWidth >= 350.dp && LocalDensity.current.fontScale <= 1.15f) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                targetMenu(Modifier.weight(1f))
+                importButton(Modifier)
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                targetMenu(Modifier.fillMaxWidth())
+                importButton(Modifier.fillMaxWidth())
+            }
+        }
     }
 }
 
@@ -1072,6 +972,7 @@ fun ConsoleScreen(
                 selected = state.selectedTarget,
                 onSelect = onSelectTarget,
                 onPickApp = onPickApp,
+                apps = state.installedApps,
             )
         }
         item {

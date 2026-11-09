@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="package_directory_title">Directory plugins</string>
+    <string name="package_directory_title">Local directory plugins</string>
     <string name="package_directory_description">Import a plugin folder, then start it in the selected process.</string>
     <string name="package_import_folder">Import folder</string>
     <string name="package_scan">Scan directory</string>
@@ -8,7 +8,7 @@
     <string name="package_scanning">Scanning plugins and checking runtime state…</string>
     <string name="package_empty_title">No directory plugins</string>
     <string name="package_empty_detail">Choose a plugin folder containing manifest.json, or place it in the default directory and scan again. Each plugin needs its own folder and manifest.</string>
-    <string name="package_state_unknown">Runtime state not checked</string>
+    <string name="package_state_unknown">Unknown status</string>
     <string name="package_state_stopped">Stopped</string>
     <string name="package_state_running">Running</string>
     <string name="package_state_error">Cleanup required</string>
@@ -34,6 +34,6 @@
     <string name="package_stop_failed">Plugin stop failed: %1$s</string>
     <string name="package_events_failed">Event stream failed: %1$s</string>
     <string name="package_invalid_snapshot">The target returned an invalid plugin state. Refresh and try again.</string>
-    <string name="package_native_title">Native and JIT plugins</string>
+    <string name="package_native_title">Native / JIT</string>
     <string name="package_device_path">Load device path</string>
 </resources>

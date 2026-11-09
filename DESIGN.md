@@ -1,7 +1,7 @@
 # Design
 
 ## Source of truth
-Status: Active. Updated: 2026-11-02. Scope: Dejavu Console plugin management.
+Status: Active. Updated: 2026-11-09. Scope: Dejavu Manager.
 Evidence: app/README.md, app/docs/plugins.png, MainActivity.kt, Screens.kt,
 ConsoleUiState.kt, Theme.kt, generic test fixtures, and the native plugin ABI docs.
 User requirement: import manifest-based Lua, native and JIT plugin folders;
@@ -9,7 +9,8 @@ control them from the app and show declared events live without history files.
 
 ## Brand
 Focused technical utility. Trust comes from a visible target, explicit actions,
-truthful runtime state and useful errors. Keep the existing subdued green theme.
+truthful runtime state and useful errors. Use warm ivory, forest green and the
+pixel dog from the launcher mark.
 Avoid decorative dashboards, status inferred from import success and hidden starts.
 
 ## Product goals
@@ -25,10 +26,14 @@ The owner of a rooted Android test device manages their own target applications.
 They need repeatable plugin activation and live feedback on a phone screen.
 
 ## Information architecture
-Keep the current five tabs. The Plugins tab shows the selected target, an import
-folder action, imported Lua packages, then locally available native/JIT plugins
-with their selected-target runtime status. Other process-registered plugins
-remain visible below the library.
+Use four main destinations. Overview shows module detection, the selected
+process, root and helper status, and project source, references and copyright.
+Scope edits the global process allowlist. Its radio buttons select the process
+used by plugin and Lua actions. Plugins shows the selected process, folder
+import, Lua packages and native/JIT plugins with selected-process runtime status.
+Other process-registered plugins remain visible below the library. Tools opens
+live Dejavu logs and the Lua console as separate screens.
+The language picker sits at the far right of the top bar in each screen.
 Directory cards offer Start/Stop, status and live events when declared.
 Manifest and declared resources live in `/data/adb/dejavu/plugins/<id>` and the
 app scans this root-owned directory by default. Runtime state
@@ -42,7 +47,8 @@ version on failed import. Stop/cleanup errors remain visible and retryable.
 
 ## Visual language
 Reuse MaterialTheme colorScheme, typography and shapes from Theme.kt, with
-16dp page padding, 8–12dp gaps and 48dp minimum action targets. Native and directory
+16dp page padding and 48dp minimum action targets. The green overview panel shows
+module detection and version. Native and directory
 cards share the existing outlined surface treatment. Long names and paths wrap
 or appear in a selectable details view. Status includes text as well as color.
 
@@ -68,7 +74,7 @@ and stale-target results. A failed stop retains running/unknown state for retry.
 Events: connecting/listening/empty/error; bounded memory and clear-on-dismiss.
 
 ## Content voice
-English and Simplified Chinese resources. Use Import folder, Start, Stop and
+English and Simplified Chinese resources with a follow-system option. Use Import folder, Start, Stop and
 Live events consistently. Distinguish an imported package from a running plugin.
 Explain only actionable prerequisites; no internal stack traces in normal UI.
 
