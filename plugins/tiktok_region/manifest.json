@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "tiktok-region",
+  "name": "TikTok region spoof",
+  "version": "1.0.0",
+  "description": "Hooks com.zhiliaoapp.musically device_register SIM/carrier/region inputs to US so the server does not apply the CN cn_block TTNet rule that drops /aweme/v2/feed/.",
+  "kind": "lua",
+  "entry": "entry.lua",
+  "files": [
+    "entry.lua",
+    "SKILL.md"
+  ]
+}

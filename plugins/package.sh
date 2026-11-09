@@ -31,7 +31,7 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
     if readme.is_file():
         bundle.write(readme, "README.md")
 
-    for name in ("hello", "capture", "algorithm", "unpack", "hellojit", "hellofsjit", "hellohookjit"):
+    for name in ("hello", "capture", "algorithm", "unpack", "tiktok_region", "hellojit", "hellofsjit", "hellohookjit"):
         out_dir = root / "out" / "plugins" / name
         manifest = json.loads((out_dir / "manifest.json").read_text())
         bundle.write(out_dir / "manifest.json", f"{name}/manifest.json")

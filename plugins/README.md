@@ -16,6 +16,10 @@ framework. They are built separately from the agent and loaded through
   host-tracked `atoi` hook and relying on host teardown at unload.
 - [`hello/hello_jit.c`](hello/hello_jit.c) — TinyCC JIT version: `plugin jit`
   reads/compiles the C source in-process; exercises host mem/module services.
+- [`tiktok_region/`](tiktok_region/README.md) — Lua plugin package: hooks TikTok
+  (`com.zhiliaoapp.musically`) device_register SIM/carrier/region inputs to US so the
+  server stops returning the CN `cn_block` TTNet rule that drops the feed; ships an
+  early-autoload deploy script (`install-early.sh`) and agent SKILL.
 - [`hello/`](hello/plugin_entry.cpp) — minimal unload-safe plugin that
   exercises host services (`mem.query`, `module.resolve`), registration and
   safe unload. Built by `hello/build.sh`.
