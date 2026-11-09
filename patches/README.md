@@ -45,7 +45,7 @@ whether the patch still applies.
 ### Upgrade procedure
 
 1. Update the `extern/tinycc` gitlink and re-run
-   `git submodule update --init --recursive`.
+   `git submodule update --init --recursive -- extern/lua extern/tinycc`.
 2. Regenerate the patch: export the new pristine tree, apply the intended
    edits, and produce a unified diff with `a/tccrun.c` / `b/tccrun.c` labels.
 3. Verify it applies cleanly:

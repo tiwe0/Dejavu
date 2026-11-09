@@ -1,5 +1,5 @@
 -- Java crypto/algorithm tracer using the existing Java hook API.
--- Load with: ./dejavu exec -p <pkg> plugins/algorithm/java/algorithm_java.lua
+-- Load with: ./dejavu exec -p <pkg> examples/algorithm/java/algorithm_java.lua
 -- Logs to the DejavuHook logcat tag; inspect with ./dejavu log -p <pkg>.
 local hook_source = [[
 static void algorithm_copy(char *buffer, unsigned long capacity, const char *prefix,

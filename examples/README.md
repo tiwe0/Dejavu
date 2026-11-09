@@ -28,17 +28,17 @@ One-stop install (push + permissions + allowlist + load):
 
 ```sh
 ./dejavu plugin -p <pkg> install out/plugins/hello/libdejavu_hello.so \
-    --skill plugins/hello/SKILL.md
-./dejavu plugin -p <pkg> install plugins/hello/hello_jit.c
+    --skill examples/hello/SKILL.md
+./dejavu plugin -p <pkg> install examples/hello/hello_jit.c
 ```
 
 Build both:
 
 ```sh
-./plugins/hello/build.sh
-./plugins/capture/build.sh
-./plugins/unpack/build.sh
-./plugins/package.sh
+./examples/hello/build.sh
+./examples/capture/build.sh
+./examples/unpack/build.sh
+./examples/package.sh
 ```
 
 Each plugin may ship a `SKILL.md` next to its source. At install time copy it
@@ -47,14 +47,14 @@ next to the loaded library as `<plugin>.so.SKILL.md` (or a shared
 `plugin.skill(name)` and `./dejavu plugin skill <name>` so an agent can read the
 plugin-specific instructions without guessing the repo path.
 
-Example plugins are built separately from the module. `plugins/package.sh`
+Example plugins are built separately from the module. `examples/package.sh`
 creates `dejavu-plugins-vX.Y.Z-arm64.zip` containing the native `.so` files,
 their SKILL sidecars, JIT examples and `unpack/cli.py`.
 Every plugin has its own folder and `manifest.json` declaring its identifier,
 display name, version, description, kind, entry and resource files. The app only
 recognizes manifest folders directly under `/data/adb/dejavu/plugins`; bare
 `.so`/`.c` files and folders without manifests are ignored. Run
-`python3 plugins/prepare-library.py` after native builds to assemble the seven
+`python3 examples/prepare-library.py` after native builds to assemble the seven
 importable folders under `out/plugins`. Import an individual folder in the app,
 or copy these folders to the default device library and scan. Import and scan
 do not execute plugins; native/JIT loading deploys and hash-pins only the selected

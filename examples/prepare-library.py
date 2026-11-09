@@ -20,7 +20,7 @@ def prepare():
     packages = []
     names = ["hello", "capture", "algorithm", "unpack"]
     for name in names:
-        source = ROOT / "plugins" / name
+        source = ROOT / "examples" / name
         destination = OUTPUT / name
         manifest = json.loads((source / "manifest.json").read_text())
         # Validate every declared resource before publishing the manifest.
@@ -42,7 +42,7 @@ def prepare():
         destination = OUTPUT / identifier
         files = [filename, filename + ".SKILL.md"]
         for relative in files:
-            copy_resource(ROOT / "plugins" / "hello" / relative, destination / relative)
+            copy_resource(ROOT / "examples" / "hello" / relative, destination / relative)
         manifest = dict(schemaVersion=1, id=identifier, name=identifier, version=version,
                         description=description, kind="jit", entry=filename, files=files)
         (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

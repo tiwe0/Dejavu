@@ -55,9 +55,9 @@ without needing app traffic.
 ## Build and install
 
 ```sh
-./plugins/capture/build.sh
+./examples/capture/build.sh
 ./dejavu plugin -p <pkg> install out/plugins/capture/libdejavu_capture.so \
-    --skill plugins/capture/SKILL.md
+    --skill examples/capture/SKILL.md
 ```
 
 The target app must be in `config/targets.txt` and restart after being added,

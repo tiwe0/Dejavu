@@ -207,19 +207,19 @@ arg/return helpers. Compiled modules are
 cached by source SHA-256 (up to four entries); unload releases the reference and
 reload of the same source hits the cache (`JIT cache hit`), so JIT static/global
 state can survive reload until PluginManager shutdown. Example:
-[`plugins/hello/hello_jit.c`](../../plugins/hello/hello_jit.c).
+[`examples/hello/hello_jit.c`](../../examples/hello/hello_jit.c).
 
 ## Example
 
-[`plugins/README.md`](../../plugins/README.md) indexes the examples.
-[`plugins/hello/hello_hook_jit.c`](../../plugins/hello/hello_hook_jit.c)
+[`examples/README.md`](../../examples/README.md) indexes the examples.
+[`examples/hello/hello_hook_jit.c`](../../examples/hello/hello_hook_jit.c)
 demonstrates host-owned hook teardown: it installs an `atoi` hook and calls
 `dejavu_jit_hook_uninstall` from `dejavu_jit_plugin_unload_prepare`. The host
 also retries any remaining tracked hook removal before releasing its module.
 
-[`plugins/hello/`](../../plugins/hello/plugin_entry.cpp) is a small contract
+[`examples/hello/`](../../examples/hello/plugin_entry.cpp) is a small contract
 plugin that exercises host services (mem query, module resolve), plugin
-registration and safe unload. [`plugins/unpack/`](../../plugins/unpack/README.md)
+registration and safe unload. [`examples/unpack/`](../../examples/unpack/README.md)
 is a larger dynamically loaded plugin covering DEX capture and active
 invocation; it is not unload-safe and must not be unloaded while its hooks are
 installed. Both are examples, not part of the framework ABI.

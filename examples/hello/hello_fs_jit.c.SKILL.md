@@ -17,7 +17,7 @@ fstest.remove(path) -> bool
 Test (use a path in the app files dir):
 
 ```sh
-./dejavu plugin -p <pkg> install plugins/hello/hello_fs_jit.c
+./dejavu plugin -p <pkg> install examples/hello/hello_fs_jit.c
 ./dejavu plugin -p <pkg> call hellofsjit write /data/user_de/0/<pkg>/files/jit-fs.txt hello
 ./dejavu plugin -p <pkg> call hellofsjit read /data/user_de/0/<pkg>/files/jit-fs.txt
 ./dejavu plugin -p <pkg> call hellofsjit exists /data/user_de/0/<pkg>/files/jit-fs.txt

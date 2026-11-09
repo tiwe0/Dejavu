@@ -4,3 +4,6 @@
 [submodule "extern/tinycc"]
 	path = extern/tinycc
 	url = https://github.com/frida/tinycc.git
+[submodule "plugins"]
+	path = plugins
+	url = git@github.com:tiwe0/dejavu-plugins.git

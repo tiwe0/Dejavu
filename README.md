@@ -114,10 +114,15 @@ executable pages and turns relocation failures into errors); the submodule
 itself is not modified.
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init --recursive -- extern/lua extern/tinycc
 export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r29"
 make smoke
 ```
+
+The public examples live in [`examples/`](examples/README.md). If you have
+access to the private plugin repository, initialize its `plugins/` submodule
+with `git submodule update --init -- plugins`. Framework builds and release
+packages use the public examples and dependencies.
 
 `make smoke` first runs the engine and Lua control tests on the host, then
 cross-compiles and inspects the Android artifact. Use `make android-arm64` when
@@ -273,9 +278,9 @@ Plugins can stream records to the host through the framework stream service
 # TCP uses adb reverse; UDP/KCP use the host LAN address directly.
 ```
 
-Transports are TCP, UDP and KCP; the example `plugins/capture` writes SSL
+Transports are TCP, UDP and KCP; the example `examples/capture` writes SSL
 plaintext records to both a file and an optional stream. See
-[plugins/capture/SKILL.md](plugins/capture/SKILL.md).
+[examples/capture/SKILL.md](examples/capture/SKILL.md).
 
 ## AI agent interface (MCP)
 
@@ -351,18 +356,18 @@ SKILL.md text is exposed only on demand and remains untrusted documentation.
 
 ## Examples (not framework capabilities)
 
-`plugins/capture/` is an example SSL plaintext capture plugin built on the
+`examples/capture/` is an example SSL plaintext capture plugin built on the
 host `module` + `hook` services; it is unload-safe and writes capture records
-under the target app files dir. See `plugins/capture/SKILL.md`.
+under the target app files dir. See `examples/capture/SKILL.md`.
 
-`plugins/unpack/` is a **use-case demo**, not a stable framework feature. It is
-built as a dynamically loaded plugin (`plugins/unpack/build.sh` →
+`examples/unpack/` is a **use-case demo**, not a stable framework feature. It is
+built as a dynamically loaded plugin (`examples/unpack/build.sh` →
 `libdejavu_unpack.so`) and loaded through `plugin.load` /
 `debug.dejavu.plugins`; the agent has no unpack code compiled in. The plugin
 combines the generic hooks with a Lua strategy (manifest namespace →
 dumped-DEX class parsing → paced active invocation) and is driven by
-`plugins/unpack/cli.py`. See `plugins/unpack/README.md` and
-`plugins/unpack/design.md`.
+`examples/unpack/cli.py`. See `examples/unpack/README.md` and
+`examples/unpack/design.md`.
 
 ## License
 

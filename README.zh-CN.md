@@ -104,10 +104,14 @@ CMake。构建脚本会在临时副本上为固定的 TinyCC 源码应用
 重定位失败返回错误而不是退出进程），不会改动 submodule 本身。
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init --recursive -- extern/lua extern/tinycc
 export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r29"
 make smoke
 ```
+
+公开示例位于 [`examples/`](examples/README.md)。有私有插件仓库权限时，可用
+`git submodule update --init -- plugins` 初始化插件子模块。框架构建和发布包使用
+公开示例与依赖。
 
 `make smoke` 会先执行引擎和 Lua 控制层的主机测试，然后交叉编译并检查
 Android 产物。若只需要 Android 库，可执行 `make android-arm64`。
@@ -235,8 +239,8 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 # TCP 自动 adb reverse；UDP/KCP 使用本机 LAN 地址直连。
 ```
 
-示例 `plugins/capture` 可同时写文件和可选的实时 stream；用法见
-[plugins/capture/SKILL.md](plugins/capture/SKILL.md)。
+示例 `examples/capture` 可同时写文件和可选的实时 stream；用法见
+[examples/capture/SKILL.md](examples/capture/SKILL.md)。
 
 ## AI agent 接入（MCP）
 
@@ -309,9 +313,9 @@ LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附�
 
 ## 示例（非框架能力）
 
-`plugins/unpack/` 是**用例示范**，不是框架稳定能力。它被编译为动态加载插件
-（`plugins/unpack/build.sh` → `libdejavu_unpack.so`），通过 `plugin.load` /
+`examples/unpack/` 是**用例示范**，不是框架稳定能力。它被编译为动态加载插件
+（`examples/unpack/build.sh` → `libdejavu_unpack.so`），通过 `plugin.load` /
 `debug.dejavu.plugins` 加载；agent 里不再编译任何 unpack 代码。插件把通用 hook
 与 Lua 策略（Manifest 命名空间 → dumped DEX 类解析 → 节流主动调用）组合起来，
-由 `plugins/unpack/cli.py` 驱动。详见 `plugins/unpack/README.md` 与
-`plugins/unpack/design.md`。
+由 `examples/unpack/cli.py` 驱动。详见 `examples/unpack/README.md` 与
+`examples/unpack/design.md`。

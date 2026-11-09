@@ -1039,7 +1039,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./dejavu plugin -p com.android.settings load /data/user_de/0/com.android.settings/files/libdemo.so\n"
             "  ./dejavu plugin -p com.android.settings call hello greet\n"
             "  ./dejavu plugin -p com.android.settings skill hello\n"
-            "  python3 plugins/unpack/cli.py -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-plugin\n"
+            "  python3 examples/unpack/cli.py -p com.android.settings --out /data/user_de/0/com.android.settings/files/dejavu-plugin\n"
             "  ./dejavu log -p com.android.settings\n"
             "  ./dejavu test -p com.android.settings\n"
         ),

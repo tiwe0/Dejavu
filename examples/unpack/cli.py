@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Host-side runner for the plugins/unpack use-case demo.
+"""Host-side runner for the examples/unpack use-case demo.
 
 This is intentionally *not* part of the framework CLI: it wires the generic
 `./dejavu` helpers to the Lua strategy in this directory. Use it to capture
 DEX early (via the example's system property) and to drive active invocation.
 
 Examples:
-    python3 plugins/unpack/cli.py -p com.android.settings \\
+    python3 examples/unpack/cli.py -p com.android.settings \\
         --out /data/user_de/0/com.android.settings/files/dejavu-unpack
-    python3 plugins/unpack/cli.py -p com.android.settings --status
-    python3 plugins/unpack/cli.py -p com.android.settings --flush
-    python3 plugins/unpack/cli.py -p com.android.settings \\
+    python3 examples/unpack/cli.py -p com.android.settings --status
+    python3 examples/unpack/cli.py -p com.android.settings --flush
+    python3 examples/unpack/cli.py -p com.android.settings \\
         --out <device-dir> --active-invoke-manifest
 """
 

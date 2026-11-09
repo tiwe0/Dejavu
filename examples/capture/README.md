@@ -14,14 +14,14 @@ to capture TLS plaintext at `libssl.so`:
 Build:
 
 ```sh
-./plugins/capture/build.sh
+./examples/capture/build.sh
 ```
 
 Install/use:
 
 ```sh
 ./dejavu plugin -p <pkg> install out/plugins/capture/libdejavu_capture.so \
-    --skill plugins/capture/SKILL.md
+    --skill examples/capture/SKILL.md
 ./dejavu plugin -p <pkg> call capture start --arg s:/data/user_de/0/<pkg>/files/dejavu-capture.log
 # trigger traffic
 ./dejavu plugin -p <pkg> call capture status

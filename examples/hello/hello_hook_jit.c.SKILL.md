@@ -17,7 +17,7 @@ target (`libc.so!atoi`):
    healthy and `atoi` must keep working.
 
 ```sh
-./dejavu plugin -p <pkg> install plugins/hello/hello_hook_jit.c
+./dejavu plugin -p <pkg> install examples/hello/hello_hook_jit.c
 ./dejavu plugin -p <pkg> call hellohookjit install
 ./dejavu plugin -p <pkg> call hellohookjit installed
 ./dejavu plugin -p <pkg> unload hellohookjit

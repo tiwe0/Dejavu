@@ -17,7 +17,7 @@ not a production hook.
 ## Build / deploy
 
 ```sh
-./plugins/hello/build.sh
+./examples/hello/build.sh
 adb -s "$ADB_SERIAL" push out/plugins/hello/libdejavu_hello.so /data/local/tmp/
 adb -s "$ADB_SERIAL" shell su -c '
   cp /data/local/tmp/libdejavu_hello.so \
@@ -33,7 +33,7 @@ One-stop alternative:
 
 ```sh
 ./dejavu plugin -p <pkg> install out/plugins/hello/libdejavu_hello.so \
-    --skill plugins/hello/SKILL.md
+    --skill examples/hello/SKILL.md
 ```
 
 Manual load and exercise:
@@ -55,6 +55,6 @@ Expected `hello.info` includes `interfaces=mem,module,hook query=ok resolve=ok`.
 - It is unload-safe; any crash or error during `unload` indicates a host ABI or
   registration bug, not a hook-teardown issue.
 - Do not use it as a production hook; it has no native hook installations.
-- JIT variant: `plugins/hello/hello_jit.c` is loaded with
+- JIT variant: `examples/hello/hello_jit.c` is loaded with
   `./dejavu plugin -p <pkg> jit <device-path>`; it needs no NDK build and
   registers `hellojit.greet` / `hellojit.info`.

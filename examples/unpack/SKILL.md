@@ -5,7 +5,7 @@ description: Example Dejavu plugin demonstrating hook-based DEX capture and FART
 
 # unpack plugin
 
-This is the **larger example plugin** from `plugins/unpack`. It is loaded
+This is the **larger example plugin** from `examples/unpack`. It is loaded
 dynamically through `plugin.load` and is **not** part of the framework ABI.
 It captures DEX images at ART registration points and supports paced active
 invocation for authorized extracting-shell research.
@@ -20,8 +20,8 @@ invocation for authorized extracting-shell research.
 ## Build and deploy
 
 ```sh
-./plugins/unpack/build.sh          # -> out/plugins/unpack/libdejavu_unpack.so
-python3 plugins/unpack/cli.py -p <pkg> --out <device-dir>
+./examples/unpack/build.sh          # -> out/plugins/unpack/libdejavu_unpack.so
+python3 examples/unpack/cli.py -p <pkg> --out <device-dir>
 ```
 
 `cli.py` builds/pushes the plugin, copies the Lua strategy, sets
@@ -43,7 +43,7 @@ unpack.status()
 ```
 
 The strategy layer (manifest namespace → dumped DEX class parser → paced active
-invocation) lives in `plugins/unpack/{manifest,dex,main}.lua` and is loaded as
+invocation) lives in `examples/unpack/{manifest,dex,main}.lua` and is loaded as
 part of the example Lua script; it is not native code.
 
 ## Safety / troubleshooting
@@ -59,6 +59,6 @@ part of the example Lua script; it is not native code.
 
 ## Key implementation files
 
-- `plugins/unpack/src/plugin_entry.cpp` — descriptor + registration
-- `plugins/unpack/src/unpack_manager.cpp` — DEX/ART hooks, sentinel, queue/writer
-- `plugins/unpack/design.md` — implementation details
+- `examples/unpack/src/plugin_entry.cpp` — descriptor + registration
+- `examples/unpack/src/unpack_manager.cpp` — DEX/ART hooks, sentinel, queue/writer
+- `examples/unpack/design.md` — implementation details

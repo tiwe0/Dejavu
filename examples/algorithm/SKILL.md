@@ -35,7 +35,7 @@ arrays to the `DejavuHook` logcat tag.
 ## Build
 
 ```sh
-./plugins/algorithm/build.sh
+./examples/algorithm/build.sh
 ```
 
 ## Install / start native tracing
@@ -43,7 +43,7 @@ arrays to the `DejavuHook` logcat tag.
 ```sh
 CAPTURE=/data/user_de/0/<pkg>/files/algorithm.log
 ./dejavu plugin -p <pkg> install out/plugins/algorithm/libdejavu_algorithm.so \
-    --skill plugins/algorithm/SKILL.md
+    --skill examples/algorithm/SKILL.md
 ./dejavu plugin -p <pkg> call algorithm start --arg "s:$CAPTURE"
 # or live stream (framework TCP/UDP/KCP):
 # ./dejavu plugin -p <pkg> call algorithm start --arg s: --arg 1 --arg s:127.0.0.1:39001
@@ -68,7 +68,7 @@ tracer after the target has already used crypto, or hook the concrete provider
 implementation class instead of the JCA base class.
 
 ```sh
-./dejavu exec -p <pkg> plugins/algorithm/java/algorithm_java.lua
+./dejavu exec -p <pkg> examples/algorithm/java/algorithm_java.lua
 ./dejavu log -p <pkg>          # DejavuHook stream
 # stop Java hooks when done:
 ./dejavu exec -p <pkg> -e "hook.clear()"

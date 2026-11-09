@@ -23,4 +23,4 @@ stream-test: stream-receiver
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/stream_receiver_test.py out/host-stream/stream_receiver
 
 plugin-device-test:
-	plugins/hello/device-test.sh
+	examples/hello/device-test.sh

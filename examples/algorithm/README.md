@@ -11,7 +11,7 @@ Independent crypto/algorithm tracer demonstrating the host `module`, `hook` and
 Build:
 
 ```sh
-./plugins/algorithm/build.sh
+./examples/algorithm/build.sh
 ```
 
 See [SKILL.md](SKILL.md) for install, start, stream and Java tracing commands.

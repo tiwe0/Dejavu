@@ -15,8 +15,9 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Initialize public dependencies
+        run: git submodule update --init --recursive -- extern/lua extern/tinycc
       
       - name: Install dependencies
         run: |
@@ -48,8 +49,9 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Initialize public dependencies
+        run: git submodule update --init --recursive -- extern/lua extern/tinycc
       
       - name: Setup Android NDK
         id: setup-ndk
@@ -94,8 +96,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Initialize public dependencies
+        run: git submodule update --init --recursive -- extern/lua extern/tinycc
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -190,8 +193,9 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Initialize public dependencies
+        run: git submodule update --init --recursive -- extern/lua extern/tinycc
       
       - name: Setup Android NDK
         id: setup-ndk
@@ -253,17 +257,17 @@ jobs:
       
       - name: Build example plugins
         run: |
-          ./plugins/hello/build.sh
-          ./plugins/capture/build.sh
-          ./plugins/algorithm/build.sh
-          ./plugins/unpack/build.sh
+          ./examples/hello/build.sh
+          ./examples/capture/build.sh
+          ./examples/algorithm/build.sh
+          ./examples/unpack/build.sh
 
       - name: Package example plugins
         id: plugins-package
         env:
           PACKAGE_VERSION: ${{ steps.package-meta.outputs.package_version }}
         run: |
-          ./plugins/package.sh
+          ./examples/package.sh
           echo "filename=dejavu-plugins-v${PACKAGE_VERSION}-arm64.zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload example plugins
@@ -409,7 +413,7 @@ jobs:
             bash -n "${script}"
           done < <(find . -path ./extern -prune -o -path ./zygisk/third_party -prune \
             -o -name '*.sh' -type f -print)
-          python3 -m py_compile dejavu dejavu_mcp.py tests/mcp_server_test.py zygisk/scripts/dejavuctl plugins/unpack/cli.py
+          python3 -m py_compile dejavu dejavu_mcp.py tests/mcp_server_test.py zygisk/scripts/dejavuctl examples/unpack/cli.py
 
       - name: Check for TODO/FIXME comments
         run: |

@@ -12,8 +12,8 @@ if [[ -n "${SERIAL}" ]]; then
 fi
 FILES_DIR="/data/user_de/0/${TARGET_PROCESS}/files"
 NATIVE_PLUGIN="${ROOT_DIR}/out/plugins/hello/libdejavu_hello.so"
-HELLO_JIT="${ROOT_DIR}/plugins/hello/hello_jit.c"
-HOOK_JIT="${ROOT_DIR}/plugins/hello/hello_hook_jit.c"
+HELLO_JIT="${ROOT_DIR}/examples/hello/hello_jit.c"
+HOOK_JIT="${ROOT_DIR}/examples/hello/hello_hook_jit.c"
 CALL_FILE="${ROOT_DIR}/out/tooling/plugin-device-call-atoi.c"
 PUSH_CALL_FILE="/data/local/tmp/plugin-device-call-atoi.c"
 
@@ -34,12 +34,12 @@ cleanup() {
 trap cleanup EXIT
 
 cd "${ROOT_DIR}"
-[[ -f "${NATIVE_PLUGIN}" ]] || fail "missing ${NATIVE_PLUGIN}; run plugins/hello/build.sh"
+[[ -f "${NATIVE_PLUGIN}" ]] || fail "missing ${NATIVE_PLUGIN}; run examples/hello/build.sh"
 [[ -f "${HELLO_JIT}" ]] || fail "missing ${HELLO_JIT}"
 
 echo "== native plugin load/call/unload"
 "${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" install "${NATIVE_PLUGIN}" \
-    --skill "${ROOT_DIR}/plugins/hello/SKILL.md" >/dev/null
+    --skill "${ROOT_DIR}/examples/hello/SKILL.md" >/dev/null
 "${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" call hello info | grep -q 'interfaces=mem,module,hook' \
     || fail "native hello info"
 "${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" unload hello >/dev/null
@@ -54,7 +54,7 @@ echo "== JIT duplicate load/reload"
 
 echo "== hook index shift and prepare teardown"
 "${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" install "${NATIVE_PLUGIN}" \
-    --skill "${ROOT_DIR}/plugins/hello/SKILL.md" >/dev/null
+    --skill "${ROOT_DIR}/examples/hello/SKILL.md" >/dev/null
 "${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" install "${HOOK_JIT}" >/dev/null
 [[ "$("${ROOT_DIR}/dejavu" plugin -p "${TARGET_PROCESS}" call hellohookjit install)" == "true" ]] \
     || fail "hook install"

@@ -13,7 +13,7 @@ OUT_DIR=${OUT_DIR:-"${ROOT_DIR}/out/plugins"}
 ZIP_NAME=${ZIP_NAME:-"dejavu-plugins-v${VERSION}-arm64.zip"}
 ZIP_PATH="${OUT_DIR}/${ZIP_NAME}"
 mkdir -p "${OUT_DIR}"
-python3 "${ROOT_DIR}/plugins/prepare-library.py"
+python3 "${ROOT_DIR}/examples/prepare-library.py"
 rm -f "${ZIP_PATH}"
 
 python3 - "${ROOT_DIR}" "${ZIP_PATH}" "${VERSION}" <<'PY'
@@ -27,7 +27,7 @@ archive = Path(sys.argv[2])
 version = sys.argv[3]
 
 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
-    readme = root / "plugins" / "README.md"
+    readme = root / "examples" / "README.md"
     if readme.is_file():
         bundle.write(readme, "README.md")
 
@@ -38,7 +38,7 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         for relative in manifest["files"]:
             bundle.write(out_dir / relative, f"{name}/{relative}")
 
-    unpack_cli = root / "plugins" / "unpack" / "cli.py"
+    unpack_cli = root / "examples" / "unpack" / "cli.py"
     if unpack_cli.is_file():
         bundle.write(unpack_cli, "unpack/cli.py")
 

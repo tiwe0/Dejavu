@@ -12,7 +12,7 @@ memory with TinyCC and registers `hellojit.greet` / `hellojit.info`.
 ## Deploy / load
 
 ```sh
-adb -s "$ADB_SERIAL" push plugins/hello/hello_jit.c /data/local/tmp/
+adb -s "$ADB_SERIAL" push examples/hello/hello_jit.c /data/local/tmp/
 adb -s "$ADB_SERIAL" shell su -c '
   cp /data/local/tmp/hello_jit.c \
      /data/user_de/0/<pkg>/files/hello_jit.c

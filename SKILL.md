@@ -327,13 +327,13 @@ plugin.unload('example')
   （host 读取源码后前置 prelude 再调用 `dejavu_engine_compile`）；C-only、
   -nostdlib，需要 Lua 控制 engine；prelude 单一来源
   `include/dejavu_jit.h`；按 source SHA-256 缓存最多 4 个 module；示例
-  `plugins/hello/hello_jit.c`。
+  `examples/hello/hello_jit.c`。
 - 每个插件可带 `SKILL.md`（frontmatter name/description），安装为
   `<plugin>.so.SKILL.md`；用 `./dejavu plugin skill <name>` 读取，辅助 agent。
-- 示例：`plugins/hello`（host 服务/契约测试）、`plugins/capture`（SSL 明文
-  抓包示例）、`plugins/unpack`（脱壳）。`plugins/package.sh` 打
+- 示例：`examples/hello`（host 服务/契约测试）、`examples/capture`（SSL 明文
+  抓包示例）、`examples/unpack`（脱壳）。`examples/package.sh` 打
   `dejavu-plugins-v<version>-arm64.zip`，CI Release 会把它作为第二个资产；
-  unpack CLI：`python3 plugins/unpack/cli.py ...`。
+  unpack CLI：`python3 examples/unpack/cli.py ...`。
 - `dejavuctl` 单命令只对 module 明确标记的
   `target Agent disconnected; retry the command` 做重连重试；socket timeout
   等可能已执行请求的模糊错误不重放，避免非幂等 Lua 重复执行。

@@ -18,18 +18,18 @@ Only hook/dump primitives are native (`unpack.enable`, `unpack.hook_invoke`,
 
 ```sh
 # capture DEX while the target runs (native hooks + deferred writer)
-python3 plugins/unpack/cli.py -p <process> --out <device-dir>
+python3 examples/unpack/cli.py -p <process> --out <device-dir>
 
 # Lua strategy: parse the manifest main-activity namespace from dumped dex,
 # then invoke classes slowly (40 ms between batches), then flush
-python3 plugins/unpack/cli.py -p <process> --out <device-dir> \
+python3 examples/unpack/cli.py -p <process> --out <device-dir> \
     --active-invoke-manifest [--class-filter substring]
 ```
 
 For a specific dumped dex:
 
 ```sh
-python3 plugins/unpack/cli.py -p <process> --out <device-dir> \
+python3 examples/unpack/cli.py -p <process> --out <device-dir> \
     --active-invoke-dex /data/.../register_dexfile_000.dex
 ```
 
@@ -41,7 +41,7 @@ loaded plugin** (not compiled into the agent). It uses the host hook interface
 marked unload-safe because its installed native hooks are not removed:
 
 ```sh
-./plugins/unpack/build.sh
+./examples/unpack/build.sh
 # -> out/plugins/unpack/libdejavu_unpack.so
 ```
 

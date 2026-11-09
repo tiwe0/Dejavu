@@ -56,7 +56,7 @@ returns the syscall result, restores the target registers and detaches.
 
 ## Verified behavior
 
-With `plugins/algorithm` on Android 15 / `com.android.settings`:
+With `examples/algorithm` on Android 15 / `com.android.settings`:
 
 - `algorithm.start` installed **16 libcrypto hooks** without crashing;
 - `algorithm.selftest` produced:
