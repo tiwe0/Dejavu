@@ -139,6 +139,8 @@ local exception_id = hook.install(
     "(I)I",
     exception_source)
 assert(hook.exception_test(exception_id))
+assert(hook.remove(exception_id))
+assert(hook.exception_test(exception_id))
 hook.log("exception handling test passed")
 assert(hook.uninstall(exception_id))
 assert(not hook.uninstall(exception_id))

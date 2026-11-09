@@ -265,12 +265,12 @@ Void calls return `VALUE_VOID`.
 
 ## Exceptions and concurrency
 
-If the original Java method throws, Dejavu skips after and does not clear the
-exception produced by the original invocation. The current LSPlant backup
-path invokes `java.lang.reflect.Method.invoke`, so Java callers observe the
-standard reflective exception wrapper and its original cause. Helper-generated
-JNI exceptions are cleared and reported as `DEJAVU_HOOK_ERROR_JNI` so the phase
-can follow its fail-open rule.
+If the original Java method throws, Dejavu skips after and propagates the same
+exception object to the caller. The bridge unwraps the single
+`InvocationTargetException` added by `Method.invoke`, preserving the exception's
+type and any cause it already carried. Helper-generated JNI exceptions are
+cleared and reported as `DEJAVU_HOOK_ERROR_JNI` so the phase can follow its
+fail-open rule.
 
 Dejavu cannot recover from native faults such as `SIGSEGV`, stack corruption,
 an invalid function pointer, or a wrong external symbol declaration. Such a

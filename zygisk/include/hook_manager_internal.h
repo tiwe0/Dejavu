@@ -78,8 +78,7 @@ struct HookManager::Impl {
 #if DEJAVU_RUN_DEVICE_STRESS
     jclass stress_class = nullptr;
 #endif
-    jclass method_class = nullptr;
-    jmethodID method_invoke = nullptr;
+    jmethodID bridge_invoke_original = nullptr;
     DejavuHookJniApi hook_jni_api;
     using HookTable = std::vector<Record *>;
     std::mutex writer_mutex;

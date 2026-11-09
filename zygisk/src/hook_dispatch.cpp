@@ -11,19 +11,15 @@ namespace {
 constexpr char kLogTag[] = "DejavuHook";
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
-}
+} // namespace
 
 using namespace dejavu_hook_manager_internal;
 
-jobject HookManager::dispatch(
-    JNIEnv *env,
-    unsigned long long hook_id,
-    jobjectArray arguments) {
+jobject HookManager::dispatch(JNIEnv *env, unsigned long long hook_id, jobjectArray arguments) {
     if (impl_ == nullptr) {
         return nullptr;
     }
-    Impl::Record *record = reinterpret_cast<Impl::Record *>(
-        static_cast<uintptr_t>(hook_id));
+    Impl::Record *record = reinterpret_cast<Impl::Record *>(static_cast<uintptr_t>(hook_id));
     if (record == nullptr || record->manager != impl_) {
         return nullptr;
     }
@@ -40,27 +36,23 @@ jobject HookManager::dispatch(
 
         LOGD("app bootstrap dispatch entered");
         jclass activity_thread = env->FindClass("android/app/ActivityThread");
-        jmethodID current_application = activity_thread == nullptr
-            ? nullptr
-            : env->GetStaticMethodID(
-                  activity_thread,
-                  "currentApplication",
-                  "()Landroid/app/Application;");
-        jobject application = current_application == nullptr
-            ? nullptr
-            : env->CallStaticObjectMethod(activity_thread, current_application);
-        jclass application_class = application == nullptr
-            ? nullptr
-            : env->GetObjectClass(application);
+        jmethodID current_application =
+            activity_thread == nullptr
+                ? nullptr
+                : env->GetStaticMethodID(activity_thread, "currentApplication",
+                                         "()Landroid/app/Application;");
+        jobject application =
+            current_application == nullptr
+                ? nullptr
+                : env->CallStaticObjectMethod(activity_thread, current_application);
+        jclass application_class =
+            application == nullptr ? nullptr : env->GetObjectClass(application);
         jmethodID get_loader = application_class == nullptr
-            ? nullptr
-            : env->GetMethodID(
-                  application_class,
-                  "getClassLoader",
-                  "()Ljava/lang/ClassLoader;");
-        jobject loader = get_loader == nullptr
-            ? nullptr
-            : env->CallObjectMethod(application, get_loader);
+                                   ? nullptr
+                                   : env->GetMethodID(application_class, "getClassLoader",
+                                                      "()Ljava/lang/ClassLoader;");
+        jobject loader =
+            get_loader == nullptr ? nullptr : env->CallObjectMethod(application, get_loader);
         if (env->ExceptionCheck() || loader == nullptr) {
             env->ExceptionClear();
             LOGE("unable to resolve app ClassLoader after handleBindApplication");
@@ -78,11 +70,8 @@ jobject HookManager::dispatch(
     const unsigned int argument_offset = record->is_static ? 0U : 1U;
     const size_t expected_count = record->parsed_signature.parameters.size() + argument_offset;
     if (argument_count < 0 || static_cast<size_t>(argument_count) != expected_count) {
-        LOGE(
-            "hook %llu received %d bridge arguments, expected %zu",
-            record->id,
-            argument_count,
-            expected_count);
+        LOGE("hook %llu received %d bridge arguments, expected %zu", record->id, argument_count,
+             expected_count);
         return call_original(env, record->backup, arguments, record->is_static);
     }
     jobjectArray working_arguments = dejavu_hook_copy_arguments(env, arguments);
@@ -95,17 +84,15 @@ jobject HookManager::dispatch(
     context.id = record->id;
     context.arguments = working_arguments;
     context.argument_offset = argument_offset;
-    context.this_object = record->is_static
-        ? nullptr
-        : env->GetObjectArrayElement(working_arguments, 0);
+    context.this_object =
+        record->is_static ? nullptr : env->GetObjectArrayElement(working_arguments, 0);
     context.class_loader = record->class_loader;
     context.signature = &record->parsed_signature;
     context.jni = &impl_->hook_jni_api;
 
     g_inside_native_hook = true;
 #if DEJAVU_RUN_DEVICE_STRESS
-    const bool track_stress =
-        impl_->stress_hook_id.load(std::memory_order_acquire) == record->id;
+    const bool track_stress = impl_->stress_hook_id.load(std::memory_order_acquire) == record->id;
     if (track_stress) {
         impl_->stress_calls.fetch_add(1, std::memory_order_relaxed);
         const unsigned int in_flight =
@@ -136,14 +123,13 @@ jobject HookManager::dispatch(
         result = call_original(env, record->backup, arguments, record->is_static);
     } else {
         if (!context.result_set) {
-            context.result = call_original(
-                env, record->backup, working_arguments, record->is_static);
+            context.result =
+                call_original(env, record->backup, working_arguments, record->is_static);
             context.result_owned = context.result != nullptr;
         }
         if (!env->ExceptionCheck() && record->after != nullptr) {
-            jobject fallback = context.result == nullptr
-                ? nullptr
-                : env->NewLocalRef(context.result);
+            jobject fallback =
+                context.result == nullptr ? nullptr : env->NewLocalRef(context.result);
             if (!env->ExceptionCheck()) {
                 context.phase = DEJAVU_HOOK_PHASE_AFTER;
                 context.helper_status = DEJAVU_HOOK_OK;
@@ -152,10 +138,8 @@ jobject HookManager::dispatch(
                     callback_status = context.helper_status;
                 }
                 if (callback_status != DEJAVU_HOOK_OK) {
-                    LOGE(
-                        "hook %llu after_hook failed: %d; preserving previous result",
-                        record->id,
-                        callback_status);
+                    LOGE("hook %llu after_hook failed: %d; preserving previous result", record->id,
+                         callback_status);
                     if (context.result_owned && context.result != nullptr) {
                         env->DeleteLocalRef(context.result);
                     }
@@ -178,28 +162,22 @@ jobject HookManager::dispatch(
     return result;
 }
 
-jobject HookManager::call_original(
-    JNIEnv *env,
-    jobject backup_method,
-    jobjectArray arguments,
-    bool is_static) {
+jobject HookManager::call_original(JNIEnv *env, jobject backup_method, jobjectArray arguments,
+                                   bool is_static) {
     if (impl_ == nullptr || env == nullptr || backup_method == nullptr) {
         return nullptr;
     }
     const jsize count = arguments == nullptr ? 0 : env->GetArrayLength(arguments);
     const jsize offset = is_static ? 0 : 1;
-    jobject receiver = offset == 0 || count == 0
-        ? nullptr
-        : env->GetObjectArrayElement(arguments, 0);
+    jobject receiver =
+        offset == 0 || count == 0 ? nullptr : env->GetObjectArrayElement(arguments, 0);
     jclass object_class = env->FindClass("java/lang/Object");
-    jobjectArray parameters = env->NewObjectArray(
-        count >= offset ? count - offset : 0, object_class, nullptr);
+    jobjectArray parameters =
+        env->NewObjectArray(count >= offset ? count - offset : 0, object_class, nullptr);
     for (jsize index = offset; index < count; ++index) {
-        env->SetObjectArrayElement(
-            parameters, index - offset, env->GetObjectArrayElement(arguments, index));
+        env->SetObjectArrayElement(parameters, index - offset,
+                                   env->GetObjectArrayElement(arguments, index));
     }
-    return env->CallObjectMethod(
-        backup_method, impl_->method_invoke, receiver, parameters);
+    return env->CallStaticObjectMethod(impl_->bridge_class, impl_->bridge_invoke_original,
+                                       backup_method, receiver, parameters);
 }
-
-

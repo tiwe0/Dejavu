@@ -382,12 +382,12 @@ bool HookManager::initialize(JNIEnv *env, JavaVM *vm, const DejavuLsplantBackend
         set_error(error, "unable to register HookBridge native callback");
         return false;
     }
-    jclass local_method_class = env->FindClass("java/lang/reflect/Method");
-    impl_->method_class = static_cast<jclass>(env->NewGlobalRef(local_method_class));
-    impl_->method_invoke = env->GetMethodID(
-        impl_->method_class, "invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
-    if (impl_->method_class == nullptr || impl_->method_invoke == nullptr) {
-        set_error(error, "unable to resolve java.lang.reflect.Method.invoke");
+    impl_->bridge_invoke_original = env->GetStaticMethodID(
+        impl_->bridge_class, "invokeOriginal",
+        "(Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
+    if (impl_->bridge_invoke_original == nullptr) {
+        env->ExceptionClear();
+        set_error(error, "unable to resolve HookBridge.invokeOriginal");
         return false;
     }
     if (!dejavu_hook_api_initialize(env, &impl_->hook_jni_api, error)) {
