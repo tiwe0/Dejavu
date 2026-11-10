@@ -151,6 +151,12 @@ def main():
     run_remote_script('\n'.join(lines) + '\n', 'x_agent_allow.sh')
     print('allowlist updated', len(paths), 'paths')
 
+    if os.environ.get("X_AGENT_HOT_RELOAD", "0") != "1":
+        print("installed files and allowlist only; restart each X app to load the new plugin")
+        print("set X_AGENT_HOT_RELOAD=1 only for isolated test devices: hot unload/reload")
+        print("was observed to crash running X app processes during plugin lifecycle teardown")
+        return 0
+
     for user, (pid, uid) in sorted(processes.items()):
         path = plugin_paths[user]
         script = ('local ok, err = pcall(function() plugin.unload("x_agent") end)\n'

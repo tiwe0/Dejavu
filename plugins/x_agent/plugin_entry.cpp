@@ -464,6 +464,71 @@ void send_plugin_error(AgentState *state, int fd, const std::string &id, const s
     send_response(state, fd, id, route, false, error);
 }
 
+bool bring_x_to_front(JNIEnv *env, std::string *error) {
+    if (!env) { *error = "no JNIEnv"; return false; }
+    if (env->PushLocalFrame(32) != 0) { *error = "JNI local frame failed"; return false; }
+    bool ok = false;
+    jclass activity_thread = env->FindClass("android/app/ActivityThread");
+    jmethodID current_application = activity_thread
+        ? env->GetStaticMethodID(activity_thread, "currentApplication",
+                                 "()Landroid/app/Application;") : nullptr;
+    jobject application = (activity_thread && current_application)
+        ? static_cast<jobject>(env->CallStaticObjectMethod(activity_thread, current_application))
+        : nullptr;
+    if (!application || env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "no application context";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jclass context_class = env->FindClass("android/content/Context");
+    jmethodID get_package_manager = context_class
+        ? env->GetMethodID(context_class, "getPackageManager",
+                           "()Landroid/content/pm/PackageManager;") : nullptr;
+    jclass package_manager_class = env->FindClass("android/content/pm/PackageManager");
+    jmethodID get_launch_intent = package_manager_class
+        ? env->GetMethodID(package_manager_class, "getLaunchIntentForPackage",
+                           "(Ljava/lang/String;)Landroid/content/Intent;") : nullptr;
+    if (!get_package_manager || !get_launch_intent) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "package manager unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jobject package_manager = env->CallObjectMethod(application, get_package_manager);
+    jstring package_name = env->NewStringUTF("com.twitter.android");
+    jobject intent = (package_manager && !env->ExceptionCheck())
+        ? static_cast<jobject>(env->CallObjectMethod(package_manager, get_launch_intent, package_name))
+        : nullptr;
+    if (!intent || env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "no launch intent";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jclass intent_class = env->FindClass("android/content/Intent");
+    jmethodID add_flags = intent_class
+        ? env->GetMethodID(intent_class, "addFlags", "(I)Landroid/content/Intent;") : nullptr;
+    jmethodID start_activity = context_class
+        ? env->GetMethodID(context_class, "startActivity", "(Landroid/content/Intent;)V") : nullptr;
+    if (!add_flags || !start_activity) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "activity methods unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    env->CallObjectMethod(intent, add_flags, 0x10000000 | 0x20000000);
+    env->CallVoidMethod(application, start_activity, intent);
+    if (env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "startActivity failed";
+    } else {
+        ok = true;
+    }
+    env->PopLocalFrame(nullptr);
+    return ok;
+}
+
 void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, size_t length,
                     const std::string &account) {
     cJSON *root = cJSON_ParseWithLength(line, length);
@@ -533,8 +598,56 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
             }
         }
     } else if (method == "refresh") {
-        send_plugin_error(state, fd, id, route, "refresh_not_supported",
-                          "refresh is owned by the external foreground wake path");
+        long long timeout_ms = 15000;
+        cJSON *timeout_node = params ? cJSON_GetObjectItemCaseSensitive(params, "timeout_ms") : nullptr;
+        if (cJSON_IsNumber(timeout_node)) timeout_ms = timeout_node->valueint;
+        if (timeout_ms < 1000) timeout_ms = 1000;
+        if (timeout_ms > 30000) timeout_ms = 30000;
+        std::string old_token = read_cached_token(account);
+        std::string old_claim, old_expires_at;
+        long long old_expires_in = 0;
+        if (!old_token.empty()) token_expiry(old_token, &old_claim, &old_expires_at, &old_expires_in);
+        std::string trigger_error;
+        bool triggered = bring_x_to_front(env, &trigger_error);
+        bool observed = false;
+        std::string new_token, new_claim, new_expires_at;
+        long long new_expires_in = 0;
+        long long waited = 0;
+        while (waited < timeout_ms) {
+            usleep(1000 * 1000);
+            waited += 1000;
+            new_token = read_cached_token(account);
+            if (new_token.empty()) continue;
+            new_expires_in = 0;
+            bool claims = token_expiry(new_token, &new_claim, &new_expires_at, &new_expires_in);
+            if (!claims || new_claim != account) continue;
+            if (old_expires_in <= 0 || new_expires_in > old_expires_in + 2) {
+                observed = true;
+                break;
+            }
+        }
+        if (!triggered) {
+            send_plugin_error(state, fd, id, route, "refresh_trigger_failed",
+                              trigger_error.empty() ? "could not foreground X app" : trigger_error.c_str());
+        } else if (!observed) {
+            cJSON *error = error_object("refresh_not_observed",
+                                        "token cache did not refresh before the deadline");
+            if (error) {
+                cJSON_AddNumberToObject(error, "previous_expires_in", static_cast<double>(old_expires_in));
+                send_response(state, fd, id, route, false, error);
+            }
+        } else {
+            cJSON *result = cJSON_CreateObject();
+            cJSON_AddStringToObject(result, "account_id", account.c_str());
+            cJSON_AddStringToObject(result, "token", new_token.c_str());
+            cJSON_AddStringToObject(result, "expires_at", new_expires_at.c_str());
+            cJSON_AddNumberToObject(result, "expires_in", static_cast<double>(new_expires_in));
+            cJSON_AddNumberToObject(result, "previous_expires_in", static_cast<double>(old_expires_in));
+            cJSON_AddBoolToObject(result, "refreshed", 1);
+            cJSON_AddBoolToObject(result, "app_foregrounded", triggered);
+            send_response(state, fd, id, route, true, result);
+            cJSON_Delete(result);
+        }
     } else {
         send_plugin_error(state, fd, id, route, "method_not_found", "unknown method");
     }

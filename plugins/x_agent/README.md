@@ -10,7 +10,14 @@ Working for all eight Android X users:
 - each user's plugin path allowlisted with SHA-256;
 - loaded into all eight running X processes through the DejaVu control RPC;
 - all eight routes announce on `dejavurouter`;
-- all eight token calls succeeded end-to-end.
+- all eight token calls succeeded end-to-end;
+- `refresh` is implemented as a best-effort foreground + cache-change probe;
+  it returns `refresh_not_observed` unless the token expiry actually increases.
+  
+Hot unload/reload of the plugin in running X app processes was observed to
+crash those app processes during lifecycle teardown. `deploy_all.py` now only
+installs files and the allowlist by default; restart/wake the X app to load the
+new plugin. Set `X_AGENT_HOT_RELOAD=1` only on an isolated test device.
 
 ## Build
 
