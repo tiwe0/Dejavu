@@ -146,6 +146,28 @@ max in-flight jobs: 8192
 JOBS=500 python3 tests/integration.py
 ```
 
+### Socket-hiding hub PoC
+
+For server-side tests without touching sockets:
+
+```python
+from hub_poc import RouterHub
+
+hub = RouterHub(port=39010).start()
+hub.wait_connected(10)
+result = hub.call("some-opaque-route", "token", timeout=15)
+hub.stop()
+```
+
+The caller only sees `call()` / `call_async()` and normal exceptions; TCP
+framing, json ids and response correlation are internal.
+
+```sh
+python3 tools/hub_poc.py --port 39010 --route <route> --method token
+python3 tests/test_hub_poc.py
+python3 tests/test_hub_poc_e2e.py
+```
+
 TCP integration flow:
 
 ```text
