@@ -150,6 +150,44 @@ mechanism is still required.
   a natural trigger or a controlled cache state is needed for a first test.
 - Restarting an app kills its injected signer; re-inject after app restart.
 
+## Early loader and B1 test result
+
+The DejaVu Agent now has a real early Lua hook loader:
+
+```text
+config/early-hooks/<process>.lua
+```
+
+This was built on branch `dev/x-attest-hook`, installed, and tested on user14.
+
+Result:
+
+```text
+early hook loaded for com.twitter.android: 3064 bytes
+X_ATTEST_R0_HOOK_READY id=2
+hook list: 2 active com.x.attestation.r0#b()V
+```
+
+The hook fired at app startup and stored the r0 receiver into d3.a. Verified:
+
+```text
+d3.a class = com.x.attestation.r0
+```
+
+Native B1 refresh then read d3.a, invoked r0.b(), and polled the token cache.
+It reached the refresh call, but the token expiry did not increase:
+
+```text
+before_expires_in=42961
+refresh_error=refresh_not_observed
+after_expires_in=42945
+```
+
+So the early hook, capture and native trigger path work, but a bare r0.b()
+invocation is not enough to force a cache extension in this app state. Further
+work is needed to call the correct internal refresh state/coroutine or trigger
+an app network request after r0.b().
+
 ## Current production state
 
 - 8 X apps running.

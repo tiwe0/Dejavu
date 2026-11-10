@@ -16,10 +16,46 @@ static int x_attest_set_holder(dejavu_hook_context *context, void *self) {
     argument.kind = DEJAVU_HOOK_VALUE_STRING;
     argument.value.string_value.data = "com.x.android.utils.d3";
     argument.value.string_value.size = sizeof("com.x.android.utils.d3") - 1;
+    dejavu_hook_log("R0_STAGE_APP");
+    if (dejavu_hook_call(context, DEJAVU_HOOK_CALL_STATIC, 0,
+                         "android/app/ActivityThread", "currentApplication",
+                         "()Landroid/app/Application;",
+                         0, 0, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_APP");
+        return DEJAVU_HOOK_OK;
+    }
+    void *application = result.value.object_value;
+    if (!application) {
+        dejavu_hook_log("R0_FAIL_APP_NULL");
+        return DEJAVU_HOOK_OK;
+    }
+    dejavu_hook_log("R0_STAGE_LOADER");
+    if (dejavu_hook_call(context, 0, application,
+                         "android/content/Context", "getClassLoader",
+                         "()Ljava/lang/ClassLoader;",
+                         0, 0, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_LOADER");
+        return DEJAVU_HOOK_OK;
+    }
+    void *app_loader = result.value.object_value;
+    if (!app_loader) {
+        dejavu_hook_log("R0_FAIL_LOADER_NULL");
+        return DEJAVU_HOOK_OK;
+    }
+    dejavu_hook_log("R0_STAGE_FORNAME");
+    dejavu_hook_value forname_arguments[3];
+    forname_arguments[0].kind = DEJAVU_HOOK_VALUE_STRING;
+    forname_arguments[0].value.string_value.data = "com.x.android.utils.d3";
+    forname_arguments[0].value.string_value.size = sizeof("com.x.android.utils.d3") - 1;
+    forname_arguments[1].kind = DEJAVU_HOOK_VALUE_BOOLEAN;
+    forname_arguments[1].value.boolean_value = 1;
+    forname_arguments[2].kind = DEJAVU_HOOK_VALUE_OBJECT;
+    forname_arguments[2].value.object_value = app_loader;
     if (dejavu_hook_call(context, DEJAVU_HOOK_CALL_STATIC, 0,
                          "java/lang/Class", "forName",
-                         "(Ljava/lang/String;)Ljava/lang/Class;",
-                         &argument, 1, &result) != DEJAVU_HOOK_OK) {
+                         "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+                         forname_arguments, 3, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_FORNAME");
         return DEJAVU_HOOK_OK;
     }
     class_object = result.value.object_value;
@@ -29,10 +65,12 @@ static int x_attest_set_holder(dejavu_hook_context *context, void *self) {
 
     argument.value.string_value.data = "a";
     argument.value.string_value.size = 1;
+    dejavu_hook_log("R0_STAGE_GETFIELD");
     if (dejavu_hook_call(context, 0, class_object,
                          "java/lang/Class", "getField",
                          "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
                          &argument, 1, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_GETFIELD");
         return DEJAVU_HOOK_OK;
     }
     field_object = result.value.object_value;
@@ -42,10 +80,12 @@ static int x_attest_set_holder(dejavu_hook_context *context, void *self) {
 
     argument.kind = DEJAVU_HOOK_VALUE_OBJECT;
     argument.value.object_value = 0;
+    dejavu_hook_log("R0_STAGE_FIELDGET");
     if (dejavu_hook_call(context, 0, field_object,
                          "java/lang/reflect/Field", "get",
                          "(Ljava/lang/Object;)Ljava/lang/Object;",
                          &argument, 1, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_FIELDGET");
         return DEJAVU_HOOK_OK;
     }
     reference_object = result.value.object_value;
@@ -55,10 +95,12 @@ static int x_attest_set_holder(dejavu_hook_context *context, void *self) {
 
     argument.kind = DEJAVU_HOOK_VALUE_OBJECT;
     argument.value.object_value = self;
+    dejavu_hook_log("R0_STAGE_SET");
     if (dejavu_hook_call(context, 0, reference_object,
                          "java/util/concurrent/atomic/AtomicReference", "set",
                          "(Ljava/lang/Object;)V",
                          &argument, 1, &result) != DEJAVU_HOOK_OK) {
+        dejavu_hook_log("R0_FAIL_SET");
         return DEJAVU_HOOK_OK;
     }
     dejavu_hook_log("X_ATTEST_R0_SAVED");

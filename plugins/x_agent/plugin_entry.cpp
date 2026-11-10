@@ -464,6 +464,86 @@ void send_plugin_error(AgentState *state, int fd, const std::string &id, const s
     send_response(state, fd, id, route, false, error);
 }
 
+bool trigger_attestation_refresh(JNIEnv *env, std::string *error) {
+    if (!env) { *error = "no JNIEnv"; return false; }
+    if (env->PushLocalFrame(48) != 0) { *error = "JNI local frame failed"; return false; }
+    bool ok = false;
+    jclass activity_thread = env->FindClass("android/app/ActivityThread");
+    jmethodID current_application = activity_thread
+        ? env->GetStaticMethodID(activity_thread, "currentApplication",
+                                 "()Landroid/app/Application;") : nullptr;
+    jobject application = (activity_thread && current_application)
+        ? static_cast<jobject>(env->CallStaticObjectMethod(activity_thread, current_application))
+        : nullptr;
+    if (!application || env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "no application context";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jclass context_class = env->FindClass("android/content/Context");
+    jmethodID get_class_loader = context_class
+        ? env->GetMethodID(context_class, "getClassLoader", "()Ljava/lang/ClassLoader;") : nullptr;
+    jobject class_loader = get_class_loader
+        ? static_cast<jobject>(env->CallObjectMethod(application, get_class_loader)) : nullptr;
+    jclass class_loader_class = env->FindClass("java/lang/ClassLoader");
+    jmethodID load_class = (class_loader && class_loader_class)
+        ? env->GetMethodID(class_loader_class, "loadClass",
+                           "(Ljava/lang/String;)Ljava/lang/Class;") : nullptr;
+    if (!load_class || !class_loader) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "no app class loader";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jstring holder_name = env->NewStringUTF("com.x.android.utils.d3");
+    jclass holder_class = holder_name
+        ? static_cast<jclass>(env->CallObjectMethod(class_loader, load_class, holder_name)) : nullptr;
+    if (!holder_class || env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "d3 holder class unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jfieldID reference_field = env->GetStaticFieldID(
+        holder_class, "a", "Ljava/util/concurrent/atomic/AtomicReference;");
+    if (!reference_field || env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "d3.a field unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jobject reference = env->GetStaticObjectField(holder_class, reference_field);
+    jclass atomic_class = env->FindClass("java/util/concurrent/atomic/AtomicReference");
+    jmethodID get_value = atomic_class
+        ? env->GetMethodID(atomic_class, "get", "()Ljava/lang/Object;") : nullptr;
+    jobject candidate = (reference && get_value)
+        ? static_cast<jobject>(env->CallObjectMethod(reference, get_value)) : nullptr;
+    if (!candidate || env->ExceptionCheck()) {
+        *error = "r0 instance not captured";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jclass candidate_class = env->GetObjectClass(candidate);
+    jmethodID force = candidate_class
+        ? env->GetMethodID(candidate_class, "b", "()V") : nullptr;
+    if (!force) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "d3.a does not hold r0.b instance";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    env->CallVoidMethod(candidate, force);
+    if (env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "r0.b failed";
+    } else {
+        ok = true;
+    }
+    env->PopLocalFrame(nullptr);
+    return ok;
+}
+
 bool bring_x_to_front(JNIEnv *env, std::string *error) {
     if (!env) { *error = "no JNIEnv"; return false; }
     if (env->PushLocalFrame(32) != 0) { *error = "JNI local frame failed"; return false; }
@@ -608,7 +688,7 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
         long long old_expires_in = 0;
         if (!old_token.empty()) token_expiry(old_token, &old_claim, &old_expires_at, &old_expires_in);
         std::string trigger_error;
-        bool triggered = bring_x_to_front(env, &trigger_error);
+        bool triggered = trigger_attestation_refresh(env, &trigger_error);
         bool observed = false;
         std::string new_token, new_claim, new_expires_at;
         long long new_expires_in = 0;
@@ -627,8 +707,8 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
             }
         }
         if (!triggered) {
-            send_plugin_error(state, fd, id, route, "refresh_trigger_failed",
-                              trigger_error.empty() ? "could not foreground X app" : trigger_error.c_str());
+            send_plugin_error(state, fd, id, route, "r0_instance_unavailable",
+                              trigger_error.empty() ? "r0 instance unavailable" : trigger_error.c_str());
         } else if (!observed) {
             cJSON *error = error_object("refresh_not_observed",
                                         "token cache did not refresh before the deadline");

@@ -99,6 +99,7 @@ class DejavuAgent final {
     const DejavuLsplantBackend *lsplant_backend_ = nullptr;
     HookManager hook_manager_;
     std::string init_script_;
+    std::string early_hook_script_;
     bool ready_ = false;
 
     void initialize(int module_dir_fd) {
@@ -121,13 +122,29 @@ class DejavuAgent final {
                  script_error.c_str());
             return;
         }
+        const std::string early_hook_path =
+            std::string("config/early-hooks/") + process_name_ + ".lua";
+        std::string early_script;
+        std::string early_error;
+        if (read_text_file_at(module_dir_fd, early_hook_path.c_str(), &early_script, &early_error)) {
+            early_hook_script_ = std::move(early_script);
+            LOGD("early hook loaded for %s: %zu bytes", process_name_.c_str(),
+                 early_hook_script_.size());
+        } else {
+            LOGD("no early hook for %s: %s", process_name_.c_str(), early_error.c_str());
+        }
         ready_ = true;
     }
 
     static void application_attached(JNIEnv *env, jobject class_loader, void *context) {
         auto *agent = static_cast<DejavuAgent *>(context);
         std::string error;
-        if (!agent->hook_manager_.start_control(env, class_loader, agent->init_script_, &error)) {
+        std::string control_script = agent->init_script_;
+        if (!agent->early_hook_script_.empty()) {
+            control_script += "\n";
+            control_script += agent->early_hook_script_;
+        }
+        if (!agent->hook_manager_.start_control(env, class_loader, control_script, &error)) {
             LOGE("Lua control initialization failed: %s", error.c_str());
             return;
         }
