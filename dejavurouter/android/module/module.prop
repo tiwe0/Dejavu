@@ -1,0 +1,6 @@
+id=dejavurouter
+name=DejaVu Router
+version=0.1.0
+versionCode=1
+author=Ivory
+description=Async local plugin router for DejaVu app plugins

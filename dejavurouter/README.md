@@ -35,6 +35,13 @@ For an instrumented build:
 make asan
 ```
 
+Android arm64 build and Magisk packaging:
+
+```sh
+./android/build.sh
+ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 ./android/install.sh
+```
+
 ## Run
 
 ```sh
@@ -151,6 +158,14 @@ Working:
 - job deadlines and plugin disconnect handling;
 - async hub pollers and async result posts;
 - 50-job integration test and ASan run.
+
+Android:
+
+- arm64 static libevent build;
+- Magisk module with post-fs-data/service hooks;
+- supervisor restarts the router after process death;
+- boot startup through Magisk late_start service;
+- verified self-restart on the device.
 
 Not included by design:
 

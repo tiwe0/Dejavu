@@ -7,6 +7,7 @@
 #include <event2/http.h>
 #include <event2/http_struct.h>
 #include <event2/listener.h>
+#include <netdb.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -18,6 +19,10 @@
 #include <unistd.h>
 
 #include "cJSON.h"
+
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 #define MAX_LINE (1024 * 1024)
 #define MAX_PLUGINS 512
@@ -666,13 +671,44 @@ int main(int argc, char **argv) {
     router_t router;
     memset(&router, 0, sizeof(router));
     router.base = event_base_new();
+    if (!router.base) { logmsg("ERROR", "cannot initialize libevent"); return 1; }
     router.dns = evdns_base_new(router.base, 1);
-    if (!router.base || !router.dns) { logmsg("ERROR", "cannot initialize libevent"); return 1; }
+    if (!router.dns) {
+        /* Android often has no /etc/resolv.conf; start evdns and add props. */
+        router.dns = evdns_base_new(router.base, 0);
+#ifdef __ANDROID__
+        char dns1[PROP_VALUE_MAX] = {0};
+        char dns2[PROP_VALUE_MAX] = {0};
+        if (__system_property_get("net.dns1", dns1) > 0) evdns_base_nameserver_ip_add(router.dns, dns1);
+        if (__system_property_get("net.dns2", dns2) > 0) evdns_base_nameserver_ip_add(router.dns, dns2);
+#endif
+    }
+    if (!router.dns) { logmsg("WARN", "no evdns base; only numeric hub hosts will work"); }
     struct evhttp_uri *uri = evhttp_uri_parse(cfg.hub_url);
     if (!uri || !evhttp_uri_get_host(uri)) { logmsg("ERROR", "invalid hub_url"); return 1; }
-    router.hub_host = strdup(evhttp_uri_get_host(uri));
+    const char *parsed_host = evhttp_uri_get_host(uri);
+    router.hub_host = strdup(parsed_host);
     router.hub_port = evhttp_uri_get_port(uri);
     if (router.hub_port <= 0) router.hub_port = 80;
+    /* Android/bionic getaddrinfo is reliable even when evdns has no resolvers. */
+    {
+        struct addrinfo hints;
+        struct addrinfo *resolved = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        char service[16];
+        snprintf(service, sizeof(service), "%d", router.hub_port);
+        if (getaddrinfo(router.hub_host, service, &hints, &resolved) == 0 && resolved) {
+            char numeric[NI_MAXHOST] = {0};
+            if (getnameinfo(resolved->ai_addr, resolved->ai_addrlen, numeric, sizeof(numeric),
+                            NULL, 0, NI_NUMERICHOST) == 0 && numeric[0]) {
+                free(router.hub_host);
+                router.hub_host = strdup(numeric);
+            }
+            freeaddrinfo(resolved);
+        }
+    }
     const char *path = evhttp_uri_get_path(uri);
     router.hub_prefix = strdup(path ? path : "");
     evhttp_uri_free(uri);
