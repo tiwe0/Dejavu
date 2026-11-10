@@ -95,7 +95,7 @@ make -C zygisk package
 produces:
 
 ```text
-zygisk/dist/dejavu-zygisk-v0.8.1-arm64.zip
+zygisk/dist/dejavu-zygisk-v0.8.2-arm64.zip
 ```
 
 The packaged `config/init.lua` is assembled from `config/hookx.lua` and
@@ -105,7 +105,7 @@ the same pure-Lua helper library.
 For example, copy it to the connected device with:
 
 ```sh
-adb push zygisk/dist/dejavu-zygisk-v0.8.1-arm64.zip /sdcard/Download/
+adb push zygisk/dist/dejavu-zygisk-v0.8.2-arm64.zip /sdcard/Download/
 ```
 
 Install the ZIP from Magisk or APatch Manager, then reboot so Zygisk
