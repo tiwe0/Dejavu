@@ -233,7 +233,12 @@ r0.b()
   failure -> p.d(account, old_token, old_refresh_at) restore
 ```
 
-This backup/restore path is not implemented yet.
+This backup/restore path is implemented in the current native plugin.
+
+Failure test: the X app UID was blocked from external network after taking the
+backup. The refresh timed out, the plugin reported
+`refresh_not_observed`, and the old token was restored. A follow-up token
+query returned the restored token instead of `token_unavailable`.
 
 ## Early loader and B1 test result
 
@@ -271,6 +276,15 @@ after_expires_in=42945
 The early hook, capture and native trigger path work. A bare r0.b() is not
 enough while the cache is valid; the working path requires clearing the account
 token cache first, as described above.
+
+## Final rollout
+
+- B1 plugin with cache clear + backup/restore: hash
+  `e74897213466794191434084d3c55f38041721f5ac20f29876c894bfc96ab00c`
+- Deployed to all 8 X users.
+- All 8 apps restarted to load the new plugin and early hook.
+- All 8 signers re-injected.
+- Verified: 8 apps, 8 routes, `protocolErrors=0`.
 
 ## Current production state
 

@@ -464,7 +464,51 @@ void send_plugin_error(AgentState *state, int fd, const std::string &id, const s
     send_response(state, fd, id, route, false, error);
 }
 
-bool trigger_attestation_refresh(JNIEnv *env, std::string *error) {
+struct AttestationBackup {
+    bool valid = false;
+    std::string token;
+    jobject refresh_at = nullptr;
+    jobject cache = nullptr;
+    jobject account = nullptr;
+};
+
+void release_attestation_backup(JNIEnv *env, AttestationBackup *backup) {
+    if (!env || !backup) return;
+    if (backup->refresh_at) env->DeleteGlobalRef(backup->refresh_at);
+    if (backup->cache) env->DeleteGlobalRef(backup->cache);
+    if (backup->account) env->DeleteGlobalRef(backup->account);
+    backup->refresh_at = nullptr;
+    backup->cache = nullptr;
+    backup->account = nullptr;
+    backup->valid = false;
+}
+
+bool restore_attestation_backup(JNIEnv *env, AttestationBackup *backup, std::string *error) {
+    if (!env || !backup || !backup->valid) return true;
+    if (env->PushLocalFrame(16) != 0) {
+        *error = "JNI local frame failed";
+        return false;
+    }
+    bool ok = false;
+    jclass cache_class = env->GetObjectClass(backup->cache);
+    jmethodID write = cache_class
+        ? env->GetMethodID(cache_class, "d",
+                           "(Lcom/x/models/gh;Ljava/lang/String;Lkotlin/time/Instant;)V")
+        : nullptr;
+    jstring token = env->NewStringUTF(backup->token.c_str());
+    if (write && token) {
+        env->CallVoidMethod(backup->cache, write, backup->account, token, backup->refresh_at);
+        if (!env->ExceptionCheck()) ok = true;
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        if (error->empty()) *error = "token cache restore failed";
+    }
+    env->PopLocalFrame(nullptr);
+    return ok;
+}
+
+bool trigger_attestation_refresh(JNIEnv *env, std::string *error, AttestationBackup *backup) {
     if (!env) { *error = "no JNIEnv"; return false; }
     if (env->PushLocalFrame(48) != 0) { *error = "JNI local frame failed"; return false; }
     bool ok = false;
@@ -538,11 +582,38 @@ bool trigger_attestation_refresh(JNIEnv *env, std::string *error) {
     jclass cache_class = cache ? env->GetObjectClass(cache) : nullptr;
     jmethodID clear_cache = cache_class
         ? env->GetMethodID(cache_class, "a", "(Lcom/x/models/gh;)V") : nullptr;
+    jmethodID read_cache = cache_class
+        ? env->GetMethodID(cache_class, "b",
+                           "(Lcom/x/models/gh;)Lcom/x/attestation/a0;") : nullptr;
     if (!cache || !account || !clear_cache) {
         *error = take_exception(env);
         if (error->empty()) *error = "token cache clear unavailable";
         env->PopLocalFrame(nullptr);
         return false;
+    }
+    if (read_cache) {
+        jobject cached = env->CallObjectMethod(cache, read_cache, account);
+        if (cached && !env->ExceptionCheck()) {
+            jclass cached_class = env->GetObjectClass(cached);
+            jfieldID token_field = cached_class
+                ? env->GetFieldID(cached_class, "a", "Ljava/lang/String;") : nullptr;
+            jfieldID instant_field = cached_class
+                ? env->GetFieldID(cached_class, "b", "Lkotlin/time/Instant;") : nullptr;
+            if (token_field && instant_field) {
+                jstring old_token = static_cast<jstring>(
+                    env->GetObjectField(cached, token_field));
+                jobject old_instant = env->GetObjectField(cached, instant_field);
+                if (old_token && old_instant) {
+                    backup->token = jstring_to_utf(env, old_token);
+                    backup->refresh_at = env->NewGlobalRef(old_instant);
+                    backup->cache = env->NewGlobalRef(cache);
+                    backup->account = env->NewGlobalRef(account);
+                    backup->valid = !backup->token.empty() &&
+                                    backup->refresh_at && backup->cache && backup->account;
+                }
+            }
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
     }
     env->CallVoidMethod(cache, clear_cache, account);
     if (env->ExceptionCheck()) {
@@ -714,7 +785,8 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
         long long old_expires_in = 0;
         if (!old_token.empty()) token_expiry(old_token, &old_claim, &old_expires_at, &old_expires_in);
         std::string trigger_error;
-        bool triggered = trigger_attestation_refresh(env, &trigger_error);
+        AttestationBackup backup;
+        bool triggered = trigger_attestation_refresh(env, &trigger_error, &backup);
         bool observed = false;
         std::string new_token, new_claim, new_expires_at;
         long long new_expires_in = 0;
@@ -732,6 +804,21 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
                 break;
             }
         }
+        bool token_restored = false;
+        std::string restore_error;
+        if (!observed && backup.valid) {
+            if (!restore_attestation_backup(env, &backup, &restore_error)) {
+                LOGE("token cache restore failed: %s", restore_error.c_str());
+            } else {
+                token_restored = true;
+                for (int i = 0; i < 20; ++i) {
+                    usleep(100 * 1000);
+                    if (!read_cached_token(account).empty()) break;
+                }
+            }
+        }
+        LOGE("B1 refresh summary backup_valid=%d token_len=%zu observed=%d restored=%d",
+             backup.valid ? 1 : 0, backup.token.size(), observed ? 1 : 0, token_restored ? 1 : 0);
         if (!triggered) {
             send_plugin_error(state, fd, id, route, "r0_instance_unavailable",
                               trigger_error.empty() ? "r0 instance unavailable" : trigger_error.c_str());
@@ -740,6 +827,9 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
                                         "token cache did not refresh before the deadline");
             if (error) {
                 cJSON_AddNumberToObject(error, "previous_expires_in", static_cast<double>(old_expires_in));
+                cJSON_AddBoolToObject(error, "token_restored", token_restored ? 1 : 0);
+                cJSON_AddBoolToObject(error, "backup_valid", backup.valid ? 1 : 0);
+                cJSON_AddStringToObject(error, "restore_error", restore_error.c_str());
                 send_response(state, fd, id, route, false, error);
             }
         } else {
@@ -754,6 +844,7 @@ void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, si
             send_response(state, fd, id, route, true, result);
             cJSON_Delete(result);
         }
+        release_attestation_backup(env, &backup);
     } else {
         send_plugin_error(state, fd, id, route, "method_not_found", "unknown method");
     }
