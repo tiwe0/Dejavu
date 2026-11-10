@@ -6,6 +6,7 @@
 #include <event2/event.h>
 #include <event2/listener.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -654,6 +655,25 @@ static void hub_read_cb(struct bufferevent *bev, void *arg) {
     }
 }
 
+static void hub_enable_keepalive(struct bufferevent *bev) {
+    int fd = bufferevent_getfd(bev);
+    if (fd < 0) return;
+    int enabled = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled));
+#ifdef TCP_KEEPIDLE
+    int idle = 20;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+#endif
+#ifdef TCP_KEEPINTVL
+    int interval = 5;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+#endif
+#ifdef TCP_KEEPCNT
+    int count = 3;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#endif
+}
+
 static void hub_connect(router_t *router) {
     if (router->stopping || router->hub_bev) return;
     if (router->reconnect_timer) {
@@ -679,6 +699,7 @@ static void hub_connect(router_t *router) {
     bufferevent_setcb(bev, hub_read_cb, NULL, hub_event_cb, router);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
     router->hub_bev = bev;
+    hub_enable_keepalive(bev);
     if (bufferevent_socket_connect(bev, resolved->ai_addr, (int)resolved->ai_addrlen) != 0) {
         logmsg("WARN", "hub connect failed");
         hub_disconnect(router);
