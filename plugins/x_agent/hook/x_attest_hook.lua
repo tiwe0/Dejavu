@@ -124,6 +124,24 @@ int after_hook(dejavu_hook_context *context) {
     else
         hook.log("X_ATTEST_R0_HOOK_FAILED " .. tostring(result))
     end
+
+    local source_d = [[
+int before_hook(dejavu_hook_context *context) {
+    (void)context;
+    dejavu_hook_log("X_ATTEST_R0_D_CALLED");
+    return DEJAVU_HOOK_OK;
+}
+]]
+    local ok_d, result_d = pcall(function()
+        return hook.install("com.x.attestation.r0", "d",
+                            "(ZLkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;",
+                            source_d)
+    end)
+    if ok_d then
+        hook.log("X_ATTEST_R0_D_HOOK_READY id=" .. tostring(result_d))
+    else
+        hook.log("X_ATTEST_R0_D_HOOK_FAILED " .. tostring(result_d))
+    end
 end
 
 install_x_attest_hook()

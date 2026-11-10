@@ -173,6 +173,68 @@ The B1 test below reached b() successfully but did not extend the token. This
 is consistent with b() being a scheduling trigger rather than a guaranteed
 force-refresh call.
 
+## Forced refresh result
+
+A bare `r0.b()` is not enough while the token is still valid: `r0.d(true, ...)`
+checks the token cache and, when the cached token is still valid, schedules a
+future refresh instead of generating a new token.
+
+The app token cache object is `com.x.attestation.p`. Its public methods are:
+
+```text
+p.b(gh) -> cached token + refreshAt
+p.a(gh) -> clear the account token from the in-memory flow and SharedPreferences
+p.d(gh, token, instant) -> write a token into the cache
+```
+
+The working B1 sequence is:
+
+```text
+d3.a -> r0
+r0.h -> token cache provider
+r0.d -> account
+p.a(account)          # invalidate the current cached token
+r0.b()                # triggers d(true) -> attestation token generation
+poll token cache      # success only when expiry increases
+```
+
+The current native plugin does exactly this. On user14 the refresh succeeded:
+
+```text
+before_expires_in=43084
+refresh_ok:
+  refreshed=True
+  previous_expires_in=43084
+  expires_in=43198
+  token length=747
+after_expires_in=43198
+```
+
+The r0.d probe confirmed the path:
+
+```text
+X_ATTEST_R0_D_ARG_TRUE
+X_ATTEST_R0_D_ARG_FALSE
+```
+
+## Important risk
+
+The current B1 implementation clears the cached token before triggering `b()`.
+If token generation then fails, the account can be left without a cached
+token.
+
+A production version should:
+
+```text
+p.b(account) -> save old token/refreshAt
+p.a(account) -> clear
+r0.b()
+  success -> keep new token
+  failure -> p.d(account, old_token, old_refresh_at) restore
+```
+
+This backup/restore path is not implemented yet.
+
 ## Early loader and B1 test result
 
 The DejaVu Agent now has a real early Lua hook loader:
@@ -206,10 +268,9 @@ refresh_error=refresh_not_observed
 after_expires_in=42945
 ```
 
-So the early hook, capture and native trigger path work, but a bare r0.b()
-invocation is not enough to force a cache extension in this app state. Further
-work is needed to call the correct internal refresh state/coroutine or trigger
-an app network request after r0.b().
+The early hook, capture and native trigger path work. A bare r0.b() is not
+enough while the cache is valid; the working path requires clearing the account
+token cache first, as described above.
 
 ## Current production state
 

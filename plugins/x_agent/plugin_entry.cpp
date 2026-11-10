@@ -525,6 +525,32 @@ bool trigger_attestation_refresh(JNIEnv *env, std::string *error) {
         return false;
     }
     jclass candidate_class = env->GetObjectClass(candidate);
+    jfieldID cache_field = env->GetFieldID(candidate_class, "h", "Lcom/x/attestation/a;");
+    jfieldID account_field = env->GetFieldID(candidate_class, "d", "Lcom/x/models/gh;");
+    if (!cache_field || !account_field) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "r0 cache/account fields unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jobject cache = env->GetObjectField(candidate, cache_field);
+    jobject account = env->GetObjectField(candidate, account_field);
+    jclass cache_class = cache ? env->GetObjectClass(cache) : nullptr;
+    jmethodID clear_cache = cache_class
+        ? env->GetMethodID(cache_class, "a", "(Lcom/x/models/gh;)V") : nullptr;
+    if (!cache || !account || !clear_cache) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "token cache clear unavailable";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    env->CallVoidMethod(cache, clear_cache, account);
+    if (env->ExceptionCheck()) {
+        *error = take_exception(env);
+        if (error->empty()) *error = "token cache clear failed";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
     jmethodID force = candidate_class
         ? env->GetMethodID(candidate_class, "b", "()V") : nullptr;
     if (!force) {
