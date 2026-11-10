@@ -185,6 +185,20 @@ hub.stop()
 The caller only sees `call()` / `call_async()` and normal exceptions; TCP
 framing, json ids and response correlation are internal.
 
+The PoC server also keeps the persistent account table and live route state
+separate:
+
+```python
+hub.bind_account("1875541871079874560", "c44d68aa", "1875541871079874560")
+result = hub.call_account("1875541871079874560", "token", timeout=15)
+```
+
+- `bind_account` is the server-side persistent account/device/route row;
+- route register/unregister events maintain the live `hub.routes`;
+- `call_account` resolves account -> device -> live connection -> route;
+- disconnect clears live routes but keeps the account row;
+- after reconnect and route re-announcement, the same account resolves again.
+
 ```sh
 python3 tools/hub_poc.py --port 39010 --route <route> --method token
 python3 tests/test_hub_poc.py

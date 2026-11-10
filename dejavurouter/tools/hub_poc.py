@@ -43,6 +43,10 @@ __all__ = [
     "NotConnectedError",
     "CallTimeoutError",
     "CallError",
+    "AccountUnknownError",
+    "DeviceOfflineError",
+    "RouteOfflineError",
+    "AccountBinding",
 ]
 
 
@@ -56,6 +60,18 @@ class NotConnectedError(HubError):
 
 class CallTimeoutError(HubError):
     """The router/plugin did not answer before the deadline."""
+
+
+class AccountUnknownError(HubError):
+    """The account has no persistent device binding in the server table."""
+
+
+class DeviceOfflineError(HubError):
+    """The device that owns the account is not connected."""
+
+
+class RouteOfflineError(HubError):
+    """The account route is not currently announced by the device."""
 
 
 class CallError(HubError):
@@ -76,6 +92,15 @@ class CallError(HubError):
             "retryable": self.retryable,
             "response": self.response,
         }
+
+
+@dataclass(frozen=True)
+class AccountBinding:
+    """Persistent server-side binding: account -> device -> route."""
+
+    account_id: str
+    device_id: str
+    route: str
 
 
 @dataclass
@@ -157,6 +182,7 @@ class RouterHub:
         self._pending: dict[str, PendingCall] = {}
         self._hello: dict[str, Any] = {}
         self._routes: dict[str, dict[str, Any]] = {}
+        self._accounts: dict[str, AccountBinding] = {}
         self._last_error: str = ""
         self._accepted_count = 0
         self._calls_total = 0
@@ -224,6 +250,18 @@ class RouterHub:
             return {key: dict(value) for key, value in self._routes.items()}
 
     @property
+    def accounts(self) -> dict[str, AccountBinding]:
+        """Persistent account -> device/route rows, owned by the server."""
+        with self._state_lock:
+            return dict(self._accounts)
+
+    @property
+    def device_id(self) -> Optional[str]:
+        with self._state_lock:
+            value = self._hello.get("device_id")
+            return value if isinstance(value, str) and value else None
+
+    @property
     def last_error(self) -> str:
         return self._last_error
 
@@ -242,6 +280,94 @@ class RouterHub:
 
     def wait_connected(self, timeout: float = 10.0) -> bool:
         return self._connected.wait(timeout)
+
+    # -- persistent account table ------------------------------------------
+
+    def bind_account(self, account_id: str, device_id: str,
+                     route: Optional[str] = None) -> AccountBinding:
+        """Create/update the persistent account -> device mapping.
+
+        This is the server-side account table. It is not learned from a socket;
+        route events only tell us whether the route is currently online.
+        """
+        if not account_id or not isinstance(account_id, str):
+            raise ValueError("account_id must be a non-empty string")
+        if not device_id or not isinstance(device_id, str):
+            raise ValueError("device_id must be a non-empty string")
+        binding = AccountBinding(account_id=account_id, device_id=device_id,
+                                 route=route or account_id)
+        with self._state_lock:
+            self._accounts[account_id] = binding
+        return binding
+
+    def unbind_account(self, account_id: str) -> bool:
+        with self._state_lock:
+            return self._accounts.pop(account_id, None) is not None
+
+    def account_for(self, account_id: str) -> AccountBinding:
+        with self._state_lock:
+            binding = self._accounts.get(account_id)
+        if binding is None:
+            raise AccountUnknownError(f"account {account_id!r} is not in the account table")
+        return binding
+
+    def call_account(self, account_id: str, method: str,
+                     params: Optional[dict[str, Any]] = None, *,
+                     timeout: float = 15.0,
+                     deadline_ms: Optional[int] = None) -> Any:
+        """Route one call using the persistent account table and live routes."""
+        binding = self.account_for(account_id)
+        if not self.connected:
+            raise DeviceOfflineError(
+                f"device {binding.device_id!r} for account {account_id!r} is offline"
+            )
+        with self._state_lock:
+            route_info = self._routes.get(binding.route)
+            current_device = self._hello.get("device_id")
+        if route_info is None:
+            raise RouteOfflineError(
+                f"route {binding.route!r} for account {account_id!r} is not online"
+            )
+        if route_info.get("device_id") != binding.device_id:
+            raise RouteOfflineError(
+                f"route {binding.route!r} is announced by "
+                f"{route_info.get('device_id')!r}, expected {binding.device_id!r}"
+            )
+        if current_device != binding.device_id:
+            raise DeviceOfflineError(
+                f"connected device is {current_device!r}, expected {binding.device_id!r}"
+            )
+        return self.call(binding.route, method, params, timeout=timeout,
+                         deadline_ms=deadline_ms)
+
+    def call_account_async(self, account_id: str, method: str,
+                           params: Optional[dict[str, Any]] = None, *,
+                           timeout: float = 15.0,
+                           deadline_ms: Optional[int] = None) -> PendingCall:
+        """Async variant of call_account()."""
+        binding = self.account_for(account_id)
+        if not self.connected:
+            raise DeviceOfflineError(
+                f"device {binding.device_id!r} for account {account_id!r} is offline"
+            )
+        with self._state_lock:
+            route_info = self._routes.get(binding.route)
+            current_device = self._hello.get("device_id")
+        if route_info is None:
+            raise RouteOfflineError(
+                f"route {binding.route!r} for account {account_id!r} is not online"
+            )
+        if route_info.get("device_id") != binding.device_id:
+            raise RouteOfflineError(
+                f"route {binding.route!r} is announced by "
+                f"{route_info.get('device_id')!r}, expected {binding.device_id!r}"
+            )
+        if current_device != binding.device_id:
+            raise DeviceOfflineError(
+                f"connected device is {current_device!r}, expected {binding.device_id!r}"
+            )
+        return self.call_async(binding.route, method, params, timeout=timeout,
+                               deadline_ms=deadline_ms)
 
     def call(self, route: str, method: str, params: Optional[dict[str, Any]] = None,
              *, timeout: float = 15.0, deadline_ms: Optional[int] = None) -> Any:
