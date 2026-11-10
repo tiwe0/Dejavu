@@ -15,6 +15,9 @@ cp /data/local/tmp/dejavurouter-module.prop "$MOD/module.prop"
 cp /data/local/tmp/dejavurouter-service.sh "$MOD/service.sh"
 cp /data/local/tmp/dejavurouter-supervisor.sh "$MOD/supervisor.sh"
 cp /data/local/tmp/dejavurouter-post-fs-data.sh "$MOD/post-fs-data.sh"
+if [ -f "$DATA/config.json" ] && ! grep -q '"hub_host"' "$DATA/config.json"; then
+    mv -f "$DATA/config.json" "$DATA/config.json.old-http"
+fi
 if [ ! -f "$DATA/config.json" ]; then
     cp /data/local/tmp/dejavurouter-config.json "$DATA/config.json"
 fi

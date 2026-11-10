@@ -1,9 +1,8 @@
 {
-  "hub_url": "http://127.0.0.1:39010",
+  "hub_host": "127.0.0.1",
+  "hub_port": 39010,
   "device_id": "c44d68aa",
   "device_token": "dev-token",
   "listen_host": "127.0.0.1",
-  "listen_port": 39111,
-  "pollers": 8,
-  "poll_wait_seconds": 25
+  "listen_port": 39111
 }

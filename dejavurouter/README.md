@@ -1,25 +1,29 @@
 # dejavurouter
 
-A small, single-threaded async device router for DejaVu app plugins.
-
-v2 is a libevent event loop, designed for high concurrency and simple
-two-end forwarding:
+A small, single-threaded async TCP router for DejaVu app plugins.
 
 ```text
-Server Hub (HTTP long-poll)
-        ▲
-        │ multiple async pollers
-        │
-  dejavurouter (one event_base)
-        ├── plugin TCP listener 127.0.0.1:39111
-        ├── route -> plugin registry
-        ├── job table + deadlines
-        └── async result POST
+Server Hub
+   ▲
+   │ raw TCP, newline-delimited JSON
+   │
+dejavurouter (one libevent event_base)
+   ├── outbound persistent hub connection
+   ├── plugin TCP listener 127.0.0.1:39111
+   ├── exact route -> plugin registry
+   ├── job table + deadlines
+   └── response forwarding
 ```
 
-The server decides the destination with an opaque top-level `route` parameter.
-The router only does exact route lookup and forwards the request/response. It
-does not inspect `method`, `params`, accounts, apps or business rules.
+The server decides the destination with the top-level opaque `route` field.
+The router does exact route lookup only:
+
+```text
+route -> plugin
+```
+
+It does not interpret `method`, `params`, accounts, apps or business rules.
+There is no HTTP anywhere.
 
 ## Build
 
@@ -29,49 +33,47 @@ cd dejavurouter
 make
 ```
 
-For an instrumented build:
+ASan/UBSan:
 
 ```sh
 make asan
+JOBS=200 ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
+  ROUTER_BIN=$PWD/dejavurouter-asan python3 tests/integration.py
 ```
 
-Android arm64 build and Magisk packaging:
-
-```sh
-./android/build.sh
-ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 ./android/install.sh
-```
-
-## Run
-
-```sh
-cp config.example.json config.json
-./dejavurouter config.json
-```
-
-Config:
+## Config
 
 ```json
 {
-  "hub_url": "http://127.0.0.1:39010",
+  "hub_host": "127.0.0.1",
+  "hub_port": 39010,
   "device_id": "phone-a",
   "device_token": "dev-token",
   "listen_host": "127.0.0.1",
-  "listen_port": 39111,
-  "pollers": 8,
-  "poll_wait_seconds": 25
+  "listen_port": 39111
 }
 ```
 
-No TLS; network security is intentionally out of scope. The hub URL must be
-plain HTTP (for example a local proxy or a development hub).
+`hub_host`/`hub_port` is the raw TCP hub endpoint. The former `hub_url`
+HTTP long-poll configuration is gone.
 
-## Hub job
+No TLS; network security is intentionally out of scope.
 
-The server includes an opaque route:
+## Hub protocol
+
+Newline-delimited JSON over one persistent outbound TCP connection.
+
+On connect:
+
+```json
+{"type":"hello","device_id":"phone-a","version":1,"capabilities":["router.plugin"]}
+```
+
+Server request:
 
 ```json
 {
+  "type": "request",
   "id": "job_1",
   "route": "some-opaque-route",
   "method": "anything",
@@ -80,18 +82,31 @@ The server includes an opaque route:
 }
 ```
 
-- Missing/unknown route: `route_unavailable`.
-- No method-prefix inference, fallback or per-app routing.
-- `method` and `params` are forwarded as-is.
+Router response:
 
-## Plugin connection
+```json
+{"type":"response","id":"job_1","route":"some-opaque-route","ok":true,"result":{}}
+```
 
-Newline-delimited JSON over TCP to `listen_host:listen_port`.
+Error:
+
+```json
+{"type":"response","id":"job_1","route":"some-opaque-route","ok":false,
+ "error":{"code":"route_unavailable","message":"no plugin registered for route","retryable":true}}
+```
+
+Router reconnects to the hub with exponential backoff. Pending jobs are dropped
+on hub disconnect; the server is expected to retry.
+
+## Plugin protocol
+
+Plugins connect to `listen_host:listen_port` using raw TCP JSON Lines.
 
 Hello:
 
 ```json
-{"type":"hello","app":"com.example.demo","plugin":"demo","version":1,"routes":["some-opaque-route"],"accounts":[]}
+{"type":"hello","app":"com.example.demo","plugin":"demo","version":1,
+ "routes":["some-opaque-route"],"accounts":[]}
 ```
 
 Router request:
@@ -100,83 +115,44 @@ Router request:
 {"type":"request","id":"job_1","route":"some-opaque-route","method":"anything","params":{}}
 ```
 
-Plugin response:
+Plugin response must echo the route:
 
 ```json
-{"type":"response","id":"job_1","ok":true,"result":{}}
+{"type":"response","id":"job_1","route":"some-opaque-route","ok":true,"result":{}}
 ```
 
-Error:
+A response with a missing or mismatched route is rejected as `route_mismatch`.
 
-```json
-{"type":"response","id":"job_1","ok":false,"error":{"code":"not_ready","message":"..."}}
-```
-
-For a plugin running inside an app on the phone while the router runs on the
-host, reverse the port:
-
-```sh
-adb -s c44d68aa reverse tcp:39111 tcp:39111
-```
-
-## Concurrency model
+## Concurrency
 
 - one `event_base`;
-- configurable number of async hub long-poll requests;
+- one persistent hub TCP bufferevent;
 - one bufferevent per plugin;
-- pending jobs keyed by server job id;
-- per-job deadline timers;
-- async result POST;
-- no thread per plugin, no blocking plugin calls.
+- pending jobs keyed by id;
+- deadline timers;
+- no threads, no blocking calls.
 
 Limits:
 
 ```text
-plugin line: 1 MiB
+line: 1 MiB
 max plugins: 512
 max in-flight jobs: 8192
-max hub response: 4 MiB
 ```
 
 ## Test
 
 ```sh
-JOBS=50 python3 tests/integration.py
-ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
-  ROUTER_BIN=$PWD/dejavurouter-asan JOBS=50 python3 tests/integration.py
+JOBS=500 python3 tests/integration.py
 ```
 
-The test runs a mock hub, a fake DejaVu plugin, and the C router.
+TCP integration flow:
 
-## Status
-
-Working:
-
-- async libevent event loop;
-- exact-route plugin registry;
-- bidirectional forwarding;
-- job deadlines and plugin disconnect handling;
-- async hub pollers and async result posts;
-- 50-job integration test and ASan run.
-
-Android:
-
-- arm64 static libevent build;
-- Magisk module with post-fs-data/service hooks;
-- supervisor restarts the router after process death;
-- boot startup through Magisk late_start service;
-- verified self-restart on the device.
-
-Not included by design:
-
-- TLS/network security;
-- authentication;
-- method/params validation;
-- wake commands;
-- complex routing.
-
-Legacy v1 thread implementation remains available as:
-
-```sh
-make legacy
+```text
+fake TCP hub -> dejavurouter -> fake plugin
 ```
+
+## Android
+
+See [android/README.md](android/README.md). The daemon is installed as a Magisk
+module, starts on boot, and is restarted by a supervisor after death.

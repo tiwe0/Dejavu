@@ -60,8 +60,8 @@ su -c 'kill $(cat /data/adb/dejavurouter/supervisor.pid)' 2>/dev/null || true
 su -c 'sh /data/adb/modules/dejavurouter/service.sh'
 ```
 
-The default `hub_url` is a local development placeholder. Set it to the real
-plain-HTTP hub (network security is intentionally out of scope).
+The default `hub_host`/`hub_port` is a local development placeholder. Set it
+to the real raw-TCP hub (network security is intentionally out of scope).
 
 Plugins in apps connect to:
 

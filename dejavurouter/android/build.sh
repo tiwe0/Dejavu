@@ -37,6 +37,5 @@ cd "$ROOT"
 "$CC" -O2 -g -std=c11 -Wall -Wextra -pthread \
     -Ithird_party/cJSON -I"$LIBEVENT_PREFIX/include" \
     -o dejavurouter-android src/async_router.c third_party/cJSON/cJSON.c \
-    "$LIBEVENT_PREFIX/lib/libevent_extra.a" \
     "$LIBEVENT_PREFIX/lib/libevent_core.a" -lm
 file dejavurouter-android
