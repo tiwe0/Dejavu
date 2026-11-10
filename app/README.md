@@ -34,16 +34,60 @@ the profile uses the standard Android debug signing credentials.
 
 ## What it does
 
-- **Overview** – module version, root access, root helper, selected process,
+- **Overview** – module version, root access, root helper, total injection targets,
   project source, third-party notices and copyright.
-- **Scope** – edit `config/targets.txt`, select the active process and restart targets.
-- **Plugins** – reads `plugin.list()` through Dejavu's authenticated Lua RPC,
-  imports Lua plugin folders, scans `/data/adb/dejavu/plugins`, starts/stops
-  directory plugins and shows live events. Native plugins retain SKILL.md,
-  unload and `.so`/JIT `.c` load-by-device-path.
-- **Tools** – opens live logs for `DejavuZygisk`, `DejavuAgent`,
-  `DejavuPlugin`, `DejavuHook` and `DejavuNative`, or the Lua console for
-  the selected process via the same control channel used by `dejavuctl`.
+- **Plugins** – import ZIP packages, scan `/data/adb/dejavu/plugins`, configure each
+  plugin's multi-process scope, and open its controls or Lua-authored page.
+  Within a plugin, select the process to inspect/start/stop; changing that selection
+  does not stop plugins already running in other processes. Native folders retain
+  load/unload and SKILL.md support.
+- **Configuration** – six saved color palettes, Android 12+ wallpaper colors,
+  system/light/dark appearance, and live framework logs. The mobile Lua console has been removed;
+  desktop `dejavu`/`dejavuctl` Lua RPC remains available.
+
+Plugin details use **Control**, **Scope** and **Info** tabs. The control panel
+keeps the inspected process selector compact; scope edits and complete manifest
+information have their own internal pages. Leaving Control releases the live
+viewer and clears its message list.
+
+### Appearance
+
+Configuration offers Forest, Ocean, Iris, Rose, Amber and Graphite palettes,
+plus Android 12+ system wallpaper colors. Each supports system, light or dark
+appearance. The main Configuration page shows the current choices; tap a row
+to open mode or palette options in a sheet. Changes apply immediately, including
+the Overview dog panel, in-app mark colors and system-bar icon contrast, and
+are saved in Manager's private preferences across relaunches.
+
+### Back navigation
+
+Android's predictive-back callback animates internal back navigation with a
+read-only preview of the destination. Complete a gesture to return, or cancel it
+to stay on the current page. Plugin details return to the list, Scope returns to
+Control, and logs return to Configuration. The root pages keep system back/home
+behavior. Previewing Control never attaches event streams or changes secure-window
+flags; normal viewer cleanup happens only on a completed navigation.
+
+### Per-plugin scopes
+
+Each manifest plugin has its own scope, including exact secondary process names
+such as `com.example:worker`. Scopes apply to both Lua directory plugins and native
+`.so`/JIT `.c` plugins. The effective Zygisk injection list is the union of all
+plugin scopes and manually managed CLI targets. Sharing a target across plugins
+therefore keeps it injected when one plugin removes it.
+
+Scope ownership is stored as a versioned JSON comment in `config/targets.txt`,
+followed by the effective process list. Manager and CLI share a lock and atomically
+replace this single file, preserving the native parser's 16 KiB limit. Existing
+plain target lists migrate to manual ownership; plugins start with empty scopes
+and require explicit assignment. CLI `targets add/remove/set/clear` manage the
+manual portion and preserve plugin-owned processes.
+
+Restart affected apps after saving scopes for the Zygisk injection changes to
+apply. Saving scopes does not run plugin code automatically: use each plugin's
+Start/Load control. Removing a scope does not tear down a live hook; explicitly
+stop/unload it or restart the affected app. The currently inspected removed target
+stays visible for cleanup, with new starts/actions/event listeners disabled.
 
 ### Data path
 
@@ -78,6 +122,10 @@ make -C zygisk test
 bash app/tests/run-host.sh
 bash app/tests/importer/run-host.sh
 bash app/tests/native/run-host.sh
+bash app/tests/scopes/run-host.sh
+bash app/tests/archive/run-host.sh
+bash app/tests/appearance/run-host.sh
+python3 tests/target_scopes_test.py
 ```
 
 `KOTLINC`, `JAVA_HOME` and `JSON_JAR` can select local tools. Android itself
@@ -86,17 +134,32 @@ RPC endpoint selection, target changes, root commands, package validation and
 Lua lifecycle ownership, a self-contained sample package and live-event frame decoding.
 
 - Debug APK uses a development key; release signing is configured separately.
-- The console requires the v0.7.0+ module with the RPC-enabled agent.
-- Native `.so`/JIT `.c` folders can be imported and loaded from the app. Loading
+- Plugin controls require the v0.7.0+ module with the RPC-enabled agent.
+- Native `.so`/JIT `.c` ZIP packages can be imported and loaded from the app. Loading
   stages a target-readable copy and pins its SHA256 in the trusted allowlist.
 
-## Directory plugin import
+## ZIP plugin import
 
 The default library is `/data/adb/dejavu/plugins/<plugin-id>`. The app reads it
 through `su`; it is independent of the installed module's versioned directory.
-Tap **Import folder**, select a folder containing `manifest.json`, then
-select a target and tap **Start**. Importing copies code only and never starts it.
-Tap **Scan** to discover folders copied into the default library outside the app.
+Tap the floating **+** on the plugin list and select a ZIP containing a valid
+`manifest.json` and every resource declared in `files`. The manifest can be at
+the ZIP root or inside one enclosing folder. Open the imported plugin, configure
+its **Scope**, select a scoped process and tap **Start**. Importing copies code
+only and never starts it. The + button hides during downward list scrolling and
+reappears when scrolling up or reaching either end.
+
+Use the top-right refresh action to discover folders copied into the default
+library outside the app. The library path remains the default scan location;
+it is no longer shown as a separate list component.
+
+ZIP parsing happens in memory before any package is staged. Only declared
+resources are installed. Missing/invalid manifests, missing resources, conflicting
+paths, traversal, duplicates, encrypted/unsupported ZIP formats, damaged archives
+and symbolic links are rejected. ZIP input is limited to 80 MiB, with at most
+1024 entries and 64 MiB of total inflated content (including unused entries).
+Lua packages retain their 256 KiB limit; native/JIT packages retain their 64 MiB
+limit. Updating a package preserves the old version if validation or staging fails.
 Only immediate subfolders with `manifest.json` are plugins. Bare files, folders
 without manifests and the older `dejavu-plugin.json` name are ignored. The
 manifest identifier must match its installed folder name.
@@ -110,7 +173,8 @@ files or history database are created.
 Native and JIT packages use the same metadata fields with `kind: "native"` and
 a `.so` entry, or `kind: "jit"` and a `.c` entry. Their declared binary/source
 resources are copied without executing them. The local list shows manifest
-name, version and description, plus the selected target's runtime state. Tap
+name and version/type. Its detail page exposes description, identifier and scope count
+in **Plugin info**, alongside the inspected target's runtime state. Tap
 **Load** to deploy and run one plugin; native/JIT package imports are limited to
 32 resources, 32 MiB per library, 512 KiB per JIT entry and 64 MiB in total.
 SKILL sidecars must also be declared. Other trusted-plugin entries are preserved.
@@ -145,29 +209,109 @@ A power loss between the two renames can leave a hidden `.backup-*` directory
 for manual recovery. Lua resources use the Lua package lifecycle; native
 libraries continue to use the native plugin ABI and unload rules.
 
+### Plugin pages
 
-## Screens
+Author a page as a Lua table and generate its declarative resource before
+packing the folder into a ZIP for import.
 
-| | |
-|---|---|
-| ![Overview](docs/home.png) | ![Targets](docs/targets.png) |
-| ![Plugins](docs/plugins.png) | ![Live logs](docs/logs.png) |
+```sh
+lua scripts/compile-plugin-ui.lua path/to/plugin/ui.lua > path/to/plugin/ui.json.tmp &&
+mv path/to/plugin/ui.json.tmp path/to/plugin/ui.json
+```
 
-![Lua console](docs/console.png)
+Add `"ui": "ui.json"` to the Lua package manifest and list `ui.json` in
+`files`. The Manager validates the resource on import and scan and opens it
+from **Open page**. It renders Compose components from the JSON, so the page
+can open while the selected process is offline.
 
-## App picker
+Version 2 provides the default `monitor` and `controls` layouts. Both show
+the exact target, runtime state and a single lifecycle control. The monitor
+adds a live event list. For socket events it also shows the bound address and
+opens a port settings sheet. Applying a port reconnects the stream and clears
+the visible list. The choice is retained in the current Manager session for
+the specific plugin and target. Event rows include the local receipt time.
 
-Target selection is done by clicking the target process row and choosing an
-installed app from a searchable bottom sheet. The old free-form process field
-is gone; each row shows the real launcher icon and package name, and the list is reloaded every time the picker opens so newly installed apps appear immediately; the selected package is added to `config/targets.txt` and becomes the
-active target.
+```lua
+return {
+    version = 2,
+    title = {en = "Monitor", zh = "监控"},
+    preset = "monitor",
+    eventLimit = 50,
+    actions = {
+        {id = "sample", label = {en = "Send sample", zh = "发送合成事件"}},
+    },
+}
+```
 
-![App picker](docs/app-picker.png)
+`monitor` requires an event declaration in the manifest. `eventLimit`
+defaults to 50 and can be set from 1 to 50. `controls` shows property rows
+and groups the declared actions. Each row has a localized `label` and a
+`value` from the page resource.
+
+```lua
+return {
+    version = 2,
+    title = "Test controls",
+    preset = "controls",
+    rows = {
+        {label = "Mode", value = "Synthetic data"},
+    },
+    actions = {
+        {id = "sample", label = "Send sample"},
+    },
+}
+```
+
+Version 1 pages continue to render their declared blocks in order.
+
+```lua
+return {
+    version = 1,
+    title = {en = "Monitor", zh = "监控"},
+    blocks = {
+        {type = "status", bind = "runtime.state"},
+        {type = "input", bind = "events.port", label = "Listen port"},
+        {type = "button", label = "Refresh", action = "check"},
+        {type = "button", label = "Start", action = "start"},
+        {type = "button", label = "Stop", action = "stop"},
+        {type = "button", label = "Send sample", action = "call", call = "sample"},
+        {type = "events", limit = 50},
+    },
+}
+```
+
+The Lua entry can expose named callbacks as `actions = {sample = function(ctx)
+... end}`. A version-2 action or a version-1 call button dispatches its
+declared name to the running package session in the selected process.
+An optional version-1 `text` block displays plain or localized text.
+Localized labels use `{en = "...", zh = "..."}`.
+
+For the listener input, declare `"events": {"format": "hook-socket-json-v1",
+"topic": "example.message"}` in the manifest. The Manager binds to
+`127.0.0.1` and accepts port 0 for automatic allocation or 1024–65535 for a
+fixed port. The agent must support `hook.stream_acquire` and
+`hook.stream_release`. The hook emits a UTF-8 JSON payload on the topic
+`example.message.<ctx.session>` through the existing Hook C event ABI. The
+Manager matches the session topic and displays the latest 1–50 events in
+memory. Closing the page, switching targets or backgrounding Manager clears
+the list and releases the listener. The socket transport carries message
+bodies directly to Manager and creates no message files or logcat entries.
+The v1 listener is intended for trusted local development. It filters records
+by session topic after accepting the TCP connection. A different local process
+that connects to a fixed port first can occupy the connection.
+
+
+## Scope editor
+
+Open a plugin's **Scope** page to select multiple installed apps or add an exact
+process name (including `:worker` suffixes). Search by application label or process
+name and save the complete selection. Each plugin detail then lets you choose one
+of its scoped processes for the displayed runtime state and controls.
 
 ## Interaction notes
 
-- Selected target is persisted in SharedPreferences and reused after restart.
-- Destructive operations (remove target, unload plugin) ask for confirmation.
+- The last inspected target is remembered per plugin for the current Manager session.
+- Native plugin unload asks for confirmation; scope edits require explicit Save.
 - Plugin list refreshes when the Plugins tab opens or the selected target changes.
 - Live logs pause auto-scroll when the toggle is off; the filter is local-only.
 - The header progress bar reflects root-shell/RPC work in progress.
@@ -198,7 +342,7 @@ stable release key.
 
 ## Root permission screen
 
-Until KernelSU/Magisk authorizes the app, the console replaces the dashboard
+Until KernelSU/Magisk authorizes the app, the permission page replaces the dashboard
 with a dedicated permission screen. It requests root, offers a direct shortcut
 to KernelSU, and shows the authorization steps. The bottom navigation and
 normal dashboard are hidden in this state.

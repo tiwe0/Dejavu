@@ -2,6 +2,7 @@ package cafe.ivory.dejavu.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,16 +18,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Inventory2
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material3.Card
+import androidx.compose.material3.Surface
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -37,184 +35,69 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
-import cafe.ivory.dejavu.data.ConsoleUiState
-import cafe.ivory.dejavu.data.DEFAULT_PLUGIN_DIRECTORY
 import cafe.ivory.dejavu.data.DirectoryPluginState
-import cafe.ivory.dejavu.data.DirectoryPluginUi
+import cafe.ivory.dejavu.data.LivePluginEvent
 import cafe.ivory.dejavu.data.PackageEventsUi
 
 @Composable
-fun DirectoryPluginsSection(
-    state: ConsoleUiState,
-    onRescan: () -> Unit,
-    onStart: (String, String) -> Unit,
-    onStop: (String, String) -> Unit,
-    onEvents: (String, String) -> Unit,
+internal fun PluginSummaryCard(
+    name: String,
+    metadata: String,
+    enabled: Boolean,
+    onOpen: () -> Unit,
 ) {
-    val busy = state.pluginImporting || state.pluginDirectoryLoading || state.pluginActionId != null ||
-        state.nativePluginActionPath != null
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                SectionTitle(title = stringResource(R.string.package_directory_title))
-                SelectionContainer {
-                    Text(
-                        text = DEFAULT_PLUGIN_DIRECTORY,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Surface(
+        onClick = onOpen,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.size(48.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Rounded.Extension,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
             }
-            IconButton(
-                onClick = onRescan,
-                enabled = state.rootGranted && !busy,
-                colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.primary),
-            ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.package_scan))
-            }
-        }
-        if (state.pluginImporting || state.pluginDirectoryLoading) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(
-                text = stringResource(
-                    if (state.pluginImporting) R.string.package_importing else R.string.package_scanning,
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        state.pluginDirectoryError?.let { error ->
-            Text(
-                text = error,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        if (state.directoryPlugins.isEmpty() && !state.pluginDirectoryLoading &&
-            !state.pluginImporting && state.pluginDirectoryError == null
-        ) {
-            EmptyState(
-                title = stringResource(R.string.package_empty_title),
-                detail = stringResource(R.string.package_empty_detail),
-            )
-        }
-        state.directoryPlugins.forEach { item ->
-            DirectoryPluginCard(
-                item = item,
-                target = state.selectedTarget,
-                busy = busy,
-                working = state.pluginActionId == item.plugin.manifest.id,
-                onCheck = onRescan,
-                onStart = onStart,
-                onStop = onStop,
-                onEvents = onEvents,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DirectoryPluginCard(
-    item: DirectoryPluginUi,
-    target: String?,
-    busy: Boolean,
-    working: Boolean,
-    onCheck: () -> Unit,
-    onStart: (String, String) -> Unit,
-    onStop: (String, String) -> Unit,
-    onEvents: (String, String) -> Unit,
-) {
-    val manifest = item.plugin.manifest
-    val status = when (item.runState) {
-        DirectoryPluginState.UNKNOWN -> R.string.package_state_unknown
-        DirectoryPluginState.STOPPED -> R.string.package_state_stopped
-        DirectoryPluginState.RUNNING -> R.string.package_state_running
-        DirectoryPluginState.ERROR -> R.string.package_state_error
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = CardDefaults.outlinedCardBorder(),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            PluginCardHeader(
-                icon = Icons.Rounded.Inventory2,
-                title = manifest.name,
-                metadata = "Lua · ${manifest.version}",
-                status = stringResource(status),
-                active = item.runState == DirectoryPluginState.RUNNING,
-            )
-            if (manifest.description.isNotBlank()) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
-                    text = manifest.description,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            if (working) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
                 Text(
-                    text = stringResource(R.string.package_working),
-                    modifier = Modifier.padding(vertical = 4.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            item.error?.let { error ->
-                Text(
-                    error,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (target == null) {
-                Text(
-                    text = stringResource(R.string.package_no_target),
-                    modifier = Modifier.padding(bottom = 8.dp),
+                    metadata,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            HorizontalDivider()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (manifest.events != null) {
-                    TextButton(
-                        onClick = { if (target != null) onEvents(target, manifest.id) },
-                        enabled = target != null && !busy &&
-                            item.runState == DirectoryPluginState.RUNNING && !item.session.isNullOrBlank(),
-                        modifier = Modifier.weight(1f, fill = false).heightIn(min = 48.dp),
-                    ) { Text(stringResource(R.string.package_live_events)) }
-                }
-                val actionLabel = when (item.runState) {
-                    DirectoryPluginState.UNKNOWN -> R.string.package_check_status
-                    DirectoryPluginState.STOPPED -> R.string.package_start
-                    DirectoryPluginState.RUNNING -> R.string.package_stop
-                    DirectoryPluginState.ERROR -> R.string.package_retry_stop
-                }
-                TextButton(
-                    onClick = {
-                        if (target != null) {
-                            when (item.runState) {
-                                DirectoryPluginState.UNKNOWN -> onCheck()
-                                DirectoryPluginState.STOPPED -> onStart(target, manifest.id)
-                                DirectoryPluginState.RUNNING, DirectoryPluginState.ERROR -> onStop(target, manifest.id)
-                            }
-                        }
-                    },
-                    enabled = target != null && !busy,
-                    modifier = Modifier.weight(1f, fill = false).heightIn(min = 48.dp),
-                ) { Text(stringResource(actionLabel)) }
-            }
+            Icon(
+                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -314,24 +197,42 @@ fun DirectoryPluginEventsSheet(state: PackageEventsUi, onDismiss: () -> Unit) {
                         )
                     }
                 }
-                itemsIndexed(state.events) { _, event ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = CardDefaults.outlinedCardBorder(),
-                    ) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(event.title, style = MaterialTheme.typography.titleSmall)
-                            SelectionContainer { Text(event.content, style = MaterialTheme.typography.bodyMedium) }
-                            if (event.meta.isNotBlank()) {
-                                Text(event.meta, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
+                itemsIndexed(state.events) { _, event -> PluginEventCard(event, selectable = true) }
             }
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+internal val DirectoryPluginState.labelRes: Int
+    get() = when (this) {
+        DirectoryPluginState.UNKNOWN -> R.string.package_state_unknown
+        DirectoryPluginState.STOPPED -> R.string.package_state_stopped
+        DirectoryPluginState.RUNNING -> R.string.package_state_running
+        DirectoryPluginState.ERROR -> R.string.package_state_error
+    }
+
+@Composable
+internal fun PluginEventCard(event: LivePluginEvent, selectable: Boolean = false) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = CardDefaults.outlinedCardBorder(),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(event.title, style = MaterialTheme.typography.titleSmall)
+            if (selectable) {
+                SelectionContainer { Text(event.content, style = MaterialTheme.typography.bodyMedium) }
+            } else {
+                Text(event.content, style = MaterialTheme.typography.bodyMedium)
+            }
+            if (event.meta.isNotBlank()) {
+                Text(
+                    event.meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

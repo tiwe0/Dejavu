@@ -62,14 +62,37 @@ class PluginPackageImporter(context: Context) {
             remaining -= bytes.size
             decodePluginUtf8(bytes)
         }
-        val pkg = ImportedPluginPackage(manifest, sources).also { it.validate() }
+        return importPackage(ImportedPluginPackage(manifest, sources), canReplace)
+    }
+
+    /** Accepts an already decoded ZIP package through the same atomic storage path. */
+    fun importPackage(
+        pkg: ImportedPluginPackage,
+        canReplace: (String) -> Boolean = { true },
+    ): ImportedPluginPackage {
+        pkg.validate()
         // Validate the generated transport size before touching an existing import.
         LuaPackageScripts.start(pkg, "0000000000000000")
         synchronized(storageLock) {
-            require(canReplace(manifest.id)) { "Stop this plugin before replacing its imported sources" }
+            checkReplacement(pkg.manifest.id, canReplace)
             store(pkg, canReplace)
         }
         return pkg
+    }
+
+    private fun checkReplacement(id: String, canReplace: (String) -> Boolean) {
+        require(canReplace(id)) { "Stop this plugin before replacing its imported sources" }
+        val directory = "$DEFAULT_PLUGIN_DIRECTORY/$id"
+        val exists = RootShell.run("if [ -e ${q(directory)} ] || [ -L ${q(directory)} ]; then printf existing; fi")
+        check(exists.exitCode == 0) { "Unable to inspect the existing plugin" }
+        if (exists.output.isNotEmpty()) {
+            val previous = PluginPackageManifest.parse(decodePluginUtf8(
+                readRootFile("$directory/$PLUGIN_MANIFEST_FILE", MAX_PLUGIN_MANIFEST_BYTES),
+            ))
+            require(previous.id == id && previous.kind == "lua") {
+                "Cannot replace a different plugin kind; use a different plugin identifier"
+            }
+        }
     }
 
     private fun resolve(tree: Uri, root: Uri, relativePath: String): Uri {
@@ -176,7 +199,7 @@ class PluginPackageImporter(context: Context) {
                     chmod 600 ${q(target)}
                 """.trimIndent(), bytes)
             }
-            require(canReplace(id)) { "Stop this plugin before replacing its imported sources" }
+            checkReplacement(id, canReplace)
             checkRoot("""
                 ${directoryGuard(DEFAULT_PLUGIN_DIRECTORY)} || exit 1
                 [ ! -L ${q(destination)} ] && [ ! -L ${q(backup)} ] && [ ! -e ${q(backup)} ] || exit 1

@@ -15,10 +15,12 @@ fi
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginArtifact.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackageUiState.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/LuaPackageScripts.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PackageRuntimeSnapshot.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginEventDecoder.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginEventProjection.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginHookEventSocket.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RpcEndpoint.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/DejavuRpc.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RpcDeadline.kt" \
@@ -30,6 +32,7 @@ fi
     "${APP_DIR}/tests/PluginPackageRegressionTest.kt" \
     "${APP_DIR}/tests/PluginEventDecoderTest.kt" \
     "${APP_DIR}/tests/PluginEventProjectionTest.kt" \
+    "${APP_DIR}/tests/PluginHookEventSocketTest.kt" \
     -classpath "${JSON_JAR}" \
     -include-runtime -d "${TEST_DIR}/console-tests.jar"
 DEJAVU_REPO_ROOT="${APP_DIR}/.." \

@@ -142,6 +142,7 @@ fun TargetMenu(
     label: String? = null,
     onPickApp: (() -> Unit)? = null,
     apps: List<InstalledApp> = emptyList(),
+    enabled: Boolean = true,
 ) {
     val resolvedLabel = label ?: stringResource(R.string.target_process)
     val app = apps.firstOrNull { it.packageName == selected?.substringBefore(':') }
@@ -150,6 +151,7 @@ fun TargetMenu(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             onClick = { expanded = true },
+            enabled = enabled,
             shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.surface,
             border = CardDefaults.outlinedCardBorder(),
@@ -179,7 +181,7 @@ fun TargetMenu(
                 Icon(Icons.Rounded.ArrowDropDown, contentDescription = stringResource(R.string.choose_target))
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             if (targets.isEmpty()) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.no_targets_configured)) },

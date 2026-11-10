@@ -1,7 +1,6 @@
 package cafe.ivory.dejavu.data
 
 import android.app.Application
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.graphics.drawable.toBitmap
@@ -13,27 +12,31 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 
 private const val MODULE_DIR = "/data/adb/modules/dejavu_zygisk"
-private const val TARGETS_FILE = "$MODULE_DIR/config/targets.txt"
-private const val PREFERENCES = "dejavu-console"
-private const val SELECTED_TARGET = "selected-target"
 private const val LOG_TAGS =
     "DejavuZygisk:V DejavuAgent:V DejavuPlugin:V DejavuHook:V DejavuNative:V"
 
 class ConsoleViewModel(application: Application) : AndroidViewModel(application) {
-    private val preferences = application.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    private val scopeStore = PluginScopeStore()
+    private val pluginTargets = mutableMapOf<String, String>()
     private val _state = MutableStateFlow(ConsoleUiState())
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
 
@@ -56,6 +59,8 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     private var packageEventJob: Job? = null
     private val packageEventLock = Any()
     private var packageEventProcess: Process? = null
+    private var packageEventSocket: PluginHookEventSocket? = null
+    private val packageSocketLeaseLocks = ConcurrentHashMap<String, Mutex>()
     @Volatile
     private var packageEventSerial = 0
 
@@ -65,12 +70,12 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun refresh() {
-        if (refreshJob?.isActive == true) return
+        if (refreshJob?.isActive == true || _state.value.scopeSavingId != null) return
         refreshJob = viewModelScope.launch {
             _state.update { it.copy(loading = true) }
             val root = withContext(Dispatchers.IO) { RootShell.isRoot() }
             if (!root) {
-                updateSelectedTarget(null, emptyList(), persistSelection = false)
+                updateSelectedTarget(null)
                 _state.update {
                     it.copy(
                         loading = false,
@@ -90,7 +95,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                 ?.substringAfter("=")
                 ?.trim()
                 .orEmpty()
-            val targets = withContext(Dispatchers.IO) { readTargets() }
+            val config = if (prop != null) withContext(Dispatchers.IO) {
+                runCatching { scopeStore.read() }
+            } else null
             val helperPort = if (root) withContext(Dispatchers.IO) {
                 RootShell.getProp("debug.dejavu.root.port")
             } else ""
@@ -102,12 +109,16 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             } else ""
             val helperReady = helperPort.matches(Regex("\\d{1,5}")) &&
                 helperToken.matches(Regex("[0-9a-f]{64}"))
-            val saved = preferences.getString(SELECTED_TARGET, null)
-            val selected = _state.value.selectedTarget
-                ?.takeIf { it in targets }
-                ?: saved?.takeIf { it in targets }
-                ?: targets.firstOrNull()
-            updateSelectedTarget(selected, targets)
+            config?.fold(
+                onSuccess = { snapshot ->
+                    _state.update { it.copy(targets = snapshot.targets, pluginScopes = snapshot.scopes) }
+                    val id = _state.value.activePluginId
+                    // Keep an already inspected process reachable for explicit stop/unload after scope removal.
+                    val selected = _state.value.selectedTarget ?: id?.let { snapshot.scopes[it]?.firstOrNull() }
+                    updateSelectedTarget(selected)
+                },
+                onFailure = { message(text(R.string.msg_unable_write_targets) + ": " + it.message.orEmpty(), error = true) },
+            )
             _state.update {
                 it.copy(
                     loading = false,
@@ -157,15 +168,41 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun operationBusy(): Boolean = _state.value.let {
+        it.loading || it.pluginImporting || it.pluginActionId != null ||
+            it.nativePluginActionPath != null || it.scopeSavingId != null
+    }
+
+    fun selectPlugin(id: String): Boolean {
+        if (operationBusy()) return false
+        closePackageEvents()
+        val current = _state.value
+        if (current.activePluginId == id) return true
+        val target = pluginTargets[id]
+            ?: current.pluginScopes[id]?.firstOrNull()
+        _state.update { it.copy(activePluginId = id) }
+        if (target != null) pluginTargets[id] = target
+        updateSelectedTarget(target)
+        return true
+    }
+
+    fun leavePlugin() {
+        if (operationBusy()) return
+        closePackageEvents()
+        _state.update { it.copy(activePluginId = null) }
+        updateSelectedTarget(null)
+    }
+
     fun selectTarget(process: String) {
+        if (operationBusy()) return
+        val current = _state.value
+        val id = current.activePluginId ?: return
+        if (process !in current.pluginScopes[id].orEmpty()) return
+        pluginTargets[id] = process
         updateSelectedTarget(process)
     }
 
-    private fun updateSelectedTarget(
-        target: String?,
-        targets: List<String> = _state.value.targets,
-        persistSelection: Boolean = true,
-    ) {
+    private fun updateSelectedTarget(target: String?) {
         if (_state.value.selectedTarget != target) {
             closePackageEvents()
             ++packageActionSerial
@@ -175,86 +212,37 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             ++pluginRequestSerial
             pluginJob?.cancel()
         }
-        if (persistSelection) {
-            if (target != null) {
-                preferences.edit().putString(SELECTED_TARGET, target).apply()
-            } else {
-                preferences.edit().remove(SELECTED_TARGET).apply()
-            }
-        }
-        _state.update { it.withSelectedTarget(target).copy(targets = targets) }
+        _state.update { it.withSelectedTarget(target) }
     }
 
-    fun addTarget(process: String) {
-        val name = process.trim()
-        if (!name.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
-            message(text(R.string.msg_invalid_process), error = true)
-            return
-        }
+    fun savePluginScope(id: String, targets: List<String>) {
+        if (operationBusy() || _state.value.activePluginId != id) return
+        _state.update { it.copy(scopeSavingId = id) }
+        closePackageEvents()
         viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val targets = withContext(Dispatchers.IO) { (readTargets() + name).distinct() }
-            val ok = withContext(Dispatchers.IO) { writeTargets(targets) }
-            _state.update { it.copy(loading = false) }
-            if (ok) {
-                updateSelectedTarget(name, targets)
-                message(text(R.string.msg_added_target, name))
-            } else {
-                message(text(R.string.msg_unable_write_targets), error = true)
-            }
-        }
-    }
-
-    fun removeTarget(process: String) {
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val targets = withContext(Dispatchers.IO) { readTargets().filterNot { it == process } }
-            val ok = withContext(Dispatchers.IO) { writeTargets(targets) }
-            if (ok) {
-                val next = _state.value.selectedTarget
-                    ?.takeIf { it in targets }
-                    ?: targets.firstOrNull()
-                updateSelectedTarget(next, targets)
-                _state.update { it.copy(loading = false) }
-                message(text(R.string.msg_removed_target, process))
-            } else {
-                _state.update { it.copy(loading = false) }
-                message(text(R.string.msg_unable_write_targets), error = true)
-            }
-        }
-    }
-
-    fun restartTarget(process: String) {
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val result = withContext(Dispatchers.IO) {
-                val stop = RootShell.run("am force-stop ${RootShell.quote(process)}")
-                val start = RootShell.run(
-                    "monkey -p ${RootShell.quote(process)} -c android.intent.category.LAUNCHER 1",
-                )
-                stop to start
-            }
-            _state.update { it.copy(loading = false) }
-            if (result.second.exitCode == 0) {
-                message(text(R.string.msg_restarted_target, process))
-            } else {
-                message(
-                    text(
-                        R.string.msg_restart_failed,
-                        (result.first.output + result.second.output).trim().take(160),
-                    ),
-                    error = true,
-                )
+            try {
+                val snapshot = withContext(Dispatchers.IO) { scopeStore.setScope(id, targets) }
+                _state.update { it.copy(targets = snapshot.targets, pluginScopes = snapshot.scopes) }
+                if (_state.value.selectedTarget == null) {
+                    val target = snapshot.scopes[id]?.firstOrNull()
+                    if (target != null) pluginTargets[id] = target
+                    updateSelectedTarget(target)
+                }
+                message(text(R.string.plugin_scope_saved))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                message(text(R.string.msg_unable_write_targets) + ": " + error.message.orEmpty(), error = true)
+            } finally {
+                _state.update { it.copy(scopeSavingId = null) }
+                refreshPlugins()
             }
         }
     }
 
     fun refreshPlugins() {
         refreshPluginLibrary()
-        val target = _state.value.selectedTarget ?: run {
-            message(text(R.string.msg_select_target), error = true)
-            return
-        }
+        val target = _state.value.selectedTarget ?: return
         val serial = ++pluginRequestSerial
         pluginJob?.cancel()
         pluginJob = viewModelScope.launch {
@@ -286,7 +274,10 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun unloadPlugin(target: String, name: String) {
-        if (_state.value.selectedTarget != target) return
+        val current = _state.value
+        if (current.selectedTarget != target || operationBusy() || current.nativeLibrary.none {
+                it.artifact.id == current.activePluginId && it.runtime?.name == name
+            }) return
         viewModelScope.launch {
             _state.update { it.copy(loading = true) }
             val result = withContext(Dispatchers.IO) {
@@ -306,35 +297,11 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     }
 
     suspend fun pluginSkill(target: String, name: String): Result<String> {
-        if (_state.value.selectedTarget != target) {
-            return Result.failure(RpcException("Selected target changed"))
-        }
+        val current = _state.value
+        if (current.selectedTarget != target || current.nativeLibrary.none {
+                it.artifact.id == current.activePluginId && it.runtime?.name == name
+            }) return Result.failure(RpcException("Selected plugin changed"))
         return withContext(Dispatchers.IO) { runCatching { DejavuRpc.pluginSkill(target, name) } }
-    }
-
-    fun loadPlugin(target: String, path: String) {
-        if (_state.value.selectedTarget != target) return
-        val trimmed = path.trim()
-        if (!trimmed.startsWith("/") || (!trimmed.endsWith(".so") && !trimmed.endsWith(".c"))) {
-            message(text(R.string.msg_invalid_plugin_path), error = true)
-            return
-        }
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { DejavuRpc.loadPlugin(target, trimmed) }
-            }
-            _state.update { it.copy(loading = false) }
-            result.fold(
-                onSuccess = {
-                    message(it)
-                    if (_state.value.selectedTarget == target) refreshPlugins()
-                },
-                onFailure = {
-                    message(text(R.string.msg_load_failed, it.message ?: ""), error = true)
-                },
-            )
-        }
     }
 
     private fun bindNativeRuntime(state: ConsoleUiState): ConsoleUiState = state.copy(
@@ -355,6 +322,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         if (current.selectedTarget != target || current.nativePluginActionPath != null ||
             current.pluginImporting || current.loading) return
         val artifact = current.nativeLibrary.firstOrNull { it.artifact.path == path }?.artifact ?: return
+        if (artifact.id?.let { current.canOperatePlugin(it, target) } != true) return
         val request = ++nativeActionSerial
         _state.update { state -> state.copy(nativePluginActionPath = path,
             nativeLibrary = state.nativeLibrary.map {
@@ -394,7 +362,10 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         directoryJob?.cancel()
         directoryJob = viewModelScope.launch {
             _state.update {
-                it.copy(pluginDirectoryLoading = true, pluginDirectoryError = null, directoryRuntimeError = null)
+                it.copy(
+                    pluginDirectoryLoading = true, pluginDirectoryError = null,
+                    directoryRuntimeError = null, directoryTargetOffline = false,
+                )
             }
             try {
                 val (packages, artifacts, scanErrors) = withContext(Dispatchers.IO) {
@@ -414,6 +385,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                 } else null
                 if (serial != directoryRequestSerial) return@launch
                 val sameTarget = _state.value.selectedTarget == target
+                val runtimeFailure = runtime?.exceptionOrNull()?.takeIf { sameTarget }
                 val previous = _state.value.directoryPlugins.associateBy { it.plugin.manifest.id }
                 val rows = packages.map { plugin ->
                     val status = runtime?.getOrNull()?.get(plugin.manifest.id)
@@ -430,12 +402,19 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                         }?.error,
                     )
                 }
+                _state.value.packageEvents?.let { events ->
+                    if (rows.none { row ->
+                            row.runState == DirectoryPluginState.RUNNING &&
+                                events.matches(target, row.plugin.manifest.id, row.session)
+                        }) closePackageEvents()
+                }
                 _state.update {
                     it.copy(
                         directoryPlugins = rows,
                         pluginDirectoryLoading = false,
                         pluginDirectoryError = scanErrors.takeIf { errors -> errors.isNotEmpty() }?.joinToString("\n"),
-                        directoryRuntimeError = runtime?.exceptionOrNull()?.takeIf { sameTarget }?.let(::runtimeError),
+                        directoryRuntimeError = runtimeFailure?.let(::runtimeError),
+                        directoryTargetOffline = runtimeFailure is TargetProcessNotRunning,
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -450,25 +429,20 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun importPluginFolder(uri: Uri) {
-        if (_state.value.pluginImporting || _state.value.pluginActionId != null ||
-            _state.value.nativePluginActionPath != null) return
+    fun importPluginZip(uri: Uri) {
+        if (operationBusy()) return
         viewModelScope.launch {
             _state.update { it.copy(pluginImporting = true) }
             try {
                 val importedName = withContext(Dispatchers.IO) {
-                    if (nativeLibrary.hasLuaManifest(uri)) {
-                        packageImporter.importFolder(uri) { id ->
-                            _state.value.directoryPlugins.none { row ->
-                                row.plugin.manifest.id == id && row.runState != DirectoryPluginState.STOPPED
-                            }
-                        }
-                            .manifest.name
-                    } else nativeLibrary.importFolder(uri) { id ->
-                        _state.value.directoryPlugins.none { row ->
-                            row.plugin.manifest.id == id && row.runState != DirectoryPluginState.STOPPED
-                        }
-                    }.joinToString { it.name }
+                    val archive = getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                        PluginZipArchive.read(it)
+                    } ?: error("Unable to open the plugin ZIP")
+                    if (archive.manifest.kind == "lua") {
+                        val pkg = ImportedPluginPackage(archive.manifest, archive.files.mapValues { decodePluginUtf8(it.value) })
+                        packageImporter.importPackage(pkg, ::canReplaceDirectoryPlugin).manifest.name
+                    } else nativeLibrary.importPackage(archive.manifest, archive.files, ::canReplaceDirectoryPlugin)
+                        .joinToString { it.name }
                 }
                 message(text(R.string.package_import_success, importedName))
             } catch (cancelled: CancellationException) {
@@ -482,6 +456,28 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun canReplaceDirectoryPlugin(id: String): Boolean {
+        if (_state.value.directoryPlugins.none { it.plugin.manifest.id == id }) return true
+        // A plugin may still run in a process removed from its scope. Include live RPC metadata,
+        // so replacing sources never relies only on the currently displayed process.
+        val listing = RootShell.run("ls -1 ${RootShell.quote("$MODULE_DIR/run")}")
+        check(listing.exitCode == 0) { "Cannot inspect running plugin processes: ${listing.output.trim().take(160)}" }
+        val endpointName = Regex("^([A-Za-z0-9_.:-]{1,128})\\.[1-9][0-9]*\\.rpc$")
+        val processes = (_state.value.pluginScopes[id].orEmpty() + listing.output.lineSequence().mapNotNull {
+            endpointName.matchEntire(it.trim())?.groupValues?.get(1)
+        }.toList()).distinct()
+        return processes.all { process ->
+            try {
+                val snapshot = parsePackageRuntimeSnapshot(DejavuRpc.execute(process, LuaPackageScripts.snapshot()))
+                snapshot[id]?.state.let { it == null || it == DirectoryPluginState.STOPPED }
+            } catch (_: TargetProcessNotRunning) {
+                true
+            } catch (error: Exception) {
+                throw RpcException("Cannot verify plugin $id in $process: ${error.message.orEmpty()}")
+            }
+        }
+    }
+
     fun startDirectoryPlugin(target: String, id: String) = runDirectoryPlugin(target, id, start = true)
 
     fun stopDirectoryPlugin(target: String, id: String) = runDirectoryPlugin(target, id, start = false)
@@ -491,9 +487,10 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         if (current.selectedTarget != target || current.pluginActionId != null || current.pluginImporting ||
             current.nativePluginActionPath != null) return
         val row = current.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } ?: return
-        if (start && row.runState != DirectoryPluginState.STOPPED) return
-        val session = if (start) ByteArray(8).also { SecureRandom().nextBytes(it) }
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) } else row.session
+        if (current.activePluginId != id || current.scopeSavingId != null || current.loading) return
+        if (start && (!current.canOperatePlugin(id, target) || row.runState != DirectoryPluginState.STOPPED)) return
+        val session = if (start) newPackageToken() else row.session
+        if (!start && current.packageEvents?.packageId == id) closePackageEvents()
         val request = ++packageActionSerial
         ++directoryRequestSerial
         directoryJob?.cancel()
@@ -536,8 +533,51 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun openPackageEvents(target: String, id: String) {
-        if (_state.value.selectedTarget != target) return
+    fun runDirectoryPluginAction(target: String, id: String, action: String) {
+        val current = _state.value
+        if (current.selectedTarget != target || current.pluginActionId != null || current.pluginImporting ||
+            current.nativePluginActionPath != null) return
+        val row = current.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } ?: return
+        if (!current.canOperatePlugin(id, target)) return
+        val session = row.session ?: return
+        if (row.runState != DirectoryPluginState.RUNNING) return
+        val page = row.plugin.page ?: return
+        if (!page.hasAction(action)) return
+        if (row.plugin.manifest.events?.usesSocket == true &&
+            page.eventLimit != null &&
+            current.packageEvents?.let { it.matches(target, id, session) && it.connected } != true) return
+        val request = ++packageActionSerial
+        _state.update { it.copy(pluginActionId = id) }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    DejavuRpc.execute(target, LuaPackageScripts.runAction(id, session, action))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (request == packageActionSerial) message(text(R.string.package_action_failed), error = true)
+            } finally {
+                if (request == packageActionSerial) _state.update { it.copy(pluginActionId = null) }
+            }
+        }
+    }
+
+    fun setPluginListenPort(target: String, id: String, port: Int) {
+        if (!validPluginListenPort(port)) return
+        _state.update { state ->
+            if (state.selectedTarget != target || state.directoryPlugins.none {
+                    it.plugin.manifest.id == id && it.plugin.manifest.events?.usesSocket == true &&
+                        it.plugin.page?.preset is PluginPagePreset.Monitor
+                }) return@update state
+            val key = id to target
+            state.copy(pluginListenPorts = if (port == 0) state.pluginListenPorts - key
+                else state.pluginListenPorts + (key to port))
+        }
+    }
+
+    fun openPackageEvents(target: String, id: String, listenPort: Int? = null) {
+        if (!_state.value.canOperatePlugin(id, target)) return
         val row = _state.value.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } ?: return
         val spec = row.plugin.manifest.events ?: return
         val session = row.session ?: return
@@ -546,53 +586,55 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         val serial = packageEventSerial
         val openedAt = Instant.now()
         val since = "${openedAt.epochSecond}.${openedAt.nano.toString().padStart(9, '0')}"
-        val decoder = PluginEventDecoder(spec.marker, session)
-        _state.update { it.copy(packageEvents = PackageEventsUi(id, row.plugin.manifest.name, target)) }
+        val decoder = if (spec.usesSocket) null else PluginEventDecoder(spec.marker, session)
+        val limit = row.plugin.page?.eventLimit ?: 50
+        _state.update { it.copy(packageEvents = PackageEventsUi(id, row.plugin.manifest.name, target, session = session)) }
         packageEventJob = viewModelScope.launch(Dispatchers.IO) {
             var process: Process? = null
             var expiryJob: Job? = null
             val seen = linkedMapOf<String, Long>()
+            fun deliver(payload: String) {
+                if (serial != packageEventSerial) return
+                val event = try { JSONObject(payload) } catch (_: Exception) { return }
+                val projected = projectPluginEvent(event, spec, row.plugin.manifest.name)
+                val now = android.os.SystemClock.elapsedRealtime()
+                seen.entries.removeAll { now - it.value > 30_000 }
+                val key = projected.dedupKey
+                if (key != null && seen.put(key, now) != null) return
+                if (seen.size > 4096) seen.remove(seen.keys.first())
+                val item = projected.item.copy(receivedAtMillis = System.currentTimeMillis())
+                updatePackageEvents(serial) {
+                    it.copy(events = (it.events + item).takeLast(limit))
+                }
+            }
             try {
-                val pid = DejavuRpc.processPid(target)
-                if (serial != packageEventSerial) return@launch
-                process = RootShell.startLogcat(
-                    "--pid $pid -v raw -T $since -s ${RootShell.quote(spec.tag + ":I")} '*:S'",
-                )
-                val accepted = synchronized(packageEventLock) {
-                    if (serial != packageEventSerial) false else {
+                if (decoder == null) {
+                    packageSocketLeaseLocks.getOrPut(target) { Mutex() }.withLock {
+                        if (serial == packageEventSerial) {
+                            readPackageSocket(target, id, session, requireNotNull(spec.topic), listenPort ?: 0, serial, ::deliver)
+                        }
+                    }
+                } else {
+                    val pid = DejavuRpc.processPid(target)
+                    if (serial != packageEventSerial) return@launch
+                    process = RootShell.startLogcat(
+                        "--pid $pid -v raw -T $since -s ${RootShell.quote(spec.tag + ":I")} '*:S'",
+                    )
+                    synchronized(packageEventLock) {
+                        if (serial != packageEventSerial) return@launch
                         packageEventProcess = process
-                        true
                     }
-                }
-                if (!accepted) return@launch
-                _state.update { state ->
-                    if (serial == packageEventSerial) state.copy(packageEvents = state.packageEvents?.copy(connected = true))
-                    else state
-                }
-                expiryJob = launch(Dispatchers.Default) {
-                    while (isActive) {
-                        delay(1000)
-                        decoder.feed("")
+                    updatePackageEvents(serial) { it.copy(connected = true) }
+                    expiryJob = launch(Dispatchers.Default) {
+                        while (isActive) {
+                            delay(1000)
+                            decoder.feed("")
+                        }
                     }
-                }
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        if (!isActive || serial != packageEventSerial) throw CancellationException("Event viewer closed")
-                        val payload = decoder.feed(line) ?: return@forEach
-                        val event = try { JSONObject(payload) } catch (_: Exception) { return@forEach }
-                        val projected = projectPluginEvent(event, spec, row.plugin.manifest.name)
-                        val now = android.os.SystemClock.elapsedRealtime()
-                        seen.entries.removeAll { now - it.value > 30_000 }
-                        val key = projected.dedupKey
-                        if (key != null && seen.put(key, now) != null) return@forEach
-                        if (seen.size > 4096) seen.remove(seen.keys.first())
-                        val item = projected.item
-                        _state.update { state ->
-                            if (serial != packageEventSerial) state else state.copy(
-                                packageEvents = state.packageEvents?.copy(
-                                    events = (state.packageEvents.events + item).takeLast(50),
-                                ),
-                            )
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            if (!isActive || serial != packageEventSerial) return@launch
+                            decoder.feed(line)?.let(::deliver)
                         }
                     }
                 }
@@ -600,14 +642,13 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (serial == packageEventSerial) _state.update { state ->
-                    state.copy(packageEvents = state.packageEvents?.copy(connected = false,
-                        error = text(R.string.package_events_failed, error.message.orEmpty())))
+                updatePackageEvents(serial) {
+                    it.copy(connected = false, error = text(R.string.package_events_failed, error.message.orEmpty()))
                 }
             } finally {
                 expiryJob?.cancel()
                 RootShell.stopLogcat(process)
-                decoder.clear()
+                decoder?.clear()
                 seen.clear()
                 synchronized(packageEventLock) {
                     if (packageEventProcess === process) packageEventProcess = null
@@ -616,48 +657,68 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private suspend fun readPackageSocket(
+        target: String,
+        id: String,
+        session: String,
+        topic: String,
+        port: Int,
+        serial: Int,
+        onPayload: (String) -> Unit,
+    ) {
+        val owner = newPackageToken()
+        val socket = PluginHookEventSocket(port)
+        var attaching = false
+        try {
+            synchronized(packageEventLock) {
+                if (serial != packageEventSerial) return
+                packageEventSocket = socket
+            }
+            updatePackageEvents(serial) { it.copy(listenPort = socket.listenPort) }
+            currentCoroutineContext().ensureActive()
+            attaching = true
+            DejavuRpc.execute(target, LuaPackageScripts.attachSocket(id, session, owner, socket.listenPort))
+            currentCoroutineContext().ensureActive()
+            socket.readEvents("$topic.$session", {
+                updatePackageEvents(serial) { it.copy(connected = true) }
+            }, onPayload)
+        } finally {
+            socket.stopReading()
+            try {
+                if (attaching) {
+                    withContext(NonCancellable) {
+                        runCatching { DejavuRpc.execute(target, LuaPackageScripts.detachSocket(id, session, owner)) }
+                    }
+                }
+            } finally {
+                runCatching { socket.close() }
+                synchronized(packageEventLock) {
+                    if (packageEventSocket === socket) packageEventSocket = null
+                }
+            }
+        }
+    }
+
+    private fun updatePackageEvents(serial: Int, update: (PackageEventsUi) -> PackageEventsUi) {
+        _state.update { state ->
+            if (serial == packageEventSerial) state.copy(packageEvents = state.packageEvents?.let(update))
+            else state
+        }
+    }
+
+    private fun newPackageToken(): String = ByteArray(8).also { SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
     fun closePackageEvents() {
         val process = synchronized(packageEventLock) {
             ++packageEventSerial
+            packageEventSocket?.stopReading()
             packageEventProcess.also { packageEventProcess = null }
         }
         RootShell.stopLogcat(process)
         packageEventJob?.cancel()
         packageEventJob = null
         _state.update { it.copy(packageEvents = null) }
-    }
-
-    fun callPlugin(plugin: String, function: String, vararg args: String) {
-        val target = _state.value.selectedTarget ?: run {
-            message(text(R.string.msg_select_target), error = true)
-            return
-        }
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { DejavuRpc.callPlugin(target, plugin, function, *args) }
-            }
-            _state.update { it.copy(loading = false) }
-            result.fold(
-                onSuccess = { message(it.take(600)) },
-                onFailure = {
-                    message(text(R.string.msg_plugin_call_failed, it.message ?: ""), error = true)
-                },
-            )
-        }
-    }
-
-    suspend fun runScript(script: String): Result<String> {
-        val target = _state.value.selectedTarget
-            ?: return Result.failure(RpcException("Select a target first"))
-        _state.update { it.copy(loading = true) }
-        return try {
-            withContext(Dispatchers.IO) {
-                runCatching { DejavuRpc.execute(target, script) }
-            }
-        } finally {
-            _state.update { it.copy(loading = false) }
-        }
     }
 
     fun startLogs() {
@@ -755,23 +816,6 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         closePackageEvents()
         stopLogs()
         super.onCleared()
-    }
-
-    private fun readTargets(): List<String> {
-        val raw = RootShell.readFile(TARGETS_FILE) ?: return emptyList()
-        return raw.lineSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("#") }
-            .toList()
-    }
-
-    private fun writeTargets(targets: List<String>): Boolean {
-        val content = buildString {
-            appendLine("# One exact Android process name per line.")
-            appendLine("# Managed by Dejavu Console.")
-            targets.forEach { appendLine(it) }
-        }
-        return RootShell.writeFile(TARGETS_FILE, content)
     }
 
     private fun parsePlugins(raw: String): List<PluginInfo> {

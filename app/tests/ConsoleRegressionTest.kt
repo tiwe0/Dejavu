@@ -49,13 +49,26 @@ fun main(args: Array<String>) {
         PluginPackageManifest("example", "Example", "1", entry = "entry.lua", files = listOf("entry.lua")),
         mapOf("entry.lua" to "return {}"),
     )
+    val viewer = PackageEventsUi(
+        "example", "Example", "app.a", events = listOf(LivePluginEvent("test", "body", "now")),
+        session = "0123456789abcdef",
+    )
+    check(viewer.matches("app.a", "example", "0123456789abcdef"))
+    check(!viewer.matches("app.a", "example", "fedcba9876543210"))
+    check(!viewer.matches("app.b", "example", "0123456789abcdef"))
+    check(!viewer.matches("app.a", "example", null))
     val running = initial.copy(
         directoryPlugins = listOf(DirectoryPluginUi(imported, DirectoryPluginState.RUNNING, "0123456789abcdef")),
-        packageEvents = PackageEventsUi("example", "Example", "app.a", events = listOf(LivePluginEvent("test", "body", "now"))),
+        packageEvents = viewer,
+        pluginListenPorts = mapOf(("example" to "app.a") to 39001, ("example" to "app.b") to 39002),
+        directoryTargetOffline = true,
         pluginActionId = "example", pluginDirectoryLoading = true,
     ).withSelectedTarget("app.b")
     check(running.directoryPlugins.single().runState == DirectoryPluginState.UNKNOWN)
     check(running.directoryPlugins.single().session == null && running.packageEvents == null)
+    check(!running.directoryTargetOffline)
+    check(running.pluginListenPorts["example" to "app.b"] == 39002)
+    check(running.withSelectedTarget("app.a").pluginListenPorts["example" to "app.a"] == 39001)
     check(running.pluginActionId == null && !running.pluginDirectoryLoading)
     check(parsePackageRuntimeSnapshot("dejavu-packages-v1").isEmpty())
     check(parsePackageRuntimeSnapshot("dejavu-packages-v1\nexample\trunning\t0123456789abcdef")["example"]?.state == DirectoryPluginState.RUNNING)
@@ -69,9 +82,23 @@ fun main(args: Array<String>) {
         listOf("/sbin/su", "-M", "-c", command))
     check(RootShell.commandArguments(command) { true }.first() == "/system/bin/su")
     check(RootShell.commandArguments(command) { false } == listOf("su", "-M", "-c", command))
+    val scoped = initial.copy(
+        loading = false, activePluginId = "example",
+        pluginScopes = mapOf("example" to listOf("app.a", "app.b"), "other" to listOf("app.b")),
+    )
+    check(scoped.canOperatePlugin("example", "app.a"))
+    check(!scoped.canOperatePlugin("other", "app.a"))
+    check(!scoped.canOperatePlugin("example", "app.c"))
+    check(!scoped.canOperatePlugin("example", "app.b")) // selecting a scope is distinct from selecting the current RPC target
+    check(scoped.withSelectedTarget("app.b").canOperatePlugin("example", "app.b"))
+    check(!scoped.copy(scopeSavingId = "example").canOperatePlugin("example", "app.a"))
+    check(scoped.copy(loading = true).canOperatePlugin("example", "app.a")) // read-only refresh must not suppress listener reconnection
+    check(!scoped.copy(pluginScopes = emptyMap()).canOperatePlugin("example", "app.a"))
+    check(scoped.withSelectedTarget(null).pluginScopes == scoped.pluginScopes)
     println("OK: exact RPC endpoint, selection reset and su resolution")
     runRpcRegressionTests()
     runPluginPackageRegressionTests()
     runPluginEventDecoderTests()
     runPluginEventProjectionTests()
+    runPluginHookEventSocketTests()
 }

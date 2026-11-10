@@ -1,0 +1,10 @@
+<resources>
+    <string name="tab_configuration">配置</string>
+    <string name="title_configuration">配置</string>
+    <string name="configuration_appearance">外观模式</string>
+    <string name="configuration_colors">配色方案</string>
+    <string name="configuration_colors_hint">选择后即时生效，自动保存。</string>
+    <string name="configuration_diagnostics">诊断</string>
+    <string name="configuration_selected">已选中</string>
+    <string name="configuration_appearance_section">外观</string>
+</resources>

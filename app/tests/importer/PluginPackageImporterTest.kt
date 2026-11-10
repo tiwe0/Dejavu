@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONObject
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.attribute.PosixFilePermissions
@@ -58,6 +61,48 @@ fun main() {
     noTransactionDirectories(store)
     println("OK: real example plugin folder imports/scans via opaque SAF IDs and root stdin, without executing entry code")
 
+    fun zipPackage(manifest: PluginPackageManifest, resources: Map<String, ByteArray>): PluginZipArchive {
+        val bytes = ByteArrayOutputStream().also { output ->
+            ZipOutputStream(output).use { zip ->
+                (resources + (PLUGIN_MANIFEST_FILE to manifest.toJson().toByteArray())).forEach { (name, content) ->
+                    zip.putNextEntry(ZipEntry("wrapper/$name"))
+                    zip.write(content)
+                    zip.closeEntry()
+                }
+            }
+        }.toByteArray()
+        return PluginZipArchive.read(bytes.inputStream())
+    }
+    fun importArchive(archive: PluginZipArchive, canReplace: (String) -> Boolean = { true }) =
+        importer.importPackage(ImportedPluginPackage(archive.manifest,
+            archive.files.mapValues { decodePluginUtf8(it.value) }), canReplace)
+    val zipped = zipPackage(original.copy(id = "zip-example"), code)
+    val zipInstalled = File(store, "zip-example")
+    check(importArchive(zipped).manifest.id == "zip-example")
+    check(File(zipInstalled, "entry.lua").exists() == ("entry.lua" in code))
+    check(directorySnapshot(zipInstalled).keys == code.keys + PLUGIN_MANIFEST_FILE)
+    val zipBefore = directorySnapshot(zipInstalled)
+    expectImportFailure("ZIP active replacement") { importArchive(zipped) { false } }
+    expectImportFailure("ZIP missing resource") { zipPackage(original.copy(id = "zip-example"), code - original.entry) }
+    expectImportFailure("ZIP invalid decoded source map") {
+        importer.importPackage(ImportedPluginPackage(zipped.manifest, emptyMap()))
+    }
+    check(directorySnapshot(zipInstalled) == zipBefore)
+    noTransactionDirectories(store)
+    zipInstalled.deleteRecursively()
+    val nativeOnly = File(store, "native-only").apply { mkdir() }
+    File(nativeOnly, PLUGIN_MANIFEST_FILE).writeText(PluginPackageManifest(
+        "native-only", "Native", "1", entry = "lib.so", files = listOf("lib.so"), kind = "native",
+    ).toJson())
+    File(nativeOnly, "lib.so").writeBytes(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))
+    val nativeBefore = directorySnapshot(nativeOnly)
+    expectImportFailure("ZIP cannot replace native package with Lua") {
+        importArchive(zipPackage(original.copy(id = "native-only"), code))
+    }
+    check(directorySnapshot(nativeOnly) == nativeBefore)
+    nativeOnly.deleteRecursively()
+    println("OK: ZIP decoding installs only declared Lua resources; failed ZIP imports and kind collisions preserve originals")
+
     val nested = PluginPackageManifest(
         id = "nested", name = "Nested fixture", version = "1", entry = "entry.lua",
         files = listOf("entry.lua", "lib/hook.c"),
@@ -93,9 +138,15 @@ fun main() {
             code + ("hook.c" to byteArrayOf(0xc3.toByte(), 0x28)))))
     }
     check(directorySnapshot(installed) == originalDisk)
+    val pageReplacement = replacement.copy(ui = "ui.json", files = replacement.files + "ui.json")
+    val invalidPage = """{"version":1,"title":"Status","blocks":[{"type":"button","action":"exec","label":"Run"}]}"""
+    expectImportFailure("invalid plugin page") {
+        importer.importFolder(provider.tree(providerFiles(pageReplacement, code + ("ui.json" to invalidPage.toByteArray()))))
+    }
+    check(directorySnapshot(installed) == originalDisk)
     expectImportFailure("non-tree URI") { importer.importFolder(uri.copy(tree = false)) }
     noTransactionDirectories(store)
-    println("OK: missing/oversized/invalid UTF-8 resources preserve the existing package")
+    println("OK: missing/oversized/invalid resources and plugin pages preserve the existing package")
 
     var checks = 0
     expectImportFailure("active replacement") {
@@ -117,9 +168,10 @@ fun main() {
     noTransactionDirectories(store)
     println("OK: replacement guards before and after staging preserve the old package")
 
-    val replaced = importer.importFolder(provider.tree(providerFiles(replacement)))
-    check(replaced.manifest.version == "test-replacement")
-    check(importer.list().single { it.manifest.id == "example-plugin" }.manifest.version == "test-replacement")
+    val page = """{"version":1,"title":"Status","blocks":[{"type":"status","bind":"runtime.state"}]}"""
+    val replaced = importer.importFolder(provider.tree(providerFiles(pageReplacement, code + ("ui.json" to page.toByteArray()))))
+    check(replaced.manifest == pageReplacement && replaced.page?.blocks == listOf(PluginPageBlock.Status))
+    check(importer.list().single { it.manifest.id == "example-plugin" }.page == replaced.page)
     val replacedDisk = directorySnapshot(installed)
     val commitFailure = File(sandbox, "fail-next-commit").apply { writeText("once") }
     val failure = expectImportFailure("injected staging rename failure") {

@@ -2,6 +2,9 @@ package cafe.ivory.dejavu.data
 
 import android.content.Context
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.json.JSONObject
 
 private fun rejected(block: () -> Unit) {
@@ -22,6 +25,35 @@ fun main() {
     val jitUri = provider.tree(mapOf("manifest.json" to manifest("hellojit", "jit", "hello.c", listOf("hello.c", "SKILL.md")),
         "hello.c" to source, "SKILL.md" to "safe instructions".toByteArray()))
     check(!library.hasLuaManifest(uri))
+    fun zipPackage(kind: String, entry: String, content: ByteArray): PluginZipArchive {
+        val bytes = ByteArrayOutputStream().also { output ->
+            ZipOutputStream(output).use { zip ->
+                mapOf("manifest.json" to manifest("zip-$kind", kind, entry), entry to content).forEach { (name, data) ->
+                    zip.putNextEntry(ZipEntry(name)); zip.write(data); zip.closeEntry()
+                }
+            }
+        }.toByteArray()
+        return PluginZipArchive.read(bytes.inputStream())
+    }
+    for ((kind, entry, bytes) in listOf(Triple("native", "plugin.so", elf), Triple("jit", "plugin.c", source))) {
+        val archive = zipPackage(kind, entry, bytes)
+        val zipArtifact = library.importPackage(archive.manifest, archive.files).single()
+        val destination = File(root, "zip-$kind")
+        check(zipArtifact.id == "zip-$kind" && File(destination, entry).readBytes().contentEquals(bytes))
+        val before = File(destination, entry).readBytes()
+        rejected { library.importPackage(archive.manifest, emptyMap()) }
+        rejected { library.importPackage(archive.manifest, archive.files + ("undeclared.c" to source)) }
+        rejected { library.importPackage(archive.manifest, mapOf(entry to "not a plugin".toByteArray())) }
+        rejected { library.importPackage(archive.manifest, archive.files) { false } }
+        if (kind == "native") {
+            val tooDeep = (List(33) { "a" } + "plugin.so").joinToString("/")
+            val deepArchive = zipPackage(kind, tooDeep, bytes)
+            rejected { library.importPackage(deepArchive.manifest, deepArchive.files) }
+        }
+        check(File(destination, entry).readBytes().contentEquals(before))
+        destination.deleteRecursively()
+    }
+    println("OK: ZIP native/JIT install validation and replacement guards preserve originals on rejection")
     val imported = library.importFolder(uri) + library.importFolder(jitUri)
     check(imported.size == 2)
     val listed = library.list()

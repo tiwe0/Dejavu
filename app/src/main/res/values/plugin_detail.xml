@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="plugin_detail_control">Control</string>
+    <string name="plugin_detail_info">Info</string>
+    <string name="plugin_detail_description">Description</string>
+    <string name="plugin_detail_no_scope">No target processes configured</string>
+    <string name="plugin_detail_runtime">Runtime state</string>
+</resources>

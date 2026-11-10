@@ -34,6 +34,7 @@ fun NativeLibraryPluginCard(
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onSkill: () -> Unit,
+    canLoad: Boolean = true,
 ) {
     val runtime = item.runtime
     val loaded = runtime?.loaded == true
@@ -115,7 +116,7 @@ fun NativeLibraryPluginCard(
                 }
                 TextButton(
                     onClick = if (loaded) onUnload else onLoad,
-                    enabled = target != null && !busy,
+                    enabled = target != null && !busy && (loaded || canLoad),
                     modifier = Modifier.weight(1f, fill = false).heightIn(min = 48.dp),
                 ) { Text(stringResource(if (loaded) R.string.unload else R.string.load)) }
             }

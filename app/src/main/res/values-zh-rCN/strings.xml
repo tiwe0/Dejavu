@@ -5,13 +5,11 @@
     <string name="tab_targets">作用域</string>
     <string name="tab_plugins">插件</string>
     <string name="tab_logs">日志</string>
-    <string name="tab_console">控制台</string>
 
     <string name="title_home">Dejavu Manager</string>
     <string name="title_targets">作用域</string>
     <string name="title_plugins">插件</string>
     <string name="title_logs">实时日志</string>
-    <string name="title_console">Lua 控制台</string>
 
     <string name="status_root">ROOT</string>
     <string name="status_helper">HELPER</string>
@@ -47,7 +45,6 @@
     <string name="quick_actions_subtitle">直接进入常用流程</string>
     <string name="quick_plugins_detail">查看与卸载</string>
     <string name="quick_logs_detail">Dejavu 标签</string>
-    <string name="quick_console_detail">控制通道</string>
     <string name="quick_capture_detail">打开模板</string>
     <string name="footer">Dejavu 控制台 · 设备端控制平面</string>
 
@@ -81,21 +78,6 @@
     <string name="logs_empty_title">实时 logcat</string>
     <string name="logs_empty_detail">启动 DejavuZygisk、DejavuAgent、DejavuPlugin、DejavuHook 与 DejavuNative 的 logcat 流。</string>
 
-    <string name="console_subtitle">认证的抽象 socket RPC · 当前目标</string>
-    <string name="console_script_label">脚本</string>
-    <string name="run">运行</string>
-    <string name="running">运行中…</string>
-    <string name="clear_output">清空输出</string>
-    <string name="response">响应</string>
-    <string name="response_empty">运行一段脚本以查看响应。</string>
-    <string name="empty_response">（空响应）</string>
-    <string name="more_templates">更多模板</string>
-    <string name="more_templates_subtitle">Capture、算法与 native hook 示例</string>
-    <string name="template_plugin_list">plugin.list()</string>
-    <string name="template_algorithm_status">algorithm.status</string>
-    <string name="template_capture_status">capture.status</string>
-    <string name="template_native_list">native list</string>
-    <string name="template_root_helper">root helper</string>
 
     <string name="msg_invalid_process">进程名无效</string>
     <string name="msg_added_target">已添加 %1$s</string>
@@ -135,10 +117,8 @@
     <string name="plugins_empty_action">刷新插件</string>
     <string name="logs_auto_scroll">自动滚动</string>
     <string name="logs_lines">%1$d 行</string>
-    <string name="console_templates">模板</string>
     <string name="logs_no_matches">没有匹配的日志</string>
     <string name="logs_filter_empty_detail">清除过滤条件，或等待新的 Dejavu 日志。</string>
-    <string name="choose_template">选择模板</string>
     <string name="add_target">添加目标</string>
     <string name="permission_title">权限</string>
     <string name="root_required_title">需要 root 权限</string>

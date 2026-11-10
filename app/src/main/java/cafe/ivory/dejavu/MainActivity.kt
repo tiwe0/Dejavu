@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,10 +24,8 @@ import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -48,6 +45,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.activity.SystemBarStyle
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -71,14 +72,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.ivory.dejavu.data.ConsoleViewModel
-import cafe.ivory.dejavu.ui.AppPickerSheet
-import cafe.ivory.dejavu.ui.ConsoleScreen
 import cafe.ivory.dejavu.ui.LogsScreen
 import cafe.ivory.dejavu.ui.OverviewScreen
 import cafe.ivory.dejavu.ui.PluginsScreen
 import cafe.ivory.dejavu.ui.RootRequiredScreen
-import cafe.ivory.dejavu.ui.TargetsScreen
-import cafe.ivory.dejavu.ui.ToolsScreen
+import cafe.ivory.dejavu.ui.ConfigurationScreen
+import cafe.ivory.dejavu.ui.PredictiveBackContent
 import cafe.ivory.dejavu.ui.theme.DejavuTheme
 import kotlinx.coroutines.launch
 
@@ -89,13 +88,11 @@ private enum class ManagerPage(
 ) {
     Overview(R.string.tab_home, R.string.title_home, Icons.Rounded.Home),
     Plugins(R.string.tab_plugins, R.string.title_plugins, Icons.Rounded.Extension),
-    Scope(R.string.tab_targets, R.string.title_targets, Icons.Rounded.Tune),
-    Tools(R.string.tab_tools, R.string.title_tools, Icons.Rounded.Build),
+    Tools(R.string.tab_configuration, R.string.title_configuration, Icons.Rounded.Settings),
     Logs(R.string.tab_logs, R.string.title_logs, Icons.AutoMirrored.Rounded.Article),
-    Lua(R.string.tab_console, R.string.title_console, Icons.Rounded.Terminal),
     ;
 
-    val isToolDetail get() = this == Logs || this == Lua
+    val isToolDetail get() = this == Logs
 }
 
 private val tabs = ManagerPage.entries.filterNot { it.isToolDetail }
@@ -109,10 +106,30 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            DejavuTheme {
-                ManagerApp(onLanguageChange = { tag ->
-                    if (ManagerLanguage.set(this, tag)) recreate()
-                })
+            var appearance by remember { mutableStateOf(ManagerAppearanceStore.load(this)) }
+            val dark = when (appearance.mode) {
+                ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ManagerThemeMode.LIGHT -> false
+                ManagerThemeMode.DARK -> true
+            }
+            DejavuTheme(appearance) {
+                val navigationScrim = MaterialTheme.colorScheme.surface.toArgb()
+                SideEffect {
+                    enableEdgeToEdge(
+                        statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { dark },
+                        navigationBarStyle = SystemBarStyle.auto(navigationScrim, navigationScrim) { dark },
+                    )
+                }
+                ManagerApp(
+                    appearance = appearance,
+                    onAppearanceChange = {
+                        ManagerAppearanceStore.save(this, it)
+                        appearance = it
+                    },
+                    onLanguageChange = { tag ->
+                        if (ManagerLanguage.set(this, tag)) recreate()
+                    },
+                )
             }
         }
     }
@@ -121,27 +138,36 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManagerApp(
+    appearance: ManagerAppearance,
+    onAppearanceChange: (ManagerAppearance) -> Unit,
     onLanguageChange: (String?) -> Unit,
     vm: ConsoleViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
-    var showLanguage by remember { mutableStateOf(false) }
-    var showAppPicker by remember { mutableStateOf(false) }
-    val openAppPicker = {
-        showAppPicker = true
-        vm.loadInstalledApps(force = true)
+    var pluginPageId by remember(page) { mutableStateOf<String?>(null) }
+    var scopeEditor by remember(pluginPageId) { mutableStateOf(false) }
+    val pluginDetail = pluginPageId?.let { id -> state.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } }
+    val nativeDetail = pluginPageId?.let { id -> state.nativeLibrary.firstOrNull { it.artifact.id == id } }
+    val pluginsBusy = state.pluginDirectoryLoading || state.pluginsLoading || state.pluginImporting ||
+        state.pluginActionId != null || state.nativePluginActionPath != null || state.scopeSavingId != null
+    val closePluginPage: () -> Unit = close@ {
+        if (pluginsBusy || state.loading) return@close
+        if (scopeEditor) scopeEditor = false else {
+            vm.closePackageEvents()
+            pluginPageId = null
+            vm.leavePlugin()
+        }
     }
+    var showLanguage by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val importPluginFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) vm.importPluginFolder(uri)
+    val importPluginZip = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importPluginZip(uri)
     }
     val refreshPlugins = {
         if (state.selectedTarget == null) vm.refreshPluginLibrary() else vm.refreshPlugins()
     }
-    val pluginsBusy = state.pluginDirectoryLoading || state.pluginsLoading || state.pluginImporting ||
-        state.pluginActionId != null || state.nativePluginActionPath != null
 
     LaunchedEffect(state.lastMessage) {
         val message = state.lastMessage ?: return@LaunchedEffect
@@ -159,7 +185,6 @@ private fun ManagerApp(
         if (page == ManagerPage.Plugins) refreshPlugins()
     }
 
-    BackHandler(enabled = state.rootGranted && page.isToolDetail) { page = ManagerPage.Tools }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -168,6 +193,57 @@ private fun ManagerApp(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val renderPage: @Composable (ManagerPage, String?, Boolean, Boolean) -> Unit = { visiblePage, visiblePluginId, visibleScope, preview ->
+        when (visiblePage) {
+            ManagerPage.Overview -> OverviewScreen(
+                state = state,
+                onManagePlugins = { page = ManagerPage.Plugins },
+                onLinkUnavailable = { vm.message(it, error = true) },
+            )
+            ManagerPage.Plugins -> PluginsScreen(
+                state = state,
+                pluginId = visiblePluginId,
+                scopeEditor = visibleScope,
+                onOpenPluginPage = { id -> if (vm.selectPlugin(id)) pluginPageId = id },
+                onOpenScope = { id ->
+                    if (vm.selectPlugin(id)) {
+                        pluginPageId = id
+                        scopeEditor = true
+                    }
+                },
+                onSaveScope = vm::savePluginScope,
+                onLoadApps = { vm.loadInstalledApps(force = true) },
+                onClosePluginPage = closePluginPage,
+                onShowPluginControl = { scopeEditor = false },
+                onSetPreferredPort = vm::setPluginListenPort,
+                onRefresh = { vm.refreshPlugins() },
+                onSelectTarget = { vm.selectTarget(it) },
+                onUnload = { target, name -> vm.unloadPlugin(target, name) },
+                onLoadLibrary = { target, path -> vm.loadLibraryPlugin(target, path) },
+                onImportZip = { importPluginZip.launch(arrayOf("application/zip", "application/x-zip-compressed")) },
+                onScanDirectory = refreshPlugins,
+                onStartDirectory = { target, id -> vm.startDirectoryPlugin(target, id) },
+                onStopDirectory = { target, id -> vm.stopDirectoryPlugin(target, id) },
+                onDirectoryEvents = { target, id, port -> vm.openPackageEvents(target, id, port) },
+                onCloseDirectoryEvents = { vm.closePackageEvents() },
+                onDirectoryAction = { target, id, action -> vm.runDirectoryPluginAction(target, id, action) },
+                skillLoader = { target, name -> vm.pluginSkill(target, name) },
+                preview = preview,
+            )
+            ManagerPage.Tools -> ConfigurationScreen(
+                appearance = appearance,
+                onAppearanceChange = onAppearanceChange,
+                onOpenLogs = { page = ManagerPage.Logs },
+            )
+            ManagerPage.Logs -> LogsScreen(
+                state = state,
+                onStart = { vm.startLogs() },
+                onStop = { vm.stopLogs() },
+                onClear = { vm.clearLogs() },
+            )
+        }
     }
 
     Scaffold(
@@ -182,10 +258,12 @@ private fun ManagerApp(
                     ),
                     title = {
                         Text(
-                            stringResource(
-                                if (state.rootGranted) page.title
-                                else R.string.permission_title,
-                            ),
+                            when {
+                                !state.rootGranted -> stringResource(R.string.permission_title)
+                                pluginDetail != null -> pluginDetail.plugin.manifest.name
+                                nativeDetail != null -> nativeDetail.artifact.name
+                                else -> stringResource(page.title)
+                            },
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
@@ -193,8 +271,10 @@ private fun ManagerApp(
                         )
                     },
                     navigationIcon = {
-                        if (state.rootGranted && page.isToolDetail) {
-                            IconButton(onClick = { page = ManagerPage.Tools }) {
+                        if (state.rootGranted && (page.isToolDetail || pluginPageId != null)) {
+                            IconButton(enabled = !pluginsBusy && !state.loading, onClick = {
+                                if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools
+                            }) {
                                 Icon(
                                     Icons.AutoMirrored.Rounded.ArrowBack,
                                     contentDescription = stringResource(R.string.navigate_back),
@@ -230,14 +310,18 @@ private fun ManagerApp(
             }
         },
         bottomBar = {
-            if (!state.rootGranted || page.isToolDetail) return@Scaffold
+            if (!state.rootGranted || page.isToolDetail || pluginPageId != null) return@Scaffold
             Column {
                 HorizontalDivider()
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                     tabs.forEach { tab ->
                         NavigationBarItem(
                             selected = page == tab,
-                            onClick = { page = tab },
+                            onClick = {
+                                vm.leavePlugin()
+                                page = tab
+                            },
+                            enabled = !pluginsBusy && !state.loading,
                             icon = { Icon(tab.icon, contentDescription = null) },
                             label = { Text(stringResource(tab.label)) },
                         )
@@ -278,54 +362,23 @@ private fun ManagerApp(
                 }
                 return@Scaffold
             }
-            when (page) {
-                ManagerPage.Overview -> OverviewScreen(
-                    state = state,
-                    onSelectTarget = { vm.selectTarget(it) },
-                    onPickApp = openAppPicker,
-                    onManageScope = { page = ManagerPage.Scope },
-                    onLinkUnavailable = { vm.message(it, error = true) },
-                )
-                ManagerPage.Scope -> TargetsScreen(
-                    state = state,
-                    onPickApp = openAppPicker,
-                    onRemove = { vm.removeTarget(it) },
-                    onSelect = { vm.selectTarget(it) },
-                    onRestart = { vm.restartTarget(it) },
-                )
-                ManagerPage.Plugins -> PluginsScreen(
-                    state = state,
-                    onRefresh = { vm.refreshPlugins() },
-                    onSelectTarget = { vm.selectTarget(it) },
-                    onPickApp = openAppPicker,
-                    onUnload = { target, name -> vm.unloadPlugin(target, name) },
-                    onLoad = { target, path -> vm.loadPlugin(target, path) },
-                    onLoadLibrary = { target, path -> vm.loadLibraryPlugin(target, path) },
-                    onImportFolder = { importPluginFolder.launch(null) },
-                    onScanDirectory = refreshPlugins,
-                    onStartDirectory = { target, id -> vm.startDirectoryPlugin(target, id) },
-                    onStopDirectory = { target, id -> vm.stopDirectoryPlugin(target, id) },
-                    onDirectoryEvents = { target, id -> vm.openPackageEvents(target, id) },
-                    onCloseDirectoryEvents = { vm.closePackageEvents() },
-                    skillLoader = { target, name -> vm.pluginSkill(target, name) },
-                )
-                ManagerPage.Tools -> ToolsScreen(
-                    target = state.selectedTarget,
-                    onOpenLogs = { page = ManagerPage.Logs },
-                    onOpenLua = { page = ManagerPage.Lua },
-                )
-                ManagerPage.Logs -> LogsScreen(
-                    state = state,
-                    onStart = { vm.startLogs() },
-                    onStop = { vm.stopLogs() },
-                    onClear = { vm.clearLogs() },
-                )
-                ManagerPage.Lua -> ConsoleScreen(
-                    state = state,
-                    onSelectTarget = { vm.selectTarget(it) },
-                    onPickApp = openAppPicker,
-                    runner = { vm.runScript(it) },
-                )
+            PredictiveBackContent(
+                enabled = page.isToolDetail || pluginPageId != null,
+                canNavigate = !pluginsBusy && !state.loading,
+                navigationKey = listOf(page, pluginPageId, scopeEditor),
+                onBack = {
+                    if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools
+                },
+                previousContent = {
+                    renderPage(
+                        if (page.isToolDetail) ManagerPage.Tools else ManagerPage.Plugins,
+                        if (scopeEditor) pluginPageId else null,
+                        false,
+                        true,
+                    )
+                },
+            ) {
+                renderPage(page, pluginPageId, scopeEditor, false)
             }
         }
     }
@@ -337,14 +390,6 @@ private fun ManagerApp(
                 showLanguage = false
                 onLanguageChange(it)
             },
-        )
-    }
-
-    if (showAppPicker) {
-        AppPickerSheet(
-            state = state,
-            onPick = { vm.addTarget(it) },
-            onDismiss = { showAppPicker = false },
         )
     }
 }

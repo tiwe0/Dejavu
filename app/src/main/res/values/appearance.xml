@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="appearance_palette_forest">Forest</string>
+    <string name="appearance_palette_ocean">Ocean</string>
+    <string name="appearance_palette_iris">Iris</string>
+    <string name="appearance_palette_rose">Rose</string>
+    <string name="appearance_palette_amber">Amber</string>
+    <string name="appearance_palette_graphite">Graphite</string>
+    <string name="appearance_palette_system">System colors</string>
+    <string name="appearance_mode_system">System</string>
+    <string name="appearance_mode_light">Light</string>
+    <string name="appearance_mode_dark">Dark</string>
+</resources>

@@ -9,7 +9,12 @@ data class DirectoryPluginUi(
     val error: String? = null,
 )
 
-data class LivePluginEvent(val title: String, val content: String, val meta: String)
+data class LivePluginEvent(
+    val title: String,
+    val content: String,
+    val meta: String,
+    val receivedAtMillis: Long? = null,
+)
 
 data class PackageEventsUi(
     val packageId: String,
@@ -18,4 +23,9 @@ data class PackageEventsUi(
     val connected: Boolean = false,
     val error: String? = null,
     val events: List<LivePluginEvent> = emptyList(),
-)
+    val listenPort: Int? = null,
+    val session: String? = null,
+) {
+    fun matches(target: String?, id: String, session: String?): Boolean =
+        session != null && this.target == target && packageId == id && this.session == session
+}

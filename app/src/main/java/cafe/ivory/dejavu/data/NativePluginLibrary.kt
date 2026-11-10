@@ -222,21 +222,47 @@ class NativePluginLibrary(context: Context) {
         require(!document.directory) { "manifest.json must be a file" }
         val manifest = NativePluginManifest.parse(decodePluginUtf8(readDocument(document.uri, 16 * 1024)))
         require(manifest.kind == "native" || manifest.kind == "jit") { "Import this folder as a Lua package" }
-        val files = linkedMapOf("manifest.json" to manifest.toJson().toByteArray(Charsets.UTF_8))
+        val resources = linkedMapOf<String, ByteArray>()
+        var remaining = 64 * 1024 * 1024 - manifest.toJson().toByteArray(Charsets.UTF_8).size
         for (path in manifest.files) {
             path.split('/').forEach(::validateName)
-            val remaining = 64 * 1024 * 1024 - files.values.sumOf { it.size }
             require(remaining > 0) { "Native plugin folder exceeds 64 MiB" }
             val bytes = readDocument(resolveDocument(uri, path), minOf(limit(path), remaining))
+            remaining -= bytes.size
+            resources[path] = bytes
+        }
+        return importPackage(manifest, resources, canReplace)
+    }
+
+    /** Validates ZIP resources before staging any change to the installed library. */
+    fun importPackage(
+        manifest: NativePluginManifest,
+        resources: Map<String, ByteArray>,
+        canReplace: (String) -> Boolean = { true },
+    ): List<NativePluginArtifact> {
+        manifest.validate()
+        require(manifest.kind == "native" || manifest.kind == "jit") { "Expected a native or JIT plugin" }
+        require(resources.keys == manifest.files.toSet()) { "Imported resources do not match the manifest" }
+        val files = linkedMapOf("manifest.json" to pluginUtf8Bytes(manifest.toJson()))
+        var total = files.values.sumOf { it.size.toLong() }
+        for (path in manifest.files) {
+            path.split('/').forEach(::validateName)
+            val bytes = resources.getValue(path)
+            require(bytes.size <= limit(path)) { "Plugin resource exceeds its size limit: $path" }
+            total += bytes.size
+            require(total <= 64 * 1024 * 1024) { "Native plugin package exceeds 64 MiB" }
             if (path == manifest.entry) validateBytes(path, bytes)
             files[path] = bytes
         }
         val destination = "$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}"
+        val imported = artifact("$destination/${manifest.entry}").copy(
+            name = manifest.name, id = manifest.id, version = manifest.version, description = manifest.description,
+        )
         synchronized(lock) {
             checkReplacement(destination, manifest, canReplace)
             store(destination, files) { checkReplacement(destination, manifest, canReplace) }
         }
-        return listOf(manifestArtifact(destination, manifest))
+        return listOf(imported)
     }
 
     private fun checkReplacement(

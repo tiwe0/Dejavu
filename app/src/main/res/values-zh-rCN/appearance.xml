@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="appearance_palette_forest">森林绿</string>
+    <string name="appearance_palette_ocean">海洋蓝</string>
+    <string name="appearance_palette_iris">鸢尾紫</string>
+    <string name="appearance_palette_rose">玫瑰红</string>
+    <string name="appearance_palette_amber">琥珀金</string>
+    <string name="appearance_palette_graphite">石墨灰</string>
+    <string name="appearance_palette_system">系统配色</string>
+    <string name="appearance_mode_system">跟随系统</string>
+    <string name="appearance_mode_light">浅色</string>
+    <string name="appearance_mode_dark">深色</string>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="plugin_scope_title">作用域</string>
+    <string name="plugin_scope_count">%1$d 个目标进程</string>
+    <string name="plugin_inspect_process">查看进程</string>
+    <string name="plugin_scope_empty">在作用域中选择目标应用后，即可使用此插件。</string>
+    <string name="plugin_scope_inspect_hint">此处切换当前查看的进程，作用域内其他目标仍保留注入配置。</string>
+    <string name="plugin_scope_removed">当前进程已不在此插件的作用域内。请停止或卸载仍在运行的实例，重启应用后作用域变更才会生效。</string>
+    <string name="plugin_scope_hint">为此插件选择一个或多个应用，重启各目标应用后生效。作用域启用框架注入，插件需在各进程内单独启动或加载。</string>
+    <string name="plugin_scope_custom_process">精确进程名（如 app:worker）</string>
+    <string name="plugin_scope_add_process">添加</string>
+    <string name="plugin_scope_save">保存作用域（%1$d）</string>
+    <string name="plugin_scope_saving">正在保存作用域…</string>
+    <string name="plugin_scope_saved">插件作用域已保存，重启受影响的应用后注入配置生效。</string>
+    <string name="plugin_scope_overview">%1$d 个注入目标 · %2$d 个插件已配置作用域</string>
+</resources>

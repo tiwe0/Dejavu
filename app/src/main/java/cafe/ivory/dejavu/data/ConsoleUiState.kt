@@ -36,6 +36,9 @@ data class ConsoleUiState(
     val helperPid: String = "",
     val targets: List<String> = emptyList(),
     val selectedTarget: String? = null,
+    val activePluginId: String? = null,
+    val pluginScopes: Map<String, List<String>> = emptyMap(),
+    val scopeSavingId: String? = null,
     val pluginsRaw: String = "",
     val plugins: List<PluginInfo> = emptyList(),
     val nativeLibrary: List<NativeLibraryPluginUi> = emptyList(),
@@ -45,9 +48,11 @@ data class ConsoleUiState(
     val pluginDirectoryLoading: Boolean = false,
     val pluginDirectoryError: String? = null,
     val directoryRuntimeError: String? = null,
+    val directoryTargetOffline: Boolean = false,
     val pluginImporting: Boolean = false,
     val pluginActionId: String? = null,
     val packageEvents: PackageEventsUi? = null,
+    val pluginListenPorts: Map<Pair<String, String>, Int> = emptyMap(),
     val installedApps: List<InstalledApp> = emptyList(),
     val appsLoading: Boolean = false,
     val logText: String = "",
@@ -55,6 +60,10 @@ data class ConsoleUiState(
     val lastMessage: String? = null,
     val lastError: Boolean = false,
 )
+
+internal fun ConsoleUiState.canOperatePlugin(id: String, target: String): Boolean =
+    activePluginId == id && selectedTarget == target && target in pluginScopes[id].orEmpty() &&
+        scopeSavingId == null
 
 internal fun ConsoleUiState.withSelectedTarget(target: String?): ConsoleUiState =
     if (selectedTarget == target) this else copy(
@@ -71,5 +80,6 @@ internal fun ConsoleUiState.withSelectedTarget(target: String?): ConsoleUiState 
         pluginActionId = null,
         pluginDirectoryLoading = false,
         directoryRuntimeError = null,
+        directoryTargetOffline = false,
         packageEvents = null,
     )

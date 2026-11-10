@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="package_add_zip">Add plugin</string>
+    <string name="package_zip_empty_title">No plugins added</string>
+    <string name="package_zip_empty_detail">Tap + to choose a ZIP plugin package containing a valid manifest.json and its declared resources.</string>
+    <string name="package_zip_importing">Validating and importing ZIP plugin…</string>
+    <string name="package_plugin_info">Plugin info</string>
+    <string name="package_plugin_id">Plugin identifier</string>
+    <string name="package_plugin_no_description">No description provided</string>
+</resources>

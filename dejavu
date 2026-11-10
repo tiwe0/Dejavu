@@ -18,6 +18,7 @@ import base64
 from contextlib import contextmanager
 from functools import wraps
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -164,28 +165,114 @@ def require_root(args: argparse.Namespace, *, need_module: bool = True) -> None:
             )
 
 
+SCOPE_PREFIX = "# dejavu-plugin-scopes-v1 "
+TARGETS_LIMIT = 16 * 1024
+TARGETS_LOCK = f"{MODULE_DIR}/config/.targets.lock"
+
+
+def targets_guard() -> str:
+    directory = str(Path(TARGETS_PATH).parent)
+    parts = directory.split("/")[1:]
+    return " && ".join(
+        f"[ -d {shlex.quote('/' + '/'.join(parts[:index]))} ] && "
+        f"[ ! -L {shlex.quote('/' + '/'.join(parts[:index]))} ]"
+        for index in range(1, len(parts) + 1)
+    )
+
+
+def normalize_targets(targets: list[str]) -> list[str]:
+    if not isinstance(targets, list) or any(not isinstance(x, str) or not PROCESS_PATTERN.fullmatch(x) for x in targets):
+        fail("invalid process list in target configuration")
+    return sorted(set(targets))
+
+
+def parse_target_config(payload: bytes) -> tuple[list[str], dict[str, list[str]], bool]:
+    if len(payload) > TARGETS_LIMIT:
+        fail("target configuration exceeds 16 KiB")
+    try:
+        lines = [line.strip() for line in payload.decode("utf-8", errors="strict").splitlines()]
+        effective = normalize_targets([line for line in lines if line and not line.startswith("#")])
+        headers = [line for line in lines if line.startswith("# dejavu-plugin-scopes-")]
+        if not headers:
+            return effective, {}, False
+        if len(headers) != 1 or not headers[0].startswith(SCOPE_PREFIX):
+            fail("invalid plugin scope metadata version")
+        metadata = json.loads(headers[0][len(SCOPE_PREFIX):])
+        if not isinstance(metadata, dict) or set(metadata) != {"manual", "scopes"} or not isinstance(metadata["scopes"], dict):
+            fail("invalid plugin scope metadata")
+        manual = normalize_targets(metadata["manual"])
+        scopes = {}
+        for plugin_id, targets in metadata["scopes"].items():
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", plugin_id):
+                fail("invalid plugin ID in scope metadata")
+            scopes[plugin_id] = normalize_targets(targets)
+        if sorted(set(manual).union(*(set(x) for x in scopes.values()))) != effective:
+            fail("plugin scope metadata does not match target processes")
+        return manual, scopes, True
+    except (UnicodeError, ValueError, TypeError, KeyError) as error:
+        fail(f"invalid target configuration: {error}")
+
+
+def read_target_config(args: argparse.Namespace) -> tuple[bytes, list[str], dict[str, list[str]], bool]:
+    command = (f"set -e\n{targets_guard()} || exit 1\n[ -f {TARGETS_PATH} ] && [ ! -L {TARGETS_PATH} ] || exit 1\n"
+               f"[ \"$(wc -c < {TARGETS_PATH})\" -le {TARGETS_LIMIT} ]\nbase64 < {TARGETS_PATH}")
+    result = root_shell(args, command, check=False)
+    if result.returncode != 0:
+        fail("cannot read target configuration")
+    try:
+        payload = base64.b64decode(result.stdout, validate=False)
+    except ValueError as error:
+        fail(f"invalid target configuration encoding: {error}")
+    return payload, *parse_target_config(payload)
+
+
 def read_targets(args: argparse.Namespace) -> list[str]:
-    content = root_text(args, f"cat {TARGETS_PATH} 2>/dev/null")
-    targets = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        targets.append(line)
-    return targets
+    _, manual, scopes, _ = read_target_config(args)
+    return sorted(set(manual).union(*(set(x) for x in scopes.values())))
+
+
+def update_manual_targets(args: argparse.Namespace, transform) -> list[str]:
+    for attempt in range(4):
+        previous, manual, scopes, has_metadata = read_target_config(args)
+        manual = normalize_targets(transform(manual))
+        effective = sorted(set(manual).union(*(set(x) for x in scopes.values())))
+        header = SCOPE_PREFIX + json.dumps({"manual": manual, "scopes": scopes}, separators=(",", ":"), sort_keys=True) + "\n" if has_metadata else ""
+        payload = (header + "".join(f"{target}\n" for target in effective)).encode()
+        if len(payload) > TARGETS_LIMIT:
+            fail("target configuration exceeds 16 KiB")
+        expected = hashlib.sha256(previous).hexdigest()
+        directory = str(Path(TARGETS_PATH).parent)
+        command = f"""set -e
+umask 077
+{targets_guard()} || exit 1
+chmod 700 {str(Path(TARGETS_PATH).parent)}
+[ ! -L {TARGETS_LOCK} ] && {{ [ ! -e {TARGETS_LOCK} ] || [ -f {TARGETS_LOCK} ]; }} || exit 1
+exec 9>{TARGETS_LOCK}
+chmod 600 {TARGETS_LOCK}
+/system/bin/flock -n 9 9>&9 || exit 73
+[ -f {TARGETS_PATH} ] && [ ! -L {TARGETS_PATH} ] || exit 1
+actual=$(sha256sum {TARGETS_PATH}); actual=${{actual%% *}}
+[ "$actual" = '{expected}' ] || exit 73
+stage=$(mktemp '{directory}/.targets.XXXXXX')
+trap 'rm -f "$stage"' EXIT
+cat > "$stage"
+[ "$(wc -c < "$stage")" -eq {len(payload)} ]
+chmod 600 "$stage"
+chown 0:0 "$stage"
+mv -f "$stage" {TARGETS_PATH}
+"""
+        # Unlike the script-over-stdin root helper, this transport leaves stdin for the payload.
+        result = adb(args, "shell", f"su -c {shlex.quote(command)}", input_bytes=payload, capture=True, check=False)
+        if result.returncode == 0:
+            return effective
+        if result.returncode != 73:
+            fail(f"cannot save target configuration: {text_of(result)}")
+        time.sleep(0.025 * (attempt + 1))
+    fail("target configuration changed concurrently; retry the operation")
 
 
 def write_targets(args: argparse.Namespace, targets: list[str]) -> None:
-    for target in targets:
-        if not PROCESS_PATTERN.fullmatch(target):
-            fail(f"invalid process name: {target!r}")
-    payload = "".join(f"{target}\n" for target in targets)
-    encoded = base64.b64encode(payload.encode()).decode()
-    command = (
-        f"printf '%s' '{encoded}' | base64 -d > {TARGETS_PATH}.tmp && "
-        f"mv -f {TARGETS_PATH}.tmp {TARGETS_PATH}"
-    )
-    root_shell(args, command)
+    update_manual_targets(args, lambda _: targets)
 
 
 def push_file(args: argparse.Namespace, local: Path, remote: str) -> None:
@@ -342,19 +429,18 @@ def command_targets(args: argparse.Namespace) -> int:
         if not targets:
             print("<empty>")
         return 0
-    if action == "add":
-        for target in args.processes:
-            if target not in targets:
-                targets.append(target)
-    elif action == "remove":
-        targets = [target for target in targets if target not in set(args.processes)]
-    elif action == "set":
-        targets = list(dict.fromkeys(args.processes))
-    elif action == "clear":
-        targets = []
-    else:
+    def transform(manual):
+        if action == "add":
+            return manual + args.processes
+        if action == "remove":
+            return [target for target in manual if target not in args.processes]
+        if action == "set":
+            return args.processes
+        if action == "clear":
+            return []
         fail(f"unsupported targets action: {action}")
-    write_targets(args, targets)
+    targets = update_manual_targets(args, transform)
+    print("Manual targets updated; plugin scopes remain enabled in the effective target list.")
     print(f"targets: {', '.join(targets) if targets else '<empty>'}")
     print("restart the target app (and any already-running process) for changes to take effect")
     return 0
@@ -1065,18 +1151,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--soft-reboot", action="store_true", help="request ksud soft-reboot after install")
     sub.set_defaults(func=command_install)
 
-    sub = subparsers.add_parser("targets", help="manage config/targets.txt on the device")
+    sub = subparsers.add_parser("targets", help="manage manual targets; plugin scope targets are preserved")
     targets_actions = sub.add_subparsers(dest="action", required=True)
     targets_actions.add_parser("list", help="list configured target processes").set_defaults(func=command_targets)
     for action, help_text in (
         ("add", "add target process names"),
         ("remove", "remove target process names"),
-        ("set", "replace the target list"),
+        ("set", "replace manual targets (preserves plugin scopes)"),
     ):
         action_parser = targets_actions.add_parser(action, help=help_text)
         action_parser.add_argument("processes", nargs="+")
         action_parser.set_defaults(func=command_targets)
-    targets_actions.add_parser("clear", help="clear the target list").set_defaults(func=command_targets)
+    targets_actions.add_parser("clear", help="clear manual targets (preserves plugin scopes)").set_defaults(func=command_targets)
 
     sub = subparsers.add_parser("deploy-agent", help="hot-deploy agent + init.lua and restart one app")
     sub.add_argument("-p", "--process", default="bin.mt.plus")

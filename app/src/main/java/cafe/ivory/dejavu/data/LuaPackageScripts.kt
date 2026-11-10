@@ -30,7 +30,7 @@ object LuaPackageScripts {
         validateSession(session)
         val id = quote(pkg.manifest.id)
         val sessionValue = quote(session)
-        val sources = pkg.manifest.files.joinToString(",\n") { path ->
+        val sources = pkg.manifest.files.filterNot { it == pkg.manifest.ui }.joinToString(",\n") { path ->
             "[${quote(path)}]=${quote(pkg.sources.getValue(path))}"
         }
         return bounded("""
@@ -104,9 +104,68 @@ object LuaPackageScripts {
                 record.state, record.error = "error", tostring(result)
                 error(id .. " stop failed: " .. tostring(result), 0)
             end
+            if record.socket ~= nil then
+                hook.stream_release(record.socket.lease)
+                record.socket = nil
+            end
             registry[id] = nil
             return id .. " stopped"
         """.trimIndent())
+    }
+
+    fun attachSocket(id: String, session: String, owner: String, port: Int): String {
+        validateSession(owner)
+        require(port in 1024..65535) { "Invalid bound plugin socket port" }
+        return """
+            ${selectedRecord(id, session)}
+            assert(record and record.state == "running", "plugin session is no longer running")
+            assert(type(hook.stream_acquire) == "function" and type(hook.stream_release) == "function",
+                   "hook event socket requires stream lease support")
+            local owner = ${quote(owner)}
+            if record.socket then
+                if record.socket.owner == owner then return "socket attached" end
+                hook.stream_release(record.socket.lease)
+                record.socket = nil
+            end
+            local lease = hook.stream_acquire("127.0.0.1:$port")
+            record.socket = {owner = owner, lease = lease}
+            return "socket attached"
+        """.trimIndent()
+    }
+
+    fun detachSocket(id: String, session: String, owner: String): String {
+        validateSession(owner)
+        return """
+            ${selectedRecord(id, session)}
+            if record and record.socket and record.socket.owner == ${quote(owner)} then
+                hook.stream_release(record.socket.lease)
+                record.socket = nil
+            end
+            return "socket detached"
+        """.trimIndent()
+    }
+
+    fun runAction(id: String, session: String, action: String): String {
+        validatePluginPageCall(action)
+        return """
+            ${selectedRecord(id, session)}
+            assert(record and record.state == "running", "plugin session is no longer running")
+            local actions = record.api.actions
+            local action = type(actions) == "table" and rawget(actions, ${quote(action)}) or nil
+            assert(type(action) == "function", "plugin action is unavailable")
+            assert(action(record.ctx) ~= false, "plugin action failed")
+            return "plugin action completed"
+        """.trimIndent()
+    }
+
+    private fun selectedRecord(id: String, session: String): String {
+        validatePluginId(id)
+        validateSession(session)
+        return """
+            local registry = rawget(_G, "__dejavu_app_packages")
+            local record = type(registry) == "table" and registry[${quote(id)}] or nil
+            if type(record) ~= "table" or record.session ~= ${quote(session)} then record = nil end
+        """.trimIndent()
     }
 
     fun snapshot(): String = """

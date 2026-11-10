@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="package_add_zip">添加插件</string>
+    <string name="package_zip_empty_title">还没有插件</string>
+    <string name="package_zip_empty_detail">点击右下角 + 选择 ZIP 插件包，包内需包含合法的 manifest.json 及其声明的资源。</string>
+    <string name="package_zip_importing">正在校验并导入 ZIP 插件…</string>
+    <string name="package_plugin_info">插件信息</string>
+    <string name="package_plugin_id">插件标识</string>
+    <string name="package_plugin_no_description">暂无插件说明</string>
+</resources>

@@ -1,7 +1,7 @@
 # Design
 
 ## Source of truth
-Status: Active. Updated: 2026-11-09. Scope: Dejavu Manager.
+Status: Active. Updated: 2026-11-10. Scope: Dejavu Manager.
 Evidence: app/README.md, app/docs/plugins.png, MainActivity.kt, Screens.kt,
 ConsoleUiState.kt, Theme.kt, generic test fixtures, and the native plugin ABI docs.
 User requirement: import manifest-based Lua, native and JIT plugin folders;
@@ -9,14 +9,14 @@ control them from the app and show declared events live without history files.
 
 ## Brand
 Focused technical utility. Trust comes from a visible target, explicit actions,
-truthful runtime state and useful errors. Use warm ivory, forest green and the
+truthful runtime state and useful errors. Default to warm ivory and forest green, offer coherent optional palettes, and keep the
 pixel dog from the launcher mark.
 Avoid decorative dashboards, status inferred from import success and hidden starts.
 
 ## Product goals
-Select a folder once, import its declared code resources, select a target, start,
+Select a ZIP once, validate its manifest and declared resources, configure a plugin scope, start,
 inspect status/events and stop. Preserve existing native plugin management.
-Success: a complete manifest folder imports and can be controlled without
+Success: a complete manifest ZIP imports and can be controlled without
 typing device paths or using the host CLI. Importing alone never runs code.
 Non-goals: marketplace, background message archives, automatic app restarts,
 updating native module ABI or treating arbitrary folders as executable plugins.
@@ -26,15 +26,17 @@ The owner of a rooted Android test device manages their own target applications.
 They need repeatable plugin activation and live feedback on a phone screen.
 
 ## Information architecture
-Use four main destinations. Overview shows module detection, the selected
-process, root and helper status, and project source, references and copyright.
-Scope edits the global process allowlist. Its radio buttons select the process
-used by plugin and Lua actions. Plugins shows the selected process, folder
-import, Lua packages and native/JIT plugins with selected-process runtime status.
-Other process-registered plugins remain visible below the library. Tools opens
-live Dejavu logs and the Lua console as separate screens.
-The language picker sits at the far right of the top bar in each screen.
-Directory cards offer Start/Stop, status and live events when declared.
+Use three main destinations: Overview, Plugins and Configuration. Overview shows
+module detection, aggregate injection targets, root/helper status and project
+references. Each plugin owns a multi-process scope; the native injection list
+is the union of plugin scopes and legacy/manual targets. Plugins shows compact
+identity rows (icon, name, type/version) and a floating ZIP add button. Details
+are internal Control / Scope / Info tabs. Control selects the inspected process
+and shows native or Lua-authored controls; changing it never stops other targets.
+Scope is multi-select and Info contains manifest metadata and configured targets.
+Configuration offers persisted palettes and system/light/dark mode plus log access.
+The language picker remains at the far right of the top bar. The mobile console
+and global single-target scope screen have been removed.
 Manifest and declared resources live in `/data/adb/dejavu/plugins/<id>` and the
 app scans this root-owned directory by default. Runtime state
 comes from the selected process, with explicit disconnected/unknown states.
@@ -74,7 +76,7 @@ and stale-target results. A failed stop retains running/unknown state for retry.
 Events: connecting/listening/empty/error; bounded memory and clear-on-dismiss.
 
 ## Content voice
-English and Simplified Chinese resources with a follow-system option. Use Import folder, Start, Stop and
+English and Simplified Chinese resources with a follow-system option. Use Add plugin, Start, Stop and
 Live events consistently. Distinguish an imported package from a running plugin.
 Explain only actionable prerequisites; no internal stack traces in normal UI.
 
@@ -98,7 +100,7 @@ other allowlist entries. Keep library files root-private; do not relax the
 native loader's trusted-allowlist checks.
 The process-side Lua entry returns start/stop/status functions accepting a context
 with session and read(path). Store lifecycle context per package in the target.
-Live events use session-filtered logcat frames and in-memory decoding only.
+Live events use declared socket or legacy session-filtered logcat transports and in-memory decoding only.
 Event display fields and deduplication identity are declared in the plugin's
 manifest; Manager has no application-specific pages, fields or event markers.
 Tests cover validation, source quoting, lifecycle ownership and frame limits;

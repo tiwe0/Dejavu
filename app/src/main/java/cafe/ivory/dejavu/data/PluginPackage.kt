@@ -11,6 +11,8 @@ const val MAX_PLUGIN_PACKAGE_BYTES = 256 * 1024
 const val MAX_PLUGIN_RPC_BYTES = 1024 * 1024
 const val MAX_PLUGIN_FILES = 32
 const val MAX_PLUGIN_MANIFEST_BYTES = 16 * 1024
+private const val LOGCAT_EVENT_FORMAT = "urlencoded-json-v1"
+private const val SOCKET_EVENT_FORMAT = "hook-socket-json-v1"
 
 internal fun validatePluginId(id: String) {
     require(id.matches(Regex("[a-z][a-z0-9_-]{0,63}"))) { "Invalid plugin identifier: $id" }
@@ -41,20 +43,32 @@ internal fun pluginUtf8Bytes(text: String): ByteArray {
 }
 
 data class PluginEventSpec(
-    val tag: String,
-    val marker: String,
-    val format: String = "urlencoded-json-v1",
+    val tag: String = "",
+    val marker: String = "",
+    val format: String = LOGCAT_EVENT_FORMAT,
     val titleField: String = "title",
     val contentField: String = "content",
     val metaField: String = "meta",
     val dedupFields: List<String> = emptyList(),
     val dedupFallbackFields: List<String> = emptyList(),
     val dedupIgnoreValues: List<String> = listOf(""),
+    val topic: String? = null,
 ) {
+    val usesSocket: Boolean get() = format == SOCKET_EVENT_FORMAT
+
     fun validate() {
-        require(tag.matches(Regex("[A-Za-z0-9_.-]{1,64}"))) { "Invalid plugin event tag" }
-        require(marker.matches(Regex("[A-Za-z0-9_.:-]{1,64}"))) { "Invalid plugin event marker" }
-        require(format == "urlencoded-json-v1") { "Unsupported plugin event format: $format" }
+        when (format) {
+            LOGCAT_EVENT_FORMAT -> {
+                require(tag.matches(Regex("[A-Za-z0-9_.-]{1,64}"))) { "Invalid plugin event tag" }
+                require(marker.matches(Regex("[A-Za-z0-9_.:-]{1,64}"))) { "Invalid plugin event marker" }
+                require(topic == null) { "Logcat events do not use a socket topic" }
+            }
+            SOCKET_EVENT_FORMAT -> {
+                require(tag.isEmpty() && marker.isEmpty()) { "Socket events do not use a logcat tag or marker" }
+                require(topic?.matches(Regex("[A-Za-z0-9_.-]{1,64}")) == true) { "Invalid plugin event topic" }
+            }
+            else -> throw IllegalArgumentException("Unsupported plugin event format: $format")
+        }
         fun field(name: String) {
             require(name.matches(Regex("[A-Za-z_][A-Za-z0-9_.-]{0,63}"))) {
                 "Invalid plugin event field: $name"
@@ -84,6 +98,7 @@ data class PluginPackageManifest(
     val events: PluginEventSpec? = null,
     val schemaVersion: Int = 1,
     val kind: String = "lua",
+    val ui: String? = null,
 ) {
     fun validate() {
         require(schemaVersion == 1) { "Unsupported plugin manifest version: $schemaVersion" }
@@ -102,6 +117,12 @@ data class PluginPackageManifest(
             else -> true
         }) { "Plugin entry does not match kind: $kind" }
         require(kind == "lua" || events == null) { "Live events require a Lua package" }
+        ui?.let { path ->
+            require(kind == "lua") { "Plugin pages require a Lua package" }
+            require(path.endsWith(".json") && path in files && path != entry) {
+                "Plugin ui must be a declared JSON resource distinct from the entry"
+            }
+        }
         // A file cannot also be the parent directory of another declared file.
         require(files.none { file -> files.any { other -> other.startsWith("$file/") } }) {
             "Plugin resource paths conflict as files and directories"
@@ -120,11 +141,16 @@ data class PluginPackageManifest(
             put("description", description)
             put("entry", entry)
             put("files", JSONArray(files))
+            ui?.let { put("ui", it) }
             events?.let { spec ->
                 put("events", JSONObject().apply {
-                    put("tag", spec.tag)
-                    put("marker", spec.marker)
                     put("format", spec.format)
+                    if (spec.usesSocket) {
+                        put("topic", spec.topic)
+                    } else {
+                        put("tag", spec.tag)
+                        put("marker", spec.marker)
+                    }
                     put("titleField", spec.titleField)
                     put("contentField", spec.contentField)
                     put("metaField", spec.metaField)
@@ -162,14 +188,16 @@ data class PluginPackageManifest(
                     }
                 }
                 PluginEventSpec(
-                    tag = eventString("tag"), marker = eventString("marker"),
-                    format = if (value.has("format")) eventString("format") else "urlencoded-json-v1",
+                    tag = if (value.has("tag")) eventString("tag") else "",
+                    marker = if (value.has("marker")) eventString("marker") else "",
+                    format = if (value.has("format")) eventString("format") else LOGCAT_EVENT_FORMAT,
                     titleField = if (value.has("titleField")) eventString("titleField") else "title",
                     contentField = if (value.has("contentField")) eventString("contentField") else "content",
                     metaField = if (value.has("metaField")) eventString("metaField") else "meta",
                     dedupFields = eventStrings("dedupFields", emptyList()),
                     dedupFallbackFields = eventStrings("dedupFallbackFields", emptyList()),
                     dedupIgnoreValues = eventStrings("dedupIgnoreValues", listOf("")),
+                    topic = if (value.has("topic")) eventString("topic") else null,
                 )
             } else null
             return PluginPackageManifest(
@@ -181,6 +209,7 @@ data class PluginPackageManifest(
                         ?: throw IllegalArgumentException("Manifest files must contain strings")
                 },
                 events = events, schemaVersion = 1, kind = string("kind"),
+                ui = if (json.has("ui")) string("ui") else null,
             ).also { it.validate() }
         }
     }
@@ -190,6 +219,10 @@ data class ImportedPluginPackage(
     val manifest: PluginPackageManifest,
     val sources: Map<String, String>,
 ) {
+    val page: PluginPage? by lazy {
+        manifest.ui?.let { path -> PluginPage.parse(sources.getValue(path), manifest.events) }
+    }
+
     fun validate() {
         manifest.validate()
         require(manifest.kind == "lua") { "Source packages must use kind lua" }
@@ -199,5 +232,6 @@ data class ImportedPluginPackage(
         var total = manifestSize.toLong()
         sources.values.forEach { total += pluginUtf8Bytes(it).size }
         require(total <= MAX_PLUGIN_PACKAGE_BYTES) { "Plugin package exceeds $MAX_PLUGIN_PACKAGE_BYTES bytes" }
+        if (manifest.ui != null) requireNotNull(page)
     }
 }

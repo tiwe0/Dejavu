@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="plugin_scope_title">Scope</string>
+    <string name="plugin_scope_count">%1$d target processes</string>
+    <string name="plugin_inspect_process">Inspect process</string>
+    <string name="plugin_scope_empty">Select target apps in Scope to use this plugin.</string>
+    <string name="plugin_scope_inspect_hint">This selector chooses which process to inspect. All selected scope targets remain configured for injection.</string>
+    <string name="plugin_scope_removed">This process is outside this plugin’s scope. Stop or unload any active instance, then restart the app to apply the scope change.</string>
+    <string name="plugin_scope_hint">Select one or more apps for this plugin. Changes apply when each target app restarts. Scope enables framework injection; start or load this plugin separately in each process.</string>
+    <string name="plugin_scope_custom_process">Exact process (e.g. app:worker)</string>
+    <string name="plugin_scope_add_process">Add</string>
+    <string name="plugin_scope_save">Save scope (%1$d)</string>
+    <string name="plugin_scope_saving">Saving scope…</string>
+    <string name="plugin_scope_saved">Plugin scope saved. Restart affected apps to apply injection changes.</string>
+    <string name="plugin_scope_overview">%1$d injection targets · %2$d plugins with scopes</string>
+</resources>

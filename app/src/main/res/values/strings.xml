@@ -5,13 +5,11 @@
     <string name="tab_targets">Scope</string>
     <string name="tab_plugins">Plugins</string>
     <string name="tab_logs">Logs</string>
-    <string name="tab_console">Console</string>
 
     <string name="title_home">Dejavu Manager</string>
     <string name="title_targets">Scope</string>
     <string name="title_plugins">Plugins</string>
     <string name="title_logs">Live logs</string>
-    <string name="title_console">Lua console</string>
 
     <string name="status_root">ROOT</string>
     <string name="status_helper">HELPER</string>
@@ -47,7 +45,6 @@
     <string name="quick_actions_subtitle">Jump straight into a workflow</string>
     <string name="quick_plugins_detail">Inspect &amp; unload</string>
     <string name="quick_logs_detail">Dejavu tags</string>
-    <string name="quick_console_detail">Control channel</string>
     <string name="quick_capture_detail">Open templates</string>
     <string name="footer">Dejavu Console · on-device control plane</string>
 
@@ -81,21 +78,6 @@
     <string name="logs_empty_title">Live logcat</string>
     <string name="logs_empty_detail">Starts a logcat stream for DejavuZygisk, DejavuAgent, DejavuPlugin, DejavuHook and DejavuNative.</string>
 
-    <string name="console_subtitle">Authenticated abstract-socket RPC · selected target</string>
-    <string name="console_script_label">script</string>
-    <string name="run">Run</string>
-    <string name="running">Running…</string>
-    <string name="clear_output">Clear output</string>
-    <string name="response">Response</string>
-    <string name="response_empty">Run a script to see the response.</string>
-    <string name="empty_response">(empty response)</string>
-    <string name="more_templates">More templates</string>
-    <string name="more_templates_subtitle">Capture, algorithm and native hook examples</string>
-    <string name="template_plugin_list">plugin.list()</string>
-    <string name="template_algorithm_status">algorithm.status</string>
-    <string name="template_capture_status">capture.status</string>
-    <string name="template_native_list">native list</string>
-    <string name="template_root_helper">root helper</string>
 
     <string name="msg_invalid_process">Invalid process name</string>
     <string name="msg_added_target">Added %1$s</string>
@@ -135,10 +117,8 @@
     <string name="plugins_empty_action">Refresh plugins</string>
     <string name="logs_auto_scroll">Auto-scroll</string>
     <string name="logs_lines">%1$d lines</string>
-    <string name="console_templates">Templates</string>
     <string name="logs_no_matches">No matching lines</string>
     <string name="logs_filter_empty_detail">Clear the filter or wait for new Dejavu log lines.</string>
-    <string name="choose_template">Choose template</string>
     <string name="add_target">Add target</string>
     <string name="permission_title">Permission</string>
     <string name="root_required_title">Root access required</string>

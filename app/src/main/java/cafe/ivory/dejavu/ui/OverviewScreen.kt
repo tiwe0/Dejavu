@@ -1,8 +1,6 @@
 package cafe.ivory.dejavu.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,7 +13,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AccountTree
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material.icons.rounded.Hub
@@ -30,12 +27,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.res.colorResource
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -47,9 +41,7 @@ private const val PROJECT_URL = "https://github.com/tiwe0/Dejavu"
 @Composable
 internal fun OverviewScreen(
     state: ConsoleUiState,
-    onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
-    onManageScope: () -> Unit,
+    onManagePlugins: () -> Unit,
     onLinkUnavailable: (String) -> Unit,
 ) {
     LazyColumn(
@@ -58,7 +50,7 @@ internal fun OverviewScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item { ModuleStatus(state) }
-        item { OverviewTarget(state, onSelectTarget, onPickApp, onManageScope) }
+        item { OverviewTarget(state, onManagePlugins) }
         item {
             ManagerGroup {
                 RuntimeStatus(
@@ -87,11 +79,20 @@ internal fun OverviewScreen(
 @Composable
 private fun ModuleStatus(state: ConsoleUiState) {
     val installed = state.moduleInstalled
+    val colors = MaterialTheme.colorScheme
+    val dark = colors.background.luminance() < colors.onBackground.luminance()
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = if (installed) colorResource(R.color.ic_launcher_background)
-        else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (installed) Color(0xFFF8F3E7) else MaterialTheme.colorScheme.onSurfaceVariant,
+        color = when {
+            !installed -> colors.surfaceVariant
+            dark -> colors.primaryContainer
+            else -> colors.primary
+        },
+        contentColor = when {
+            !installed -> colors.onSurfaceVariant
+            dark -> colors.onPrimaryContainer
+            else -> colors.onPrimary
+        },
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp)
@@ -99,11 +100,7 @@ private fun ModuleStatus(state: ConsoleUiState) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Image(
-                painterResource(R.drawable.ic_launcher_foreground),
-                contentDescription = null,
-                modifier = Modifier.size(90.dp),
-            )
+            ManagerMark(Modifier.size(90.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     stringResource(if (installed) R.string.overview_module_detected else R.string.overview_module_missing),
@@ -126,66 +123,15 @@ private fun ModuleStatus(state: ConsoleUiState) {
 }
 
 @Composable
-private fun OverviewTarget(
-    state: ConsoleUiState,
-    onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
-    onManageScope: () -> Unit,
-) {
-    if (state.targets.isEmpty()) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                stringResource(R.string.no_targets_configured),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(onClick = onPickApp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.padding(end = 6.dp))
-                Text(stringResource(R.string.add_target))
-            }
-        }
-        return
-    }
-    val picker: @Composable (Modifier) -> Unit = { modifier ->
-        TargetMenu(
-            targets = state.targets,
-            selected = state.selectedTarget,
-            onSelect = onSelectTarget,
-            modifier = modifier,
-            apps = state.installedApps,
-        )
-    }
-    val action: @Composable (Modifier) -> Unit = { modifier ->
-        Button(
-            onClick = onManageScope,
-            modifier = modifier.heightIn(min = 48.dp),
-            shape = MaterialTheme.shapes.medium,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            Text(stringResource(R.string.overview_manage_scope))
-        }
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun OverviewTarget(state: ConsoleUiState, onManagePlugins: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            stringResource(R.string.current_process),
-            style = MaterialTheme.typography.labelLarge,
+            stringResource(R.string.plugin_scope_overview, state.targets.size, state.pluginScopes.count { it.value.isNotEmpty() }),
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        BoxWithConstraints {
-            if (maxWidth < 350.dp || LocalDensity.current.fontScale > 1.15f) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    picker(Modifier.fillMaxWidth())
-                    action(Modifier.fillMaxWidth())
-                }
-            } else {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    picker(Modifier.weight(1f))
-                    action(Modifier)
-                }
-            }
+        Button(onClick = onManagePlugins, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.tab_plugins))
         }
     }
 }

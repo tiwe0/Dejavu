@@ -1,16 +1,17 @@
 package cafe.ivory.dejavu.ui
 
-import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,30 +22,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Article
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Extension
-import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.Hub
-import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Stop
-import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.VerticalAlignBottom
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -52,43 +41,39 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.ConsoleUiState
-import cafe.ivory.dejavu.data.InstalledApp
-import cafe.ivory.dejavu.data.PluginInfo
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 @Composable
@@ -212,602 +197,356 @@ private fun RootStep(index: Int, text: String) {
     }
 }
 
-@Composable
-fun TargetsScreen(
-    state: ConsoleUiState,
-    onPickApp: () -> Unit,
-    onRemove: (String) -> Unit,
-    onSelect: (String) -> Unit,
-    onRestart: (String) -> Unit,
-) {
-    var pendingRemove by remember { mutableStateOf<String?>(null) }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            SectionTitle(
-                title = stringResource(R.string.targets_intro_title),
-                subtitle = stringResource(R.string.targets_intro_subtitle),
-            )
-        }
-        item {
-            Button(
-                onClick = onPickApp,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.size(8.dp))
-                Text(stringResource(R.string.add_target))
-            }
-        }
-        if (state.targets.isEmpty()) {
-            item {
-                EmptyState(
-                    title = stringResource(R.string.targets_empty_title),
-                    detail = stringResource(R.string.targets_empty_detail),
-                    icon = { Icon(Icons.Rounded.Hub, contentDescription = null) },
-                )
-            }
-        } else {
-            item {
-                Card(
-                    shape = MaterialTheme.shapes.large,
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = CardDefaults.outlinedCardBorder(),
-                ) {
-                    Column(Modifier.selectableGroup()) {
-                        val appsByPackage = remember(state.installedApps) {
-                            state.installedApps.associateBy(InstalledApp::packageName)
-                        }
-                        state.targets.forEachIndexed { index, target ->
-                            key(target) {
-                                TargetRow(
-                                    target = target,
-                                    app = appsByPackage[target.substringBefore(':')],
-                                    selected = target == state.selectedTarget,
-                                    onSelect = { onSelect(target) },
-                                    onRestart = { onRestart(target) },
-                                    onRemove = { pendingRemove = target },
-                                )
-                            }
-                            if (index != state.targets.lastIndex) {
-                                HorizontalDivider(Modifier.padding(horizontal = 12.dp))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Icon(
-                    Icons.Rounded.Info,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    stringResource(R.string.targets_intro_body),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-
-    if (pendingRemove != null) {
-        AlertDialog(
-            onDismissRequest = { pendingRemove = null },
-            title = { Text(stringResource(R.string.dialog_remove_target_title)) },
-            text = { Text(stringResource(R.string.dialog_remove_target_body, pendingRemove ?: "")) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingRemove?.let(onRemove)
-                        pendingRemove = null
-                    },
-                ) { Text(stringResource(R.string.action_remove)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingRemove = null }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-        )
-    }
-}
-
-@Composable
-private fun TargetRow(
-    target: String,
-    app: InstalledApp?,
-    selected: Boolean,
-    onSelect: () -> Unit,
-    onRestart: () -> Unit,
-    onRemove: () -> Unit,
-) {
-    var menu by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
-            .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        ProcessIcon(app, Modifier.size(32.dp))
-        Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
-            if (app != null) {
-                Text(
-                    app.label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
-            Text(
-                target,
-                style = if (app == null) MaterialTheme.typography.bodyMedium
-                else MaterialTheme.typography.bodySmall,
-                color = if (app == null) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Box {
-            IconButton(onClick = { menu = true }) {
-                Icon(
-                    Icons.Rounded.MoreVert,
-                    contentDescription = stringResource(R.string.action_more),
-                )
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.restart)) },
-                    leadingIcon = { Icon(Icons.Rounded.RestartAlt, contentDescription = null) },
-                    onClick = {
-                        menu = false
-                        onRestart()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.action_remove)) },
-                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null) },
-                    onClick = {
-                        menu = false
-                        onRemove()
-                    },
-                )
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PluginsScreen(
     state: ConsoleUiState,
+    pluginId: String?,
+    scopeEditor: Boolean,
+    onOpenPluginPage: (String) -> Unit,
+    onClosePluginPage: () -> Unit,
+    onShowPluginControl: () -> Unit,
+    onOpenScope: (String) -> Unit,
+    onSaveScope: (String, List<String>) -> Unit,
+    onLoadApps: () -> Unit,
+    onSetPreferredPort: (String, String, Int) -> Unit,
     onRefresh: () -> Unit,
     onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
     onUnload: (String, String) -> Unit,
-    onLoad: (String, String) -> Unit,
     onLoadLibrary: (String, String) -> Unit,
-    onImportFolder: () -> Unit,
+    onImportZip: () -> Unit,
     onScanDirectory: () -> Unit,
     onStartDirectory: (String, String) -> Unit,
     onStopDirectory: (String, String) -> Unit,
-    onDirectoryEvents: (String, String) -> Unit,
+    onDirectoryEvents: (String, String, Int?) -> Unit,
     onCloseDirectoryEvents: () -> Unit,
+    onDirectoryAction: (String, String, String) -> Unit,
     skillLoader: suspend (String, String) -> Result<String>,
+    preview: Boolean = false,
 ) {
-    val target = state.selectedTarget
-    var loadDialog by remember(target) { mutableStateOf(false) }
-    var loadPath by remember(target) { mutableStateOf("") }
-    var loadError by remember(target) { mutableStateOf(false) }
-    var skillPlugin by remember(target) { mutableStateOf<PluginInfo?>(null) }
-    var skillText by remember(target) { mutableStateOf("") }
-    var skillLoading by remember(target) { mutableStateOf(false) }
-    var pendingUnload by remember(target) { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val directory = state.directoryPlugins.firstOrNull { it.plugin.manifest.id == pluginId }
+    val native = state.nativeLibrary.firstOrNull { it.artifact.id == pluginId }
+    val busy = state.loading || state.pluginImporting || state.pluginDirectoryLoading ||
+        state.pluginsLoading || state.pluginActionId != null || state.nativePluginActionPath != null ||
+        state.scopeSavingId != null
+    var skillText by remember(pluginId, state.selectedTarget) { mutableStateOf<String?>(null) }
+    var skillLoading by remember(pluginId, state.selectedTarget) { mutableStateOf(false) }
+    var pendingUnload by remember(pluginId, state.selectedTarget) { mutableStateOf<String?>(null) }
+    var showingInfo by remember(pluginId) { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
     val skillFallback = stringResource(R.string.msg_skill_load_failed)
-    val libraryPaths = state.nativeLibrary.mapNotNull { it.runtime?.path }.toSet()
-    val otherPlugins = state.plugins.filter { it.path !in libraryPaths }
-    val loadedCount = otherPlugins.count { it.loaded }
-    val nativeBusy = state.loading || state.pluginImporting || state.pluginDirectoryLoading ||
-        state.pluginActionId != null || state.nativePluginActionPath != null
-    val showSkill: (PluginInfo) -> Unit = { plugin ->
-        if (target != null) {
-            skillPlugin = plugin
-            skillText = ""
-            skillLoading = true
-            scope.launch {
-                skillText = skillLoader(target, plugin.name).fold(
-                    onSuccess = { it },
-                    onFailure = { it.message ?: skillFallback },
-                )
-                skillLoading = false
+    val target = state.selectedTarget.takeIf { state.activePluginId == pluginId }
+    if (pluginId != null && (directory != null || native != null)) {
+        val scope = state.pluginScopes[pluginId].orEmpty()
+        val inScope = target != null && target in scope
+        val selectedTab = if (scopeEditor) 1 else if (showingInfo) 2 else 0
+        LaunchedEffect(pluginId, selectedTab) {
+            if (selectedTab != 0) onCloseDirectoryEvents()
+        }
+        Column(Modifier.fillMaxSize()) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.background,
+            ) {
+                listOf(R.string.plugin_detail_control, R.string.plugin_scope_title, R.string.plugin_detail_info)
+                    .forEachIndexed { index, title ->
+                        Tab(
+                            selected = selectedTab == index,
+                            enabled = !busy,
+                            onClick = {
+                                if (index != 0) onCloseDirectoryEvents()
+                                showingInfo = index == 2
+                                if (index == 1) onOpenScope(pluginId) else onShowPluginControl()
+                            },
+                            text = { Text(stringResource(title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        )
+                    }
             }
-        }
-    }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            PluginControls(
-                state = state,
-                onSelectTarget = onSelectTarget,
-                onPickApp = onPickApp,
-                onImport = onImportFolder,
-                importEnabled = state.rootGranted && !nativeBusy,
-            )
-        }
-        state.directoryRuntimeError?.let { error ->
-            item { ErrorBanner(error) }
-        }
-        if (state.pluginsLoading && !state.pluginDirectoryLoading && !state.pluginImporting) {
-            item {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-        }
-        item {
-            DirectoryPluginsSection(
-                state = state,
-                onRescan = onScanDirectory,
-                onStart = onStartDirectory,
-                onStop = onStopDirectory,
-                onEvents = onDirectoryEvents,
-            )
-        }
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle(
-                    title = stringResource(R.string.package_native_title),
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    onClick = { loadDialog = true },
-                    enabled = target != null && !nativeBusy,
-                ) {
-                    Text(stringResource(R.string.package_device_path))
-                }
-            }
-        }
-        if (state.nativeLibrary.isEmpty() && !state.pluginDirectoryLoading && !state.pluginImporting) {
-            item {
-                EmptyState(
-                    title = stringResource(R.string.native_library_empty_title),
-                    detail = stringResource(R.string.native_library_empty_detail),
-                    icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
-                )
-            }
-        }
-        items(state.nativeLibrary, key = { "library:${it.artifact.path}" }) { item ->
-            NativeLibraryPluginCard(
-                item = item,
-                target = target,
-                busy = nativeBusy,
-                working = state.nativePluginActionPath == item.artifact.path,
-                onLoad = { if (target != null) onLoadLibrary(target, item.artifact.path) },
-                onUnload = { item.runtime?.let { pendingUnload = it.name } },
-                onSkill = { item.runtime?.let(showSkill) },
-            )
-        }
-        if (otherPlugins.isNotEmpty()) {
-            item {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    stringResource(R.string.native_library_other_runtime_title),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
-            item {
-                Text(
-                    stringResource(R.string.plugins_count, loadedCount) +
-                        " / ${otherPlugins.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (target != null && !state.nativeRuntimeKnown && !state.pluginsLoading &&
-            !state.pluginDirectoryLoading && !state.pluginImporting
-        ) {
-            item {
-                EmptyState(
-                    title = stringResource(R.string.plugins_no_status_title),
-                    detail = stringResource(R.string.plugins_no_status_detail),
-                    icon = { Icon(Icons.Rounded.Extension, contentDescription = null) },
-                )
-            }
-            item {
-                OutlinedButton(
-                    onClick = onRefresh,
-                    enabled = !nativeBusy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(stringResource(R.string.plugins_empty_action)) }
-            }
-        }
-        items(otherPlugins, key = { "runtime:${it.name}" }) { plugin ->
-            PluginCard(
-                plugin = plugin,
-                enabled = !nativeBusy,
-                onSkill = { showSkill(plugin) },
-                onUnload = { pendingUnload = plugin.name },
-            )
-        }
-    }
-
-    if (loadDialog) {
-        AlertDialog(
-            onDismissRequest = { loadDialog = false },
-            title = { Text(stringResource(R.string.load_plugin)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(
-                        value = loadPath,
-                        onValueChange = {
-                            loadPath = it
-                            loadError = false
-                        },
-                        label = { Text(stringResource(R.string.plugin_path_label)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        isError = loadError,
-                        supportingText = if (loadError) {
-                            { Text(stringResource(R.string.msg_invalid_plugin_path)) }
-                        } else {
-                            null
-                        },
+            when (selectedTab) {
+                1 -> Box(Modifier.weight(1f)) {
+                    PluginScopeScreen(
+                        id = pluginId,
+                        scope = scope,
+                        apps = state.installedApps,
+                        loading = state.appsLoading,
+                        saving = state.scopeSavingId == pluginId,
+                        enabled = !busy,
+                        onLoadApps = onLoadApps,
+                        onSave = { onSaveScope(pluginId, it) },
                     )
                 }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !nativeBusy,
-                    onClick = {
-                        val path = loadPath.trim()
-                        if (!path.startsWith("/") || (!path.endsWith(".so") && !path.endsWith(".c"))) {
-                            loadError = true
-                        } else {
-                            loadDialog = false
-                            if (target != null) onLoad(target, path)
-                        }
-                    },
-                ) { Text(stringResource(R.string.load)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { loadDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-        )
-    }
-
-    if (pendingUnload != null) {
-        AlertDialog(
-            onDismissRequest = { pendingUnload = null },
-            title = { Text(stringResource(R.string.dialog_unload_plugin_title)) },
-            text = {
-                Text(stringResource(R.string.dialog_unload_plugin_body, pendingUnload ?: ""))
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !nativeBusy,
-                    onClick = {
-                        pendingUnload?.let { name ->
-                            if (target != null) onUnload(target, name)
-                        }
-                        pendingUnload = null
-                    },
-                ) { Text(stringResource(R.string.unload)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingUnload = null }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-        )
-    }
-
-    if (skillPlugin != null) {
-        ModalBottomSheet(
-            onDismissRequest = { skillPlugin = null },
-            sheetState = sheetState,
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                Text(skillPlugin!!.name, style = MaterialTheme.typography.titleLarge)
-                Text(
-                    stringResource(R.string.skill_md),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                2 -> PluginInformation(
+                    id = pluginId,
+                    name = directory?.plugin?.manifest?.name ?: native?.artifact?.name.orEmpty(),
+                    version = directory?.plugin?.manifest?.version ?: native?.artifact?.version.orEmpty(),
+                    type = if (directory != null) "Lua" else if (native?.artifact?.jit == true) "JIT" else "Native",
+                    description = directory?.plugin?.manifest?.description ?: native?.artifact?.description.orEmpty(),
+                    scope = scope,
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.height(12.dp))
-                if (skillLoading) {
-                    CircularProgressIndicator(Modifier.size(24.dp))
-                } else {
-                    SelectionContainer {
-                        Text(
-                            skillText,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                else -> Column(Modifier.weight(1f)) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TargetMenu(
+                            targets = (scope + listOfNotNull(target)).distinct(),
+                            selected = target,
+                            onSelect = onSelectTarget,
+                            enabled = !busy,
+                            apps = state.installedApps,
+                            label = stringResource(R.string.plugin_inspect_process),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (scope.isEmpty()) {
+                            Text(stringResource(R.string.plugin_scope_empty),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (target != null && !inScope) ErrorBanner(stringResource(R.string.plugin_scope_removed))
+                    }
+                    val page = directory?.plugin?.page
+                    if (directory != null && page != null) {
+                        Box(Modifier.weight(1f)) {
+                            PluginPageScreen(
+                                page = page, plugin = directory, target = target, busy = busy,
+                                working = state.pluginActionId == pluginId,
+                                runtimeError = state.directoryRuntimeError,
+                                events = state.packageEvents?.takeIf { it.packageId == pluginId && it.target == target },
+                                onBack = onClosePluginPage, onCheck = onScanDirectory,
+                                onStart = onStartDirectory, onStop = onStopDirectory,
+                                onCall = onDirectoryAction, onListen = onDirectoryEvents,
+                                onCloseEvents = onCloseDirectoryEvents,
+                                preferredPort = target?.let { state.pluginListenPorts[pluginId to it] } ?: 0,
+                                onSetPreferredPort = { port -> if (target != null) onSetPreferredPort(target, pluginId, port) },
+                                targetOffline = state.directoryTargetOffline,
+                                inScope = inScope,
+                                hoistHeader = true,
+                                preview = preview,
+                            )
+                        }
+                    } else {
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            state.directoryRuntimeError?.let { ErrorBanner(it) }
+                            if (directory != null) {
+                                StatusPill(stringResource(directory.runState.labelRes),
+                                    directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING)
+                                directory.error?.let { ErrorBanner(it) }
+                                val canStop = directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING ||
+                                    directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.ERROR
+                                Button(onClick = {
+                                    if (target != null) {
+                                        if (canStop) onStopDirectory(target, pluginId)
+                                        else if (directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN) onScanDirectory()
+                                        else onStartDirectory(target, pluginId)
+                                    }
+                                }, enabled = target != null && !busy && (canStop || inScope)) {
+                                    Text(stringResource(when {
+                                        canStop -> R.string.package_stop
+                                        directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN -> R.string.package_check_status
+                                        else -> R.string.package_start
+                                    }))
+                                }
+                                if (directory.plugin.manifest.events != null) {
+                                    OutlinedButton(onClick = { if (target != null) onDirectoryEvents(target, pluginId, null) },
+                                        enabled = inScope && !busy && directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING && directory.session != null) {
+                                        Text(stringResource(R.string.package_live_events))
+                                    }
+                                }
+                            }
+                            if (native != null) {
+                                NativeLibraryPluginCard(
+                                    item = native, target = target, busy = busy,
+                                    working = state.nativePluginActionPath == native.artifact.path,
+                                    canLoad = inScope,
+                                    onLoad = { if (target != null) onLoadLibrary(target, native.artifact.path) },
+                                    onUnload = { pendingUnload = native.runtime?.name },
+                                    onSkill = {
+                                        val runtime = native.runtime
+                                        if (target != null && runtime != null) {
+                                            skillLoading = true
+                                            skillText = ""
+                                            coroutineScope.launch {
+                                                skillText = skillLoader(target, runtime.name).fold({ it }, { it.message ?: skillFallback })
+                                                skillLoading = false
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+                            OutlinedButton(onClick = onRefresh, enabled = !busy) {
+                                Text(stringResource(R.string.package_check_status))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        val listState = rememberLazyListState()
+        var showAdd by remember { mutableStateOf(true) }
+        LaunchedEffect(listState) {
+            var previousIndex = listState.firstVisibleItemIndex
+            var previousOffset = listState.firstVisibleItemScrollOffset
+            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+                .collect { (index, offset) ->
+                    if (index != previousIndex || offset != previousOffset) {
+                        showAdd = index < previousIndex || (index == previousIndex && offset < previousOffset)
+                    }
+                    previousIndex = index
+                    previousOffset = offset
+                }
+        }
+        val importing = state.pluginImporting
+        val scanning = state.pluginDirectoryLoading || state.pluginsLoading
+        val canAdd = state.rootGranted && !busy
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (importing || scanning) {
+                    item(key = "progress") {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(
+                                stringResource(if (importing) R.string.package_zip_importing else R.string.package_scanning),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                state.pluginDirectoryError?.let { error ->
+                    item(key = "scan-error") { ErrorBanner(error) }
+                }
+                if (state.directoryPlugins.isEmpty() && state.nativeLibrary.isEmpty() &&
+                    !importing && !scanning && state.pluginDirectoryError == null
+                ) {
+                    item(key = "empty") {
+                        EmptyState(
+                            title = stringResource(R.string.package_zip_empty_title),
+                            detail = stringResource(R.string.package_zip_empty_detail),
                         )
                     }
                 }
+                items(state.directoryPlugins, key = { "lua:${it.plugin.manifest.id}" }) { item ->
+                    val id = item.plugin.manifest.id
+                    PluginSummaryCard(
+                        name = item.plugin.manifest.name,
+                        metadata = "Lua · ${item.plugin.manifest.version}",
+                        enabled = !busy,
+                        onOpen = { onCloseDirectoryEvents(); onOpenPluginPage(id) },
+                    )
+                }
+                items(state.nativeLibrary, key = { "native:${it.artifact.path}" }) { item ->
+                    val id = item.artifact.id
+                    if (id != null) PluginSummaryCard(
+                        name = item.artifact.name,
+                        metadata = (if (item.artifact.jit) "JIT" else "Native") + " · " + item.artifact.version,
+                        enabled = !busy,
+                        onOpen = { onOpenPluginPage(id) },
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = showAdd || importing || !listState.canScrollBackward || !listState.canScrollForward,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it },
+            ) {
+                FloatingActionButton(
+                    onClick = { if (canAdd) onImportZip() },
+                    modifier = Modifier.semantics { if (!canAdd) disabled() },
+                    containerColor = if (canAdd || importing) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (canAdd || importing) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    if (importing) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.package_add_zip))
+                    }
+                }
+            }
+        }
+    }
+    if (pendingUnload != null) {
+        AlertDialog(onDismissRequest = { pendingUnload = null },
+            title = { Text(stringResource(R.string.dialog_unload_plugin_title)) },
+            text = { Text(stringResource(R.string.dialog_unload_plugin_body, pendingUnload.orEmpty())) },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                val name = pendingUnload
+                if (target != null && name != null) onUnload(target, name)
+                pendingUnload = null
+            }) { Text(stringResource(R.string.unload)) } },
+            dismissButton = { TextButton(onClick = { pendingUnload = null }) { Text(stringResource(R.string.cancel)) } })
+    }
+    if (skillText != null) {
+        ModalBottomSheet(onDismissRequest = { skillText = null }) {
+            Column(Modifier.fillMaxWidth().padding(20.dp).verticalScroll(rememberScrollState())) {
+                Text(stringResource(R.string.skill_md), style = MaterialTheme.typography.titleLarge)
+                if (skillLoading) CircularProgressIndicator()
+                else SelectionContainer { Text(skillText.orEmpty(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)) }
                 Spacer(Modifier.height(32.dp))
             }
         }
     }
-
-    state.packageEvents?.let { events ->
-        DirectoryPluginEventsSheet(events, onCloseDirectoryEvents)
+    if (!preview && !scopeEditor && !showingInfo && directory?.plugin?.page == null) state.packageEvents?.takeIf { it.packageId == pluginId && it.target == target }?.let {
+        DirectoryPluginEventsSheet(it, onCloseDirectoryEvents)
     }
 }
 
 @Composable
-private fun PluginControls(
-    state: ConsoleUiState,
-    onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
-    onImport: () -> Unit,
-    importEnabled: Boolean,
+private fun PluginInformation(
+    id: String,
+    name: String,
+    version: String,
+    type: String,
+    description: String,
+    scope: List<String>,
+    modifier: Modifier = Modifier,
 ) {
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val targetMenu: @Composable (Modifier) -> Unit = { modifier ->
-            TargetMenu(
-                targets = state.targets,
-                selected = state.selectedTarget,
-                onSelect = onSelectTarget,
-                modifier = modifier,
-                onPickApp = onPickApp,
-                apps = state.installedApps,
-            )
-        }
-        val importButton: @Composable (Modifier) -> Unit = { modifier ->
-            Button(
-                onClick = onImport,
-                enabled = importEnabled,
-                modifier = modifier.heightIn(min = 48.dp),
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.size(8.dp))
-                Text(stringResource(R.string.package_import_folder))
-            }
-        }
-        if (maxWidth >= 350.dp && LocalDensity.current.fontScale <= 1.15f) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                targetMenu(Modifier.weight(1f))
-                importButton(Modifier)
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                targetMenu(Modifier.fillMaxWidth())
-                importButton(Modifier.fillMaxWidth())
-            }
-        }
-    }
-}
-
-@Composable
-private fun PluginCard(
-    plugin: PluginInfo,
-    enabled: Boolean,
-    onSkill: () -> Unit,
-    onUnload: () -> Unit,
-) {
-    var menu by remember { mutableStateOf(false) }
-    Card(
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = CardDefaults.outlinedCardBorder(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 4.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.Top,
+    SelectionContainer(modifier.fillMaxWidth()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        plugin.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (plugin.version.isNotBlank()) {
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            plugin.version,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                MonoText(plugin.path)
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (plugin.loaded) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outline,
-                                ),
-                        )
-                        Text(
-                            if (plugin.loaded) stringResource(R.string.status_loaded)
-                            else stringResource(R.string.status_idle),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        stringResource(R.string.plugin_caps_format, plugin.capabilities),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (plugin.jit) {
-                        Text(
-                            "JIT",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text("$type · $version", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Box {
-                IconButton(onClick = { menu = true }, enabled = enabled) {
-                    Icon(
-                        Icons.Rounded.MoreVert,
-                        contentDescription = stringResource(R.string.action_more),
-                    )
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(stringResource(R.string.package_plugin_id), style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(id, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    if (plugin.skill) {
-                        DropdownMenuItem(
-                            enabled = enabled,
-                            text = { Text(stringResource(R.string.action_skill)) },
-                            onClick = {
-                                menu = false
-                                onSkill()
-                            },
-                        )
-                    }
-                    DropdownMenuItem(
-                        enabled = enabled,
-                        text = { Text(stringResource(R.string.unload)) },
-                        onClick = {
-                            menu = false
-                            onUnload()
-                        },
-                    )
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(stringResource(R.string.plugin_detail_description), style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (description.isBlank()) stringResource(R.string.package_plugin_no_description) else description,
+                        style = MaterialTheme.typography.bodyMedium)
                 }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(stringResource(R.string.plugin_scope_count, scope.size), style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (scope.isEmpty()) Text(stringResource(R.string.plugin_detail_no_scope),
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            items(scope, key = { it }) { process ->
+                Text(process, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
             }
         }
     }
@@ -930,334 +669,6 @@ fun LogsScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun ConsoleScreen(
-    state: ConsoleUiState,
-    onSelectTarget: (String) -> Unit,
-    onPickApp: () -> Unit,
-    runner: suspend (String) -> Result<String>,
-) {
-    var script by rememberSaveable { mutableStateOf("return plugin.list()") }
-    var output by rememberSaveable { mutableStateOf("") }
-    var running by remember { mutableStateOf(false) }
-    var outputError by remember { mutableStateOf(false) }
-    var templateMenu by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val templates = listOf(
-        stringResource(R.string.template_plugin_list) to "return plugin.list()",
-        stringResource(R.string.template_algorithm_status) to
-            "return plugin.call(\"algorithm\", \"status\")",
-        stringResource(R.string.template_capture_status) to
-            "return plugin.call(\"capture\", \"status\")",
-        stringResource(R.string.template_native_list) to "return native.list()",
-        stringResource(R.string.template_root_helper) to
-            "return \"port=\" .. (prop.get(\"debug.dejavu.root.port\") or \"none\")",
-    )
-    val errorPrefix = stringResource(R.string.msg_error_prefix, "")
-    val emptyResponse = stringResource(R.string.empty_response)
-    val responseEmpty = stringResource(R.string.response_empty)
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 104.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            TargetMenu(
-                targets = state.targets,
-                selected = state.selectedTarget,
-                onSelect = onSelectTarget,
-                onPickApp = onPickApp,
-                apps = state.installedApps,
-            )
-        }
-        item {
-            Card(
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        stringResource(R.string.console_subtitle),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedTextField(
-                        value = script,
-                        onValueChange = { script = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 4,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                        ),
-                        label = { Text(stringResource(R.string.console_script_label)) },
-                        shape = MaterialTheme.shapes.medium,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = {
-                                running = true
-                                output = ""
-                                outputError = false
-                                scope.launch {
-                                    output = runner(script).fold(
-                                        onSuccess = { it.ifBlank { emptyResponse } },
-                                        onFailure = {
-                                            outputError = true
-                                            errorPrefix + it.message
-                                        },
-                                    )
-                                    running = false
-                                }
-                            },
-                            enabled = !running && state.selectedTarget != null,
-                        ) {
-                            if (running) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                                Spacer(Modifier.size(8.dp))
-                            }
-                            Text(
-                                if (running) stringResource(R.string.running)
-                                else stringResource(R.string.run),
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                output = ""
-                                outputError = false
-                            },
-                            enabled = output.isNotBlank(),
-                        ) { Text(stringResource(R.string.clear_output)) }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stringResource(R.string.console_templates),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Box {
-                            TextButton(onClick = { templateMenu = true }) {
-                                Text(stringResource(R.string.choose_template))
-                            }
-                            DropdownMenu(
-                                expanded = templateMenu,
-                                onDismissRequest = { templateMenu = false },
-                            ) {
-                                templates.forEach { template ->
-                                    DropdownMenuItem(
-                                        text = { Text(template.first) },
-                                        onClick = {
-                                            script = template.second
-                                            templateMenu = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Card(
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Terminal,
-                            contentDescription = null,
-                            tint = if (outputError) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            stringResource(R.string.response),
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (output.isNotBlank()) {
-                            IconButton(onClick = {
-                                output = ""
-                                outputError = false
-                            }) {
-                                Icon(
-                                    Icons.Rounded.DeleteOutline,
-                                    contentDescription = stringResource(R.string.clear_output),
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    SelectionContainer {
-                        Text(
-                            output.ifBlank { responseEmpty },
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                            ),
-                            color = if (outputError) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AppPickerSheet(
-    state: ConsoleUiState,
-    onPick: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var query by rememberSaveable { mutableStateOf("") }
-    val apps = remember(state.installedApps, query) {
-        state.installedApps.filter {
-            query.isBlank() ||
-                it.label.contains(query, ignoreCase = true) ||
-                it.packageName.contains(query, ignoreCase = true)
-        }
-    }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.82f)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    stringResource(R.string.choose_app),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    state.installedApps.size.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                placeholder = { Text(stringResource(R.string.search_apps)) },
-                singleLine = true,
-                shape = MaterialTheme.shapes.medium,
-            )
-            if (state.appsLoading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-            if (apps.isEmpty() && !state.appsLoading) {
-                EmptyState(
-                    title = stringResource(R.string.no_apps),
-                    detail = stringResource(R.string.search_apps),
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                ) {
-                    items(apps, key = { it.packageName }) { app ->
-                        AppRow(
-                            app = app,
-                            selected = app.packageName == state.selectedTarget,
-                            onClick = {
-                                onPick(app.packageName)
-                                onDismiss()
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppRow(app: InstalledApp, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (app.icon != null) {
-            Image(
-                bitmap = app.icon.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp)),
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    app.label.take(1).uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Column(Modifier.weight(1f)) {
-            Text(
-                app.label,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                app.packageName,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (selected) {
-            Icon(
-                Icons.Rounded.CheckCircle,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
         }
     }
 }
