@@ -1,25 +1,87 @@
-# Dejavu
+<h1 align="center">Dejavu</h1>
+<p align="center">个人自用、适应 AI 时代敏捷开发的轻量级 Android Hook 工具。</p>
+<p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
+<p align="center">
+  <a href="https://github.com/tiwe0/Dejavu/actions/workflows/build.yml"><img src="https://github.com/tiwe0/Dejavu/actions/workflows/build.yml/badge.svg?branch=main" alt="Build Dejavu 构建状态"></a>
+  <a href="https://github.com/tiwe0/Dejavu/releases/latest"><img src="https://img.shields.io/github/v/release/tiwe0/Dejavu" alt="最新版本"></a>
+  <img src="https://img.shields.io/badge/Android-arm64-3DDC84?logo=android&amp;logoColor=white" alt="Android arm64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT 许可证"></a>
+</p>
+<p align="center"><a href="#快速上手">快速上手</a> · <a href="zygisk/docs/user-guide.md">使用指南</a> · <a href="zygisk/docs/cookbook.md">Hook 示例</a> · <a href="https://github.com/tiwe0/Dejavu/releases">版本下载</a></p>
 
-[English](README.md) | **简体中文**
+用 Lua 和 C 编写 Hook，通过 Manager 或 CLI 查看目标状态，直接迭代，无需重新
+构建目标应用。**向其他应用注入需要 root 和兼容的 Zygisk provider。**
+Lua + TinyCC 核心也可以嵌入能够控制自身进程的应用，这种用法不依赖 Zygisk。
 
-`libdejavu.so` 是一个面向 Android arm64 的共享库骨架，内嵌：
+## Manager
 
-- Lua 5.4.8
-- TinyCC 0.9.27-frida
+<table>
+  <tr>
+    <td align="center"><img src="app/docs/manager-overview.png" width="270" alt="海洋蓝深色主题下的 Manager 概览"><br><strong>概览</strong><br>模块、root 与辅助服务状态</td>
+    <td align="center"><img src="app/docs/manager-configuration.png" width="270" alt="折叠外观选项后的 Manager 配置页"><br><strong>配置</strong><br>简洁入口，按需展开外观选项</td>
+  </tr>
+</table>
 
-公共 ABI 定义在 `include/dejavu.h`。Lua 和 TinyCC 以固定版本的 Git
-子模块引入，且其符号不会暴露到公共 ABI。引擎可以直接在内存中编译
-freestanding C，Lua 则作为该引擎之上的轻量控制层。
+<sub>以上为开发版 Manager 的实机截图，截图中的模块版本可能早于当前发布版本。</sub>
 
-## 免责声明与授权使用
+Manager 分为**概览、插件、配置**三个主页面。外部插件列表只保留身份信息，
+每个插件内部的**控制／作用域／信息**分别承载运行操作、目标选择和完整元数据。
 
-Dejavu 是一个**自用的安全研究工具**。请仅在您拥有的设备、或您已获得明确
-授权的进程/应用上进行测试。您需自行遵守适用法律、合同与平台政策（包括
-目标应用的服务条款）；不得用于未授权访问、绕过保护措施或损害他人。
+- **每个插件独立配置作用域。** 支持多选应用与精确进程名，框架合并各插件的
+  注入目标；切换查看进程不会停止其他进程中已运行的插件实例。
+- **ZIP 导入。** 插件包需包含合法的 `manifest.json` 及声明资源。完整校验后
+  才替换现有版本，导入本身不执行代码。
+- **Lua 编写页面，Compose 原生渲染。** 支持默认 `monitor`、`controls` 布局，
+  并兼容已有声明式 Lua 页面。
+- **实时反馈。** socket 事件查看器只在内存中保留有界列表，关闭后清空。
+  插件自身仍可选择写文件，例如公开的 capture 示例。
+- **外观自动保存。** 提供六套配色、Android 12+ 系统取色，以及跟随系统／浅色／
+  深色模式；首页狗头随主题变化。支持设备且开启系统动画时可显示预测式返回预览。
 
-本软件按**“现状”**提供，不附带任何形式的保证。作者不对使用或误用造成的
-任何损害、数据丢失、账号封禁、法律后果或其他损失负责。您对自己的行为以及
-测试的授权合规性负全部责任。
+包结构、页面 schema 和构建方式见 [Manager 指南](app/README.md)。手机端 Lua
+Console 已移除，CLI 和 MCP 接口继续保留。
+
+## 快速上手
+
+1. **准备设备。** 使用本人控制或已获授权的 Android arm64 root 设备，并安装
+   兼容的 Zygisk provider。先查看[兼容性说明](#android-兼容性状态)。
+2. **安装框架。** 从 [Releases](https://github.com/tiwe0/Dejavu/releases/latest)
+   下载模块 ZIP，在 root 管理器中安装并重启设备。具体步骤见
+   [安装指南](zygisk/docs/user-guide.md)。
+3. **打开 Manager。** 按 [App 指南](app/README.md)构建，或从成功的
+   [Build Dejavu 工作流](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml)
+   下载 `dejavu-manager-debug` 产物。CI APK 使用调试签名，与正式模块 ZIP 分开提供。
+   为 Manager 授予 root 权限。
+4. **添加并启用插件。** 点击右下角 **+** 选择 ZIP，在插件内配置**作用域**，
+   重启受影响的目标应用，再选择进程并手动**启动／加载**。修改作用域或导入文件
+   都不会自动执行插件代码。
+
+公开插件和可构建示例位于 [`examples/`](examples/README.md)。可选的 `plugins/`
+子模块指向私有仓库，公开框架构建与发布不要求访问它。
+
+## 框架能力
+
+| 任务 | 接口 | 文档 |
+| --- | --- | --- |
+| Java/Kotlin Hook | LSPlant、Lua `hook` / `hookx` | [常用 Hook 示例](zygisk/docs/cookbook.md) |
+| Native Hook 与主动调用 | Dobby、TinyCC、`native.*` | [Native API](zygisk/docs/native-hook-api.md) |
+| Java 调用与对象句柄 | `java.invoke`、`java.new`、`java.load_dex` | [Java API](zygisk/docs/java-invoke-api.md) |
+| 可复用插件 | Lua 包、原生 `.so`、JIT `.c` | [插件 API](zygisk/docs/plugin-api.md) |
+| AI agent 迭代 | 统一 CLI、MCP 工具 | [Agent 指南](SKILL.md) |
+| 文件、内存与模块 | 目标进程内的 helper API | [Agent helpers](zygisk/docs/agent-helpers.md) |
+| 按进程加载启动脚本 | 持久会话中的独立 Lua chunk | [启动 Hook](zygisk/docs/early-hooks.md) |
+
+启动脚本在应用绑定之后、实时 RPC 启动之前执行，**不保证早于
+`Application.onCreate`**。依赖启动时机前，请先阅读执行与错误恢复约定。
+
+## 构建与参考
+
+按需求查看 [Manager 构建指南](app/README.md)、[Zygisk 构建指南](zygisk/README.md)
+或[公开示例](examples/README.md)。主机开发支持 Linux 和 macOS。公开依赖以固定
+Git 子模块引入，核心内嵌 Lua 5.4.8 和 TinyCC 0.9.27-frida。
+
+<details>
+<summary><strong>展开引擎、构建、CLI 与贡献者参考</strong></summary>
 
 核心 `libdejavu.so` 不依赖 Magisk。任何能够控制自身进程的应用都可以直接
 集成或加载它。`zygisk/` 目录只是一个可选集成，用于把 Dejavu 注入其他
@@ -151,12 +213,12 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 - 修改 `zygisk/module/module.prop` 的 `version=` 并推送到 `main`：CI 检测到
   版本变化后，在所有检查通过时从该提交创建稳定版 `vX.Y.Z` 并发布（自动创建
   标签）；
-- 推送与模块版本一致的 `v*` 标签（例如 `v0.7.0`）时创建正式版本；
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.8.2`）时创建正式版本；
 - 手动运行 `workflow_dispatch` 时，从所选分支创建
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
-只有主机测试、Android API 26 基线、兼容性构建、Zygisk 打包和代码质量检查
-全部通过后才会发布。每个 Release 带两个资产：framework-only 的 Zygisk 模块
+只有主机测试、Android API 26 基线、兼容性构建、Manager 编译与 lint、Zygisk
+打包和代码质量检查全部通过后才会发布。每个 Release 带两个资产：framework-only 的 Zygisk 模块
 zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 `dejavu-plugins-vX.Y.Z-arm64.zip`。版本未变化的普通 push 只构建 artifact，
 不会发布 Release。
@@ -188,7 +250,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 ./dejavu build [--api 26]                       # 构建 libdejavu.so
 ./dejavu package [--api 26]                     # 构建并打包模块 zip
 ./dejavu install [--zip PATH] [--soft-reboot]   # 推送并通过 ksud/magisk 安装
-./dejavu targets list|add|remove|set|clear      # 编辑设备 targets.txt
+./dejavu targets list|add|remove|set|clear      # 编辑手动目标，保留插件作用域
 ./dejavu deploy-agent -p <进程>                 # 热部署 agent + init.lua
 ./dejavu exec -p <进程> -e 'return hook.list()'
 ./dejavu exec -p <进程> hooks/demo.lua
@@ -226,7 +288,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.7.0`）；模块打包、loader/agent 行为与文档更新独立递增。
+  版本**（当前 `0.8.2`）；模块打包、loader/agent 行为与文档更新独立递增。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
 
@@ -302,15 +364,6 @@ ADB=/path/to/adb ADB_SERIAL=<serial> TARGET_PROCESS=com.android.settings \
 - LSPlant 依赖私有 ART 符号，每个 Android 代际都需要真机验证；Android
   16/17 仍待验收。
 
-## 许可证
-
-Dejavu 以 MIT 许可证发布，详见 [LICENSE](LICENSE)。第三方组件及其
-许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-内置的第三方组件保留各自许可证：Lua 5.4（MIT）、TinyCC（LGPL-2.1）、
-LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附带
-本项目的 LICENSE；再分发二进制前请自行核对第三方许可证要求。
-
 ## 示例（非框架能力）
 
 `examples/unpack/` 是**用例示范**，不是框架稳定能力。它被编译为动态加载插件
@@ -319,3 +372,24 @@ LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附�
 与 Lua 策略（Manifest 命名空间 → dumped DEX 类解析 → 节流主动调用）组合起来，
 由 `examples/unpack/cli.py` 驱动。详见 `examples/unpack/README.md` 与
 `examples/unpack/design.md`。
+
+</details>
+
+## 免责声明与授权使用
+
+Dejavu 是一个**自用的安全研究工具**。请仅在您拥有的设备、或您已获得明确
+授权的进程/应用上进行测试。您需自行遵守适用法律、合同与平台政策（包括
+目标应用的服务条款）；不得用于未授权访问、绕过保护措施或损害他人。
+
+本软件按**“现状”**提供，不附带任何形式的保证。作者不对使用或误用造成的
+任何损害、数据丢失、账号封禁、法律后果或其他损失负责。您对自己的行为以及
+测试的授权合规性负全部责任。
+
+## 许可证
+
+Dejavu 以 MIT 许可证发布，详见 [LICENSE](LICENSE)。第三方组件及其
+许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+内置的第三方组件保留各自许可证：Lua 5.4（MIT）、TinyCC（LGPL-2.1）、
+LSPlant 与 DexBuilder（LGPL-3.0）、Dobby（Apache-2.0）。模块包会附带
+本项目的 LICENSE；再分发二进制前请自行核对第三方许可证要求。

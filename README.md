@@ -1,28 +1,97 @@
-# Dejavu
+<h1 align="center">Dejavu</h1>
+<p align="center">A lightweight Android hook toolkit for personal use and fast iteration with AI.</p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center">
+  <a href="https://github.com/tiwe0/Dejavu/actions/workflows/build.yml"><img src="https://github.com/tiwe0/Dejavu/actions/workflows/build.yml/badge.svg?branch=main" alt="Build Dejavu"></a>
+  <a href="https://github.com/tiwe0/Dejavu/releases/latest"><img src="https://img.shields.io/github/v/release/tiwe0/Dejavu" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Android-arm64-3DDC84?logo=android&amp;logoColor=white" alt="Android arm64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+</p>
+<p align="center"><a href="#quick-start">Quick start</a> · <a href="zygisk/docs/user-guide.md">User guide</a> · <a href="zygisk/docs/cookbook.md">Cookbook</a> · <a href="https://github.com/tiwe0/Dejavu/releases">Releases</a></p>
 
-**English** | [简体中文](README.zh-CN.md)
+Write hooks in Lua and C, inspect a target through the Manager or CLI, and iterate
+without rebuilding the target app. **Injecting into other apps requires root and
+a compatible Zygisk provider.** The embeddable Lua + TinyCC core can also run in
+an application that controls its own process, without Zygisk.
 
-`libdejavu.so` is an Android arm64 shared library skeleton embedding:
+## Manager
 
-- Lua 5.4.8
-- TinyCC 0.9.27-frida
+<table>
+  <tr>
+    <td align="center"><img src="app/docs/manager-overview.png" width="270" alt="Manager overview in the Ocean dark theme"><br><strong>Overview</strong><br>Module, root and helper status</td>
+    <td align="center"><img src="app/docs/manager-configuration.png" width="270" alt="Collapsed Manager configuration showing appearance and diagnostics"><br><strong>Configuration</strong><br>Appearance choices tucked behind concise entries</td>
+  </tr>
+</table>
 
-The public ABI is declared in `include/dejavu.h`. Lua and TinyCC are pinned as
-Git submodules and their symbols are hidden. The engine compiles freestanding C
-directly into memory; Lua is a small control layer around that engine.
+<sub>Actual device captures from the development Manager; the captured module version may precede the current release.</sub>
 
-## Disclaimer and authorized use
+The Manager has three main pages: **Overview**, **Plugins** and **Configuration**.
+Plugin rows show identity first; **Control / Scope / Info** inside each plugin
+hold its runtime controls, target selection and complete metadata.
 
-Dejavu is a **personal, self-use security research tool**. Use it only on
-devices you own or on processes/apps you have explicit authorization to test.
-You are responsible for complying with applicable laws, contracts and platform
-policies (including the target app's terms of service); do not use it for
-unauthorized access, bypassing protections, or causing harm to others.
+- **One scope per plugin.** Select multiple apps or exact process names. The
+  framework merges their injection targets; changing the inspected process does
+  not stop instances running elsewhere.
+- **ZIP import.** Add a package with a valid `manifest.json` and declared
+  resources. Validation finishes before replacement; importing never executes it.
+- **Lua-authored pages, native Compose UI.** Use the default `monitor` and
+  `controls` layouts or existing declarative Lua pages.
+- **Live feedback.** The socket event viewer keeps a bounded list in memory and
+  clears it when closed. Plugins can independently choose to write files; the
+  capture example does so.
+- **Saved appearance.** Six palettes, Android 12+ system colors and
+  system/light/dark modes; the home mark follows the selected theme. Predictive
+  back previews work on supported devices when system animations are enabled.
 
-The software is provided **"as is"**, without warranty of any kind. The authors
-are not liable for any damage, data loss, account bans, legal consequences or
-other harm arising from its use or misuse. You are solely responsible for your
-actions and for ensuring that your testing is authorized.
+See the [Manager guide](app/README.md) for the package contract, page schema and
+build instructions. The mobile Lua console has been removed; CLI and MCP remain
+available.
+
+## Quick start
+
+1. **Prepare the device.** Use an authorized rooted Android arm64 device with a
+   compatible Zygisk provider. Check the [compatibility notes](#android-compatibility-status).
+2. **Install the framework.** Download the module ZIP from
+   [Releases](https://github.com/tiwe0/Dejavu/releases/latest), install it through
+   your root manager and reboot. Follow the [installation guide](zygisk/docs/user-guide.md).
+3. **Open Manager.** Build it using the [app guide](app/README.md), or download
+   the `dejavu-manager-debug` artifact from a successful
+   [Build Dejavu run](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml).
+   This CI APK uses a debug signature and is separate from the stable module ZIP.
+   Grant Manager root access.
+4. **Add and activate a plugin.** Tap **+**, choose its ZIP, configure **Scope**,
+   restart affected target apps, then select a process and explicitly **Start**
+   or **Load** the plugin. Scope changes and imports do not start code automatically.
+
+Public packages and buildable examples live in [`examples/`](examples/README.md).
+The optional `plugins/` submodule points to a private repository; public framework
+builds and releases do not require access to it.
+
+## Framework at a glance
+
+| Task | Interface | Reference |
+| --- | --- | --- |
+| Java/Kotlin hooks | LSPlant, Lua `hook` / `hookx` | [Cookbook](zygisk/docs/cookbook.md) |
+| Native hooks and calls | Dobby, TinyCC and `native.*` | [Native API](zygisk/docs/native-hook-api.md) |
+| Java calls and object handles | `java.invoke`, `java.new`, `java.load_dex` | [Java API](zygisk/docs/java-invoke-api.md) |
+| Reusable plugins | Lua packages, native `.so`, JIT `.c` | [Plugin API](zygisk/docs/plugin-api.md) |
+| Agent-driven iteration | Unified CLI and MCP tools | [Agent guide](SKILL.md) |
+| Files, memory and modules | Target-process helper APIs | [Agent helpers](zygisk/docs/agent-helpers.md) |
+| Process startup scripts | Separate Lua chunks in the persistent session | [Startup hooks](zygisk/docs/early-hooks.md) |
+
+Startup scripts run after application binding and before live RPC starts.
+They are **not guaranteed to run before `Application.onCreate`**. Read the timing
+and recovery contract before relying on startup interception.
+
+## Build and reference
+
+Start with the [Manager build guide](app/README.md),
+[Zygisk build guide](zygisk/README.md) or [public examples](examples/README.md).
+Host development supports Linux and macOS. Public dependencies are pinned Git
+submodules; the core embeds Lua 5.4.8 and TinyCC 0.9.27-frida.
+
+<details>
+<summary><strong>Engine, build, CLI and contributor reference</strong></summary>
 
 The core `libdejavu.so` library has no Magisk dependency. It can be embedded or
 loaded by any application that controls its own process. The `zygisk/` directory
@@ -163,13 +232,13 @@ release is published when a version is explicitly introduced:
 - bump the `version=` line in `zygisk/module/module.prop` and push to `main`:
   CI detects the change and publishes the stable `vX.Y.Z` release after all
   checks pass (the tag is created from that commit); or
-- push a matching `v*` tag, such as `v0.7.0`, to create the stable release; or
+- push a matching `v*` tag, such as `v0.8.2`, to create the stable release; or
 - run the workflow manually with `workflow_dispatch` to create a prerelease
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
 A release is created only after the host tests, Android API 26 baseline,
-compatibility builds, Zygisk package, and code-quality checks all pass. Each
-release carries two assets: the framework-only Zygisk module zip and
+compatibility builds, Manager build/lint, Zygisk package, and code-quality
+checks all pass. Each release carries two assets: the framework-only Zygisk module zip and
 `dejavu-plugins-vX.Y.Z-arm64.zip` with the example plugins, SKILL sidecars, JIT
 sources and unpack CLI. A push that does not change the module version only
 builds artifacts and never publishes a release.
@@ -199,7 +268,7 @@ control channel into one command:
 ./dejavu build [--api 26]                       # build libdejavu.so
 ./dejavu package [--api 26]                     # build and package the module zip
 ./dejavu install [--zip PATH] [--soft-reboot]   # push + install via ksud/magisk
-./dejavu targets list|add|remove|set|clear      # edit device targets.txt
+./dejavu targets list|add|remove|set|clear      # manual targets; preserves plugin scopes
 ./dejavu deploy-agent -p <process>              # hot-deploy agent + init.lua
 ./dejavu exec -p <process> -e 'return hook.list()'
 ./dejavu exec -p <process> hooks/demo.lua
@@ -240,7 +309,7 @@ Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **Zygisk module package version** (currently `0.7.0`). Module packaging,
+  **Zygisk module package version** (currently `0.8.2`). Module packaging,
   loader/agent behavior and documentation changes bump it independently.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`
   publishes the stable release, a matching `v*` tag publishes the stable
@@ -255,11 +324,12 @@ target processes. The in-app agent remains app-UID; it asks the helper for a
 temporary unlock before Dobby hook installation. See
 [zygisk/docs/root-helper-prototype.md](zygisk/docs/root-helper-prototype.md).
 
-## Android Console
+## Android Manager
 
-A Kotlin + Material 3 device-side console lives in [app/](app/). It shows module,
-root-helper and target status, edits targets, streams Dejavu logs and drives the
-same authenticated Lua RPC channel as `dejavuctl`.
+A Kotlin + Material 3 Manager lives in [app/](app/). It shows module and
+root-helper status, configures multiple target processes per plugin, renders
+plugin controls and streams live Dejavu logs. Plugin scopes are merged into
+the framework injection list; changes apply after restarting affected apps.
 
 ```sh
 ./gradlew :app:assembleDebug
@@ -368,6 +438,21 @@ combines the generic hooks with a Lua strategy (manifest namespace →
 dumped-DEX class parsing → paced active invocation) and is driven by
 `examples/unpack/cli.py`. See `examples/unpack/README.md` and
 `examples/unpack/design.md`.
+
+</details>
+
+## Disclaimer and authorized use
+
+Dejavu is a **personal, self-use security research tool**. Use it only on
+devices you own or on processes/apps you have explicit authorization to test.
+You are responsible for complying with applicable laws, contracts and platform
+policies (including the target app's terms of service); do not use it for
+unauthorized access, bypassing protections, or causing harm to others.
+
+The software is provided **"as is"**, without warranty of any kind. The authors
+are not liable for any damage, data loss, account bans, legal consequences or
+other harm arising from its use or misuse. You are solely responsible for your
+actions and for ensuring that your testing is authorized.
 
 ## License
 
