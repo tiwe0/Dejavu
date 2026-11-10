@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "x_agent",
+  "name": "X Agent",
+  "version": "0.1.0",
+  "description": "X attestation token and AndroidKeyStore signing agent over the local dejavurouter TCP channel.",
+  "kind": "native",
+  "entry": "libdejavu_x_agent.so",
+  "files": [
+    "libdejavu_x_agent.so",
+    "SKILL.md"
+  ]
+}
