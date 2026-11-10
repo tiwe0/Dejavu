@@ -4,26 +4,13 @@ Implementation of the `plugins/x_agent/DESIGN.md` design.
 
 ## Status
 
-Working for one Android user (X account route verified):
+Working for all eight Android X users:
 
-- loads inside `com.twitter.android`;
-- detects the current X account from app shared preferences;
-- connects to `127.0.0.1:39111`;
-- registers route = account id;
-- serves `token` and `sign`;
-- signs with AndroidKeyStore alias:
-  `twitter-android-keystore-alias-<account>`;
-- returns `refresh_not_supported` for `refresh` (refresh is owned by the
-  external foreground wake path).
-
-End-to-end test result:
-
-```text
-router TCP hello: ok
-token response: ok, route echoed
-sign response: ok, route echoed
-ECDSA signature verified against the token publicKey
-```
+- plugin .so installed in each user's X app files;
+- each user's plugin path allowlisted with SHA-256;
+- loaded into all eight running X processes through the DejaVu control RPC;
+- all eight routes announce on `dejavurouter`;
+- all eight token calls succeeded end-to-end.
 
 ## Build
 
@@ -38,43 +25,37 @@ Output:
 out/plugins/x_agent/libdejavu_x_agent.so
 ```
 
-## Install one user
-
-The current DejaVu CLI loads into the first process it finds, so target the
-directory of that process's Android user:
+## Deploy all users
 
 ```sh
-./dejavu -s c44d68aa plugin -p com.twitter.android install \
-  --dir /data/user/14/com.twitter.android/files \
-  out/plugins/x_agent/libdejavu_x_agent.so
+ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 python3 plugins/x_agent/deploy_all.py
 ```
 
-Replace `14` with the Android user that owns the selected X process.
+The deployer:
+
+1. enumerates `com.twitter.android` PIDs and their Android users;
+2. copies the plugin into `/data/user/<user>/com.twitter.android/files/`;
+3. sets owner/mode/SELinux label;
+4. rebuilds the DejaVu plugin allowlist with SHA-256 hashes;
+5. unloads/reloads `x_agent` in every process through a targeted control RPC;
+6. starts a local `RouterHub` and verifies all routes plus token RPCs.
+
+It does not force-stop apps, so injected signers remain alive.
 
 ## Router test
-
-The router must be running on the device:
 
 ```sh
 su -c 'sh /data/adb/modules/dejavurouter/service.sh'
 ```
 
-A TCP hub must be reachable at the router's configured `hub_host:hub_port`.
-For a host-side test, map the port with:
+The router's wake target table is installed at:
 
-```sh
-adb -s c44d68aa reverse tcp:39010 tcp:39010
-```
-
-Then run a TCP JSONL hub and send:
-
-```json
-{"type":"request","id":"token1","route":"<account>","method":"token","params":{}}
+```text
+/data/adb/dejavurouter/wake_targets.json
 ```
 
 ## Next
 
-- multi-user install/load for all X app instances;
-- per-PID DejaVu control loading (the CLI picks one process);
-- route health/status method;
-- external foreground wake for refresh.
+- duplicate-account / route migration handling;
+- production TCP hub consuming route events;
+- add a second account in one X app if needed.
