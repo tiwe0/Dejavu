@@ -2,10 +2,8 @@
 
 #include <android/log.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -14,6 +12,7 @@
 #include <thread>
 #include <utility>
 
+#include "agent_startup_scripts.h"
 #include "control_channel.h"
 #include "dejavu_runtime.h"
 #include "hook_manager.h"
@@ -25,37 +24,6 @@ constexpr char kLogTag[] = "DejavuAgent";
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
-
-bool read_text_file_at(int directory_fd, const char *path, std::string *text, std::string *error) {
-    struct stat status = {};
-    const int fd = openat(directory_fd, path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        error->assign(strerror(errno));
-        return false;
-    }
-    if (fstat(fd, &status) != 0 || status.st_size < 0 ||
-        status.st_size > static_cast<off_t>(kDejavuMaximumControlScriptSize)) {
-        close(fd);
-        error->assign("invalid init.lua size");
-        return false;
-    }
-    text->resize(static_cast<size_t>(status.st_size));
-    size_t offset = 0;
-    while (offset < text->size()) {
-        const ssize_t count = read(fd, text->data() + offset, text->size() - offset);
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        if (count <= 0) {
-            close(fd);
-            error->assign(count == 0 ? "truncated init.lua" : strerror(errno));
-            return false;
-        }
-        offset += static_cast<size_t>(count);
-    }
-    close(fd);
-    return true;
-}
 
 class DejavuAgent final {
   public:
@@ -99,6 +67,7 @@ class DejavuAgent final {
     const DejavuLsplantBackend *lsplant_backend_ = nullptr;
     HookManager hook_manager_;
     std::string init_script_;
+    std::string early_hook_script_;
     bool ready_ = false;
 
     void initialize(int module_dir_fd) {
@@ -116,20 +85,42 @@ class DejavuAgent final {
         lsplant_backend_ = lsplant.backend;
 
         std::string script_error;
-        if (!read_text_file_at(module_dir_fd, "config/init.lua", &init_script_, &script_error)) {
+        if (agent_read_script_at(module_dir_fd, "config/init.lua", &init_script_, &script_error) !=
+            AgentScriptReadStatus::kLoaded) {
             LOGE("failed to read config/init.lua for %s: %s", process_name_.c_str(),
                  script_error.c_str());
             return;
+        }
+        const AgentScriptReadStatus early_status = agent_read_early_hook_at(
+            module_dir_fd, process_name_, &early_hook_script_, &script_error);
+        if (early_status == AgentScriptReadStatus::kError) {
+            LOGE("failed to read early hook for %s: %s; continuing without it",
+                 process_name_.c_str(), script_error.c_str());
+        } else if (early_status == AgentScriptReadStatus::kLoaded) {
+            LOGD("early hook loaded for %s: %zu bytes", process_name_.c_str(),
+                 early_hook_script_.size());
         }
         ready_ = true;
     }
 
     static void application_attached(JNIEnv *env, jobject class_loader, void *context) {
         auto *agent = static_cast<DejavuAgent *>(context);
-        std::string error;
-        if (!agent->hook_manager_.start_control(env, class_loader, agent->init_script_, &error)) {
-            LOGE("Lua control initialization failed: %s", error.c_str());
+        const AgentStartupResult startup = agent_start_control_scripts(
+            agent->init_script_, agent->early_hook_script_,
+            [&](const std::string &script, std::string *error) {
+                return agent->hook_manager_.start_control(env, class_loader, script, error);
+            },
+            [&](const std::string &script, std::string *error) {
+                std::string result;
+                return agent->hook_manager_.eval_control(script, &result, error);
+            });
+        if (!startup.initialized) {
+            LOGE("Lua control initialization failed: %s", startup.error.c_str());
             return;
+        }
+        if (startup.early_hook_failed) {
+            LOGE("early hook failed for %s: %s; live control remains available",
+                 agent->process_name_.c_str(), startup.error.c_str());
         }
         LOGD("persistent Lua control initialized");
         agent->start_live_control();

@@ -65,6 +65,7 @@ add_library(dejavu_agent SHARED
     src/aarch64_adrp_add.cpp
     src/art_elf_resolver.cpp
     src/agent.cpp
+    src/agent_startup_scripts.cpp
     src/control_channel.cpp
     src/dejavu_runtime.cpp
     src/hook_api_java_call.cpp
