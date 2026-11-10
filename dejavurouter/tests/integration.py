@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -57,7 +58,7 @@ class FakePlugin(threading.Thread):
 
 
 def main() -> int:
-    daemon = ROOT / "dejavurouter" / "dejavurouter"
+    daemon = Path(os.environ.get("ROUTER_BIN", str(ROOT / "dejavurouter" / "dejavurouter")))
     if not daemon.exists():
         raise SystemExit("build first: make")
     hub = mock_hub.serve("127.0.0.1", 0, "dev-test", "admin-test")
@@ -89,34 +90,42 @@ def main() -> int:
                     time.sleep(0.1)
             plugin.start()
             time.sleep(0.5)
-            request = urllib.request.Request(
-                "http://127.0.0.1:%d/admin/jobs" % hub_port,
-                data=json.dumps({"device_id": "c-router-test", "route": "demo",
-                                 "method": "demo.echo", "params": {"hello": "world"},
-                                 "deadline_ms": 5000}).encode(),
-                headers={"Authorization": "Bearer admin-test", "Content-Type": "application/json"},
-                method="POST")
-            with urllib.request.urlopen(request, timeout=5) as response:
-                job_id = json.loads(response.read())["job"]["id"]
-            deadline = time.time() + 8
-            payload = None
-            while time.time() < deadline:
-                try:
-                    result_request = urllib.request.Request(
-                        "http://127.0.0.1:%d/admin/results/%s" % (hub_port, job_id),
-                        headers={"Authorization": "Bearer admin-test"})
-                    with urllib.request.urlopen(result_request, timeout=2) as response:
-                        payload = json.loads(response.read())
-                    break
-                except Exception:
-                    time.sleep(0.2)
-            if not payload or not payload.get("ok"):
-                print("no result", payload)
-                return 1
-            if payload["result"].get("echo") != "demo.echo":
-                print("wrong result", payload)
-                return 1
-            print("ok", json.dumps({"route": "demo", "method": payload["result"].get("echo")}))
+            jobs = int(os.environ.get("JOBS", "1"))
+            job_ids = []
+            for index in range(jobs):
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/admin/jobs" % hub_port,
+                    data=json.dumps({"device_id": "c-router-test", "route": "demo",
+                                     "method": "demo.echo", "params": {"hello": index},
+                                     "deadline_ms": 5000}).encode(),
+                    headers={"Authorization": "Bearer admin-test", "Content-Type": "application/json"},
+                    method="POST")
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    job_ids.append(json.loads(response.read())["job"]["id"])
+            deadline = time.time() + 20
+            completed = 0
+            for job_id in job_ids:
+                while time.time() < deadline:
+                    try:
+                        result_request = urllib.request.Request(
+                            "http://127.0.0.1:%d/admin/results/%s" % (hub_port, job_id),
+                            headers={"Authorization": "Bearer admin-test"})
+                        with urllib.request.urlopen(result_request, timeout=2) as response:
+                            payload = json.loads(response.read())
+                        if not payload.get("ok"):
+                            print("failed result", payload)
+                            return 1
+                        if payload["result"].get("echo") != "demo.echo":
+                            print("wrong result", payload)
+                            return 1
+                        completed += 1
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+                else:
+                    print("timeout waiting for", job_id)
+                    return 1
+            print("ok", json.dumps({"route": "demo", "jobs": completed}))
             return 0
         finally:
             plugin.close()

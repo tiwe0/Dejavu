@@ -1,34 +1,48 @@
 # dejavurouter
 
-A small C device router for DejaVu app plugins.
+A small, single-threaded async device router for DejaVu app plugins.
+
+v2 is a libevent event loop, designed for high concurrency and simple
+two-end forwarding:
 
 ```text
-Server Hub
-   ▲ HTTP long-poll (router initiates)
-   │
-dejavurouter (host or Android root daemon)
-   ├─ listens on 127.0.0.1:39111 for DejaVu plugins
-   ├─ keeps route -> plugin registry
-   ├─ forwards jobs selected by the server's top-level route field
-   └─ runs the configured foreground-wake command when a plugin is offline
+Server Hub (HTTP long-poll)
+        ▲
+        │ multiple async pollers
+        │
+  dejavurouter (one event_base)
+        ├── plugin TCP listener 127.0.0.1:39111
+        ├── route -> plugin registry
+        ├── job table + deadlines
+        └── async result POST
 ```
 
-The server is intentionally not modified by this project. The router is generic:
-it does not contain X account logic. App-specific work belongs in DejaVu plugins;
-the router only handles connections, routes, wake, deadlines and retries.
+The server decides the destination with an opaque top-level `route` parameter.
+The router only does exact route lookup and forwards the request/response. It
+does not inspect `method`, `params`, accounts, apps or business rules.
 
 ## Build
 
 ```sh
+cd dejavurouter
+./third_party/fetch-libevent.sh
 make
+```
+
+For an instrumented build:
+
+```sh
+make asan
+```
+
+## Run
+
+```sh
+cp config.example.json config.json
 ./dejavurouter config.json
 ```
 
-The current build is a Linux host build with plain HTTP hub transport. TLS is
-terminated by a local proxy/cloudflared in front of the hub; the next milestone
-is an Android NDK build with mbedTLS or a local cloudflared sidecar.
-
-## Configuration
+Config:
 
 ```json
 {
@@ -37,79 +51,117 @@ is an Android NDK build with mbedTLS or a local cloudflared sidecar.
   "device_token": "dev-token",
   "listen_host": "127.0.0.1",
   "listen_port": 39111,
-  "plugin_token": "dev-plugin-token",
-  "poll_wait_seconds": 25,
-  "plugin_wait_seconds": 20,
-  "routes": {
-    "demo": {
-      "app": "com.example.demo",
-      "wake": "adb -s c44d68aa shell am start --user 0 -n com.example.demo/.MainActivity",
-      "plugin_wait_seconds": 20
-    }
-  }
+  "pollers": 8,
+  "poll_wait_seconds": 25
 }
 ```
 
-## Plugin protocol
+No TLS; network security is intentionally out of scope. The hub URL must be
+plain HTTP (for example a local proxy or a development hub).
 
-Newline-delimited JSON over TCP.
+## Hub job
+
+The server includes an opaque route:
+
+```json
+{
+  "id": "job_1",
+  "route": "some-opaque-route",
+  "method": "anything",
+  "params": {},
+  "deadline_ms": 30000
+}
+```
+
+- Missing/unknown route: `route_unavailable`.
+- No method-prefix inference, fallback or per-app routing.
+- `method` and `params` are forwarded as-is.
+
+## Plugin connection
+
+Newline-delimited JSON over TCP to `listen_host:listen_port`.
 
 Hello:
 
 ```json
-{"type":"hello","token":"dev-plugin-token","app":"com.example.demo","plugin":"demo","version":1,"routes":["demo"],"accounts":[]}
+{"type":"hello","app":"com.example.demo","plugin":"demo","version":1,"routes":["some-opaque-route"],"accounts":[]}
 ```
 
-Request from router:
+Router request:
 
 ```json
-{"type":"request","id":"rpc_1_...","route":"demo","method":"demo.action","params":{}}
+{"type":"request","id":"job_1","route":"some-opaque-route","method":"anything","params":{}}
 ```
 
-Response:
+Plugin response:
 
 ```json
-{"type":"response","id":"rpc_1_...","ok":true,"result":{"value":1}}
+{"type":"response","id":"job_1","ok":true,"result":{}}
 ```
 
-When the plugin runs in an app on the phone and the router runs on the host,
-connect them with ADB reverse:
+Error:
+
+```json
+{"type":"response","id":"job_1","ok":false,"error":{"code":"not_ready","message":"..."}}
+```
+
+For a plugin running inside an app on the phone while the router runs on the
+host, reverse the port:
 
 ```sh
 adb -s c44d68aa reverse tcp:39111 tcp:39111
 ```
 
-## Server job
+## Concurrency model
 
-The hub adds a top-level `route` field:
+- one `event_base`;
+- configurable number of async hub long-poll requests;
+- one bufferevent per plugin;
+- pending jobs keyed by server job id;
+- per-job deadline timers;
+- async result POST;
+- no thread per plugin, no blocking plugin calls.
 
-```json
-{
-  "id": "job_1",
-  "route": "demo",
-  "method": "demo.action",
-  "params": {"account_id": "..."},
-  "deadline_ms": 45000
-}
+Limits:
+
+```text
+plugin line: 1 MiB
+max plugins: 512
+max in-flight jobs: 8192
+max hub response: 4 MiB
 ```
 
-If no route is present, the router derives it from the method prefix.
+## Test
+
+```sh
+JOBS=50 python3 tests/integration.py
+ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
+  ROUTER_BIN=$PWD/dejavurouter-asan JOBS=50 python3 tests/integration.py
+```
+
+The test runs a mock hub, a fake DejaVu plugin, and the C router.
 
 ## Status
 
-- Working on host:
-  - outbound hub hello/poll/result;
-  - plugin listener, registration and route dispatch;
-  - plugin timeout and unauthorized rejection;
-  - wake command before waiting for a plugin.
-- Not yet:
-  - Android NDK build;
-  - TLS hub transport;
-  - systemd/Magisk packaging;
-  - full DejaVu X plugin.
+Working:
 
-Run the integration check with:
+- async libevent event loop;
+- exact-route plugin registry;
+- bidirectional forwarding;
+- job deadlines and plugin disconnect handling;
+- async hub pollers and async result posts;
+- 50-job integration test and ASan run.
+
+Not included by design:
+
+- TLS/network security;
+- authentication;
+- method/params validation;
+- wake commands;
+- complex routing.
+
+Legacy v1 thread implementation remains available as:
 
 ```sh
-python3 tests/integration.py
+make legacy
 ```

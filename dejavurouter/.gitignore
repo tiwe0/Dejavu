@@ -1,4 +1,7 @@
 dejavurouter
+dejavurouter-asan
+dejavurouter-legacy
 config.json
 config.test.json
 __pycache__/
+third_party/libevent/

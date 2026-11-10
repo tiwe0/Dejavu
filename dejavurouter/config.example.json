@@ -4,19 +4,6 @@
   "device_token": "dev-token",
   "listen_host": "127.0.0.1",
   "listen_port": 39111,
-  "plugin_token": "dev-plugin-token",
-  "poll_wait_seconds": 25,
-  "plugin_wait_seconds": 20,
-  "routes": {
-    "x": {
-      "app": "com.twitter.android",
-      "wake": "adb -s c44d68aa shell am start --user 0 -n com.twitter.android/com.x.android.main.MainActivity",
-      "plugin_wait_seconds": 20
-    },
-    "demo": {
-      "app": "com.example.demo",
-      "wake": "true",
-      "plugin_wait_seconds": 5
-    }
-  }
+  "pollers": 8,
+  "poll_wait_seconds": 25
 }
