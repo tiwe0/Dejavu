@@ -369,6 +369,45 @@ class RouterHub:
         return self.call_async(binding.route, method, params, timeout=timeout,
                                deadline_ms=deadline_ms)
 
+    def wake(self, route: str, *, timeout: float = 30.0,
+             timeout_ms: Optional[int] = None) -> Any:
+        """Ask the router to launch the app for a route and wait for registration."""
+        if not route or not isinstance(route, str):
+            raise ValueError("route must be a non-empty string")
+        if not self.connected:
+            raise NotConnectedError("no dejavurouter is connected")
+        if timeout_ms is None:
+            timeout_ms = max(1000, int(timeout * 1000))
+        request_id = f"wake_{next(self._ids)}"
+        deadline = time.monotonic() + max(1.0, min(timeout, timeout_ms / 1000.0)) + 2.0
+        pending = PendingCall(self, request_id, route, "wake", deadline)
+        with self._state_lock:
+            self._pending[request_id] = pending
+            self._calls_total += 1
+        frame = {"type": "wake", "id": request_id, "route": route,
+                 "timeout_ms": timeout_ms}
+        try:
+            self._send_frame(frame)
+        except OSError as error:
+            self._abandon(request_id, NotConnectedError(f"write failed: {error}"))
+            raise NotConnectedError(f"write failed: {error}") from error
+        return pending.result_value(timeout)
+
+    def wake_account(self, account_id: str, *, timeout: float = 30.0,
+                     timeout_ms: Optional[int] = None) -> Any:
+        """Wake the device/app that owns the account, using the account table."""
+        binding = self.account_for(account_id)
+        if not self.connected:
+            raise DeviceOfflineError(
+                f"device {binding.device_id!r} for account {account_id!r} is offline"
+            )
+        current_device = self.device_id
+        if current_device != binding.device_id:
+            raise DeviceOfflineError(
+                f"connected device is {current_device!r}, expected {binding.device_id!r}"
+            )
+        return self.wake(binding.route, timeout=timeout, timeout_ms=timeout_ms)
+
     def call(self, route: str, method: str, params: Optional[dict[str, Any]] = None,
              *, timeout: float = 15.0, deadline_ms: Optional[int] = None) -> Any:
         """Send one RPC and return its result payload.

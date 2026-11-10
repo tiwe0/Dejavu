@@ -1,0 +1,50 @@
+{
+  "1342862993005035524": {
+    "user_id": 0,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/0/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "2107171408803741696": {
+    "user_id": 999,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/999/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "2107173955325050880": {
+    "user_id": 11,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/11/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "2107175281777876992": {
+    "user_id": 10,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/10/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "1875546700170899456": {
+    "user_id": 12,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/12/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "1875532962034282496": {
+    "user_id": 13,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/13/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "1875541871079874560": {
+    "user_id": 14,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/14/com.twitter.android/files/libdejavu_x_agent.so"
+  },
+  "1875540819362590720": {
+    "user_id": 15,
+    "package": "com.twitter.android",
+    "activity": "com.x.android.main.MainActivity",
+    "plugin_path": "/data/user/15/com.twitter.android/files/libdejavu_x_agent.so"
+  }
+}

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <errno.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/event.h>
@@ -13,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "cJSON.h"
@@ -20,10 +23,32 @@
 #define MAX_LINE (1024 * 1024)
 #define MAX_PLUGINS 512
 #define MAX_JOBS 8192
+#define MAX_WAKES 64
+#define WAKE_DEFAULT_MS 20000
+#define WAKE_MAX_MS 120000
 
 typedef struct router router_t;
 typedef struct plugin plugin_t;
 typedef struct job job_t;
+typedef struct wake wake_t;
+typedef struct wake_target wake_target_t;
+
+struct wake_target {
+    char *route;
+    int user_id;
+    char *package;
+    char *activity;
+    char *plugin_path;
+    wake_target_t *next;
+};
+
+struct wake {
+    router_t *router;
+    char *id;
+    char *route;
+    struct event *timer;
+    wake_t *next;
+};
 
 struct plugin {
     router_t *router;
@@ -56,12 +81,17 @@ struct router {
     int hub_port;
     char *device_id;
     char *device_token;
+    char *autoload_default;
     char *listen_host;
     int listen_port;
     plugin_t *plugins;
     size_t plugin_count;
     job_t *jobs;
     size_t job_count;
+    wake_t *wakes;
+    size_t wake_count;
+    wake_target_t *wake_targets;
+    size_t wake_target_count;
 };
 
 static void logmsg(const char *level, const char *fmt, ...) {
@@ -199,6 +229,280 @@ static void send_hub_error(router_t *router, const char *job_id, const char *rou
     cJSON_Delete(error);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Wake targets and wake operation                                           */
+
+static wake_target_t *find_wake_target(router_t *router, const char *route) {
+    for (wake_target_t *target = router->wake_targets; target; target = target->next) {
+        if (target->route && !strcmp(target->route, route)) return target;
+    }
+    return NULL;
+}
+
+static void wake_target_free(wake_target_t *target) {
+    if (!target) return;
+    free(target->route);
+    free(target->package);
+    free(target->activity);
+    free(target->plugin_path);
+    free(target);
+}
+
+static void wake_targets_free(router_t *router) {
+    wake_target_t *target = router->wake_targets;
+    while (target) {
+        wake_target_t *next = target->next;
+        wake_target_free(target);
+        target = next;
+    }
+    router->wake_targets = NULL;
+    router->wake_target_count = 0;
+}
+
+static int wake_targets_load(router_t *router, const char *path) {
+    if (!path || !*path) return 0;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { logmsg("WARN", "cannot open wake targets %s", path); return -1; }
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    if (size < 0 || size > 1024 * 1024) { fclose(fp); logmsg("WARN", "wake targets too large"); return -1; }
+    rewind(fp);
+    char *text = malloc((size_t)size + 1);
+    if (!text) { fclose(fp); return -1; }
+    size_t got = fread(text, 1, (size_t)size, fp);
+    fclose(fp);
+    text[got] = 0;
+    cJSON *root = cJSON_ParseWithLength(text, got);
+    free(text);
+    if (!root || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        logmsg("WARN", "wake targets must be a JSON object");
+        return -1;
+    }
+    int count = 0;
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, root) {
+        if (!item->string || !item->string[0]) continue;
+        cJSON *user_id = cJSON_GetObjectItemCaseSensitive(item, "user_id");
+        cJSON *package = cJSON_GetObjectItemCaseSensitive(item, "package");
+        cJSON *activity = cJSON_GetObjectItemCaseSensitive(item, "activity");
+        if (!cJSON_IsNumber(user_id) || !cJSON_IsString(package) || !cJSON_IsString(activity)) {
+            logmsg("WARN", "ignoring malformed wake target for %s", item->string);
+            continue;
+        }
+        if (strlen(item->string) > 128 || strlen(package->valuestring) > 256 ||
+            strlen(activity->valuestring) > 256 || user_id->valueint < 0 || user_id->valueint > 999) {
+            logmsg("WARN", "ignoring invalid wake target for %s", item->string);
+            continue;
+        }
+        wake_target_t *target = calloc(1, sizeof(*target));
+        if (!target) break;
+        target->route = strdup(item->string);
+        target->user_id = user_id->valueint;
+        target->package = strdup(package->valuestring);
+        target->activity = strdup(activity->valuestring);
+        cJSON *plugin_path = cJSON_GetObjectItemCaseSensitive(item, "plugin_path");
+        if (cJSON_IsString(plugin_path) && plugin_path->valuestring[0]) {
+            if (strlen(plugin_path->valuestring) <= 91) target->plugin_path = strdup(plugin_path->valuestring);
+            else logmsg("WARN", "wake target plugin_path too long for setprop: %s", item->string);
+        }
+        if (!target->route || !target->package || !target->activity) {
+            wake_target_free(target);
+            continue;
+        }
+        target->next = router->wake_targets;
+        router->wake_targets = target;
+        router->wake_target_count++;
+        count++;
+    }
+    cJSON_Delete(root);
+    logmsg("INFO", "loaded %d wake targets from %s", count, path);
+    return 0;
+}
+
+static int run_wake_command(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int fd = open("/dev/null", O_WRONLY);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static int launch_wake_target(wake_target_t *target) {
+    if (target->plugin_path && target->plugin_path[0]) {
+        char *setprop_argv[] = {"/system/bin/setprop", "debug.dejavu.plugins",
+                                target->plugin_path, NULL};
+        if (run_wake_command(setprop_argv) != 0) {
+            logmsg("WARN", "setprop failed for wake target %s", target->route);
+        }
+    }
+    char user[16];
+    snprintf(user, sizeof(user), "%d", target->user_id);
+    char component[544];
+    snprintf(component, sizeof(component), "%s/%s", target->package, target->activity);
+    char *am_argv[] = {"/system/bin/am", "start", "--user", user, "-n", component, NULL};
+    int rc = run_wake_command(am_argv);
+    if (rc != 0) logmsg("WARN", "am start failed for wake target %s", target->route);
+    return rc;
+}
+
+static void restore_autoload_property(router_t *router) {
+    if (!router->autoload_default || !router->autoload_default[0]) return;
+    char *argv[] = {"/system/bin/setprop", "debug.dejavu.plugins",
+                    router->autoload_default, NULL};
+    if (run_wake_command(argv) != 0) {
+        logmsg("WARN", "could not restore autoload property");
+    }
+}
+
+
+static void wake_remove(router_t *router, wake_t *wake) {
+    wake_t **slot = &router->wakes;
+    while (*slot && *slot != wake) slot = &(*slot)->next;
+    if (*slot == wake) *slot = wake->next;
+    if (router->wake_count > 0) router->wake_count--;
+}
+
+static void wake_free(wake_t *wake) {
+    if (!wake) return;
+    if (wake->timer) event_free(wake->timer);
+    free(wake->id);
+    free(wake->route);
+    free(wake);
+}
+
+static void wake_drop(wake_t *wake) {
+    wake_remove(wake->router, wake);
+    wake_free(wake);
+}
+
+static void wake_timeout_cb(evutil_socket_t fd, short events, void *arg) {
+    (void)fd;
+    (void)events;
+    wake_t *wake = arg;
+    send_hub_error(wake->router, wake->id, wake->route, "wake_timeout",
+                   "app did not register the route before the wake deadline");
+    restore_autoload_property(wake->router);
+    wake_drop(wake);
+}
+
+static void wake_finish_ok(router_t *router, wake_t *wake, bool woken) {
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "online", 1);
+    cJSON_AddBoolToObject(result, "woken", woken);
+    wake_target_t *target = find_wake_target(router, wake->route);
+    if (target) cJSON_AddNumberToObject(result, "user_id", target->user_id);
+    send_hub_response(router, wake->id, wake->route, true, result);
+    cJSON_Delete(result);
+    restore_autoload_property(router);
+    wake_drop(wake);
+}
+
+static void wake_route_online(router_t *router, const char *route) {
+    for (wake_t *wake = router->wakes; wake; ) {
+        wake_t *next = wake->next;
+        if (wake->route && route && !strcmp(wake->route, route)) {
+            wake_finish_ok(router, wake, true);
+        }
+        wake = next;
+    }
+}
+
+static void drop_all_wakes(router_t *router) {
+    wake_t *wake = router->wakes;
+    while (wake) {
+        wake_t *next = wake->next;
+        wake_free(wake);
+        wake = next;
+    }
+    router->wakes = NULL;
+    router->wake_count = 0;
+    restore_autoload_property(router);
+}
+
+static void handle_wake(router_t *router, cJSON *root) {
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    cJSON *route = cJSON_GetObjectItemCaseSensitive(root, "route");
+    if (!cJSON_IsString(id) || !cJSON_IsString(route) || !id->valuestring[0] || !route->valuestring[0]) {
+        send_hub_error(router, cJSON_IsString(id) ? id->valuestring : "",
+                       cJSON_IsString(route) ? route->valuestring : "",
+                       "invalid_wake", "wake needs id and route");
+        return;
+    }
+    if (find_plugin(router, route->valuestring)) {
+        cJSON *result = cJSON_CreateObject();
+        cJSON_AddBoolToObject(result, "online", 1);
+        cJSON_AddBoolToObject(result, "woken", 0);
+        send_hub_response(router, id->valuestring, route->valuestring, true, result);
+        cJSON_Delete(result);
+        return;
+    }
+    wake_target_t *target = find_wake_target(router, route->valuestring);
+    if (!target) {
+        send_hub_error(router, id->valuestring, route->valuestring, "wake_target_unavailable",
+                       "no local wake target for route");
+        return;
+    }
+    for (wake_t *wake = router->wakes; wake; wake = wake->next) {
+        if (wake->route && !strcmp(wake->route, route->valuestring)) {
+            send_hub_error(router, id->valuestring, route->valuestring, "wake_in_progress",
+                           "a wake is already in progress for this route");
+            return;
+        }
+    }
+    if (router->wake_count >= MAX_WAKES) {
+        send_hub_error(router, id->valuestring, route->valuestring, "router_busy",
+                       "too many wake operations");
+        return;
+    }
+    wake_t *wake = calloc(1, sizeof(*wake));
+    if (!wake) {
+        send_hub_error(router, id->valuestring, route->valuestring, "router_oom", "out of memory");
+        return;
+    }
+    wake->router = router;
+    wake->id = strdup(id->valuestring);
+    wake->route = strdup(route->valuestring);
+    if (!wake->id || !wake->route) { wake_free(wake); send_hub_error(router, id->valuestring,
+                                                                     route->valuestring, "router_oom",
+                                                                     "out of memory"); return; }
+    int timeout_ms = WAKE_DEFAULT_MS;
+    cJSON *timeout = cJSON_GetObjectItemCaseSensitive(root, "timeout_ms");
+    if (cJSON_IsNumber(timeout) && timeout->valueint > 0) timeout_ms = timeout->valueint;
+    if (timeout_ms < 1000) timeout_ms = 1000;
+    if (timeout_ms > WAKE_MAX_MS) timeout_ms = WAKE_MAX_MS;
+    wake->timer = evtimer_new(router->base, wake_timeout_cb, wake);
+    if (!wake->timer) { wake_free(wake); send_hub_error(router, id->valuestring,
+                                                        route->valuestring, "router_oom",
+                                                        "out of memory"); return; }
+    struct timeval tv = { .tv_sec = timeout_ms / 1000,
+                          .tv_usec = (timeout_ms % 1000) * 1000 };
+    evtimer_add(wake->timer, &tv);
+    wake->next = router->wakes;
+    router->wakes = wake;
+    router->wake_count++;
+    logmsg("INFO", "wake route=%s user=%d package=%s", route->valuestring, target->user_id,
+           target->package);
+    if (launch_wake_target(target) != 0) {
+        send_hub_error(router, wake->id, wake->route, "wake_failed",
+                       "could not launch the target app");
+        restore_autoload_property(router);
+        wake_drop(wake);
+    }
+}
+
 static void job_remove(router_t *router, job_t *job) {
     job_t **slot = &router->jobs;
     while (*slot && *slot != job) slot = &(*slot)->next;
@@ -279,6 +583,7 @@ static void hub_disconnect(router_t *router) {
         router->hub_bev = NULL;
     }
     drop_all_jobs(router);
+    drop_all_wakes(router);
 }
 
 static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
@@ -337,6 +642,8 @@ static void hub_read_cb(struct bufferevent *bev, void *arg) {
         cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
         if (cJSON_IsString(type) && !strcmp(type->valuestring, "request")) {
             dispatch_job(router, root);
+        } else if (cJSON_IsString(type) && !strcmp(type->valuestring, "wake")) {
+            handle_wake(router, root);
         } else if (cJSON_IsString(type) && !strcmp(type->valuestring, "ping")) {
             cJSON *pong = cJSON_CreateObject();
             cJSON_AddStringToObject(pong, "type", "pong");
@@ -476,6 +783,7 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
         plugin->registered = true;
         for (size_t i = 0; i < plugin->route_count; i++) {
             hub_route_event(plugin->router, "register", plugin->routes[i], plugin->app);
+            wake_route_online(plugin->router, plugin->routes[i]);
         }
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "hello_ok");
@@ -570,6 +878,8 @@ typedef struct {
     char *device_token;
     char *listen_host;
     int listen_port;
+    char *wake_targets_path;
+    char *autoload_default;
 } config_t;
 
 static void config_free(config_t *cfg) {
@@ -577,6 +887,8 @@ static void config_free(config_t *cfg) {
     free(cfg->device_id);
     free(cfg->device_token);
     free(cfg->listen_host);
+    free(cfg->wake_targets_path);
+    free(cfg->autoload_default);
     memset(cfg, 0, sizeof(*cfg));
 }
 
@@ -599,6 +911,10 @@ static int config_load(const char *path, config_t *cfg, char *err, size_t errcap
     cfg->listen_port = 39111;
     cfg->listen_host = strdup("127.0.0.1");
     cfg->device_id = strdup("dejavu-device");
+#ifdef __ANDROID__
+    cfg->wake_targets_path = strdup("/data/adb/dejavurouter/wake_targets.json");
+    cfg->autoload_default = strdup("/data/user_de/0/com.twitter.android/files/libdejavu_xsvc.so");
+#endif
     cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "hub_host");
     if (!cJSON_IsString(item)) { cJSON_Delete(root); snprintf(err, errcap, "hub_host is required"); return -1; }
     cfg->hub_host = strdup(item->valuestring);
@@ -613,6 +929,10 @@ static int config_load(const char *path, config_t *cfg, char *err, size_t errcap
     if (cJSON_IsString(item)) { free(cfg->listen_host); cfg->listen_host = strdup(item->valuestring); }
     item = cJSON_GetObjectItemCaseSensitive(root, "listen_port");
     if (cJSON_IsNumber(item)) cfg->listen_port = item->valueint;
+    item = cJSON_GetObjectItemCaseSensitive(root, "wake_targets");
+    if (cJSON_IsString(item) && item->valuestring[0]) cfg->wake_targets_path = strdup(item->valuestring);
+    item = cJSON_GetObjectItemCaseSensitive(root, "autoload_default");
+    if (cJSON_IsString(item) && item->valuestring[0]) cfg->autoload_default = strdup(item->valuestring);
     cJSON_Delete(root);
     if (!cfg->hub_host || !cfg->device_id || !cfg->listen_host) {
         config_free(cfg);
@@ -639,9 +959,11 @@ int main(int argc, char **argv) {
     router.hub_port = cfg.hub_port;
     router.device_id = cfg.device_id;
     router.device_token = cfg.device_token;
+    router.autoload_default = cfg.autoload_default;
     router.listen_host = cfg.listen_host;
     router.listen_port = cfg.listen_port;
     router.reconnect_seconds = 1;
+    wake_targets_load(&router, cfg.wake_targets_path);
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -664,6 +986,8 @@ int main(int argc, char **argv) {
     event_base_dispatch(router.base);
     router.stopping = true;
     drop_all_jobs(&router);
+    drop_all_wakes(&router);
+    wake_targets_free(&router);
     if (router.hub_bev) bufferevent_free(router.hub_bev);
     if (router.reconnect_timer) event_free(router.reconnect_timer);
     evconnlistener_free(router.listener);

@@ -20,6 +20,7 @@ $ADB push "$MODULE/module.prop" /data/local/tmp/dejavurouter-module.prop >/dev/n
 $ADB push "$MODULE/service.sh" /data/local/tmp/dejavurouter-service.sh >/dev/null
 $ADB push "$MODULE/supervisor.sh" /data/local/tmp/dejavurouter-supervisor.sh >/dev/null
 $ADB push "$MODULE/post-fs-data.sh" /data/local/tmp/dejavurouter-post-fs-data.sh >/dev/null
+$ADB push "$MODULE/wake_targets.json" /data/local/tmp/dejavurouter-wake-targets.json >/dev/null
 $ADB push "$MODULE/config.json" /data/local/tmp/dejavurouter-config.json >/dev/null
 $ADB push "$HERE/install-device.sh" /data/local/tmp/dejavurouter-install.sh >/dev/null
 

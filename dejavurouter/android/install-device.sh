@@ -15,6 +15,9 @@ cp /data/local/tmp/dejavurouter-module.prop "$MOD/module.prop"
 cp /data/local/tmp/dejavurouter-service.sh "$MOD/service.sh"
 cp /data/local/tmp/dejavurouter-supervisor.sh "$MOD/supervisor.sh"
 cp /data/local/tmp/dejavurouter-post-fs-data.sh "$MOD/post-fs-data.sh"
+if [ ! -f "$DATA/wake_targets.json" ]; then
+    cp /data/local/tmp/dejavurouter-wake-targets.json "$DATA/wake_targets.json"
+fi
 if [ -f "$DATA/config.json" ] && ! grep -q '"hub_host"' "$DATA/config.json"; then
     mv -f "$DATA/config.json" "$DATA/config.json.old-http"
 fi
@@ -22,6 +25,7 @@ if [ ! -f "$DATA/config.json" ]; then
     cp /data/local/tmp/dejavurouter-config.json "$DATA/config.json"
 fi
 chmod 755 "$DATA/dejavurouter" "$MOD/service.sh" "$MOD/supervisor.sh" "$MOD/post-fs-data.sh"
+chmod 600 "$DATA/wake_targets.json"
 chmod 600 "$DATA/config.json"
 sh "$MOD/service.sh"
 sleep 1

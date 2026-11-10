@@ -63,6 +63,16 @@ su -c 'sh /data/adb/modules/dejavurouter/service.sh'
 The default `hub_host`/`hub_port` is a local development placeholder. Set it
 to the real raw-TCP hub (network security is intentionally out of scope).
 
+Wake targets are installed at:
+
+```text
+/data/adb/dejavurouter/wake_targets.json
+```
+
+Each route maps to one Android user, app package, Activity and optional
+DejaVu plugin path. The router launches it with `am start --user ...` and
+waits for the plugin to register the route.
+
 Plugins in apps connect to:
 
 ```text

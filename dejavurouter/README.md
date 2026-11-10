@@ -50,7 +50,9 @@ JOBS=200 ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
   "device_id": "phone-a",
   "device_token": "dev-token",
   "listen_host": "127.0.0.1",
-  "listen_port": 39111
+  "listen_port": 39111,
+  "wake_targets": "/data/adb/dejavurouter/wake_targets.json",
+  "autoload_default": "/data/user_de/0/com.twitter.android/files/libdejavu_xsvc.so"
 }
 ```
 

@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from hub_poc import RouterHub  # noqa: E402
+from hub_poc import CallError, RouterHub  # noqa: E402
 
 
 class FakePlugin(threading.Thread):
@@ -96,6 +96,13 @@ def main() -> int:
                     break
                 time.sleep(0.05)
             assert "demo" in hub.routes, f"route announcement missing: {hub.routes}"
+            online_wake = hub.wake("demo", timeout=5)
+            assert online_wake.get("online") is True and online_wake.get("woken") is False, online_wake
+            try:
+                hub.wake("missing-route", timeout=5)
+                raise AssertionError("missing wake target should fail")
+            except CallError as error:
+                assert error.code == "wake_target_unavailable", error.code
             result = hub.call("demo", "demo.echo", {"hello": "world"}, timeout=5)
             assert result == {"echo": "demo.echo", "params": {"hello": "world"}}, result
             raw = hub.call_raw("demo", "demo.echo", {"again": True}, timeout=5)
