@@ -104,6 +104,26 @@ before the app starts / before r0 is used, one of these is needed:
 
 Option 1 is the smallest local change.
 
+## Early-init probe result
+
+A guarded early init snippet was tested on one user:
+
+```text
+config/init.lua
+  -> /proc/self/cmdline contains com.twitter.android
+  -> load x_attest_hook.lua
+  -> hook.install("com.x.attestation.r0", "b", "()V", source)
+```
+
+Result: the app process stayed alive but the DejaVu control target became
+disconnected; no X_ATTEST_R0_HOOK_READY log was observed, and hook.list could
+not be queried for that PID. The module init.lua was restored from
+`init.lua.bak` and the app/signer were restarted.
+
+Conclusion: directly appending a Lua hook to the shared DejaVu init is not
+safe enough for production. A proper companion plugin loader/early hook
+mechanism is still required.
+
 ## Proposed test flow
 
 1. Add guarded early Lua hook for `com.twitter.android`.
