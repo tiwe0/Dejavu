@@ -98,6 +98,29 @@ Error:
 Router reconnects to the hub with exponential backoff. Pending jobs are dropped
 on hub disconnect; the server is expected to retry.
 
+### Route announcements
+
+The server must know which account routes are online on which device. The router
+announces them over the same TCP connection:
+
+```json
+{"type":"route","action":"register","route":"1875541871079874560",
+ "device_id":"c44d68aa","app":"com.twitter.android"}
+```
+
+```json
+{"type":"route","action":"unregister","route":"1875541871079874560"}
+```
+
+- plugin hello → one register event per route;
+- plugin disconnect → one unregister event per route;
+- hub reconnect → a fresh snapshot of currently registered routes;
+- hub connection close → server removes the device's runtime routes.
+
+The router does not own the persistent account-to-device mapping. The account
+service stores it (account_id, device_id, route); route events provide the live
+route -> device connection state.
+
 ## Plugin protocol
 
 Plugins connect to `listen_host:listen_port` using raw TCP JSON Lines.

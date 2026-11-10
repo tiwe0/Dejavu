@@ -91,7 +91,11 @@ def main() -> int:
                     break
                 except OSError:
                     time.sleep(0.05)
-            time.sleep(0.6)
+            for _ in range(50):
+                if "demo" in hub.routes:
+                    break
+                time.sleep(0.05)
+            assert "demo" in hub.routes, f"route announcement missing: {hub.routes}"
             result = hub.call("demo", "demo.echo", {"hello": "world"}, timeout=5)
             assert result == {"echo": "demo.echo", "params": {"hello": "world"}}, result
             raw = hub.call_raw("demo", "demo.echo", {"again": True}, timeout=5)

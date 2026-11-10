@@ -156,6 +156,7 @@ class RouterHub:
         self._ids = itertools.count(1)
         self._pending: dict[str, PendingCall] = {}
         self._hello: dict[str, Any] = {}
+        self._routes: dict[str, dict[str, Any]] = {}
         self._last_error: str = ""
         self._accepted_count = 0
         self._calls_total = 0
@@ -217,6 +218,12 @@ class RouterHub:
             return dict(self._hello)
 
     @property
+    def routes(self) -> dict[str, dict[str, Any]]:
+        """Routes currently announced by the connected router."""
+        with self._state_lock:
+            return {key: dict(value) for key, value in self._routes.items()}
+
+    @property
     def last_error(self) -> str:
         return self._last_error
 
@@ -229,6 +236,7 @@ class RouterHub:
                 "calls": self._calls_total,
                 "failed": self._calls_failed,
                 "pending": len(self._pending),
+                "routes": len(self._routes),
                 "device": dict(self._hello),
             }
 
@@ -312,6 +320,7 @@ class RouterHub:
             with self._state_lock:
                 self._accepted_count += 1
                 self._hello = {}
+                self._routes = {}
                 self._last_error = ""
             with self._write_lock:
                 self._close_conn_locked()
@@ -347,8 +356,12 @@ class RouterHub:
                     message = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(message, dict) and message.get("type") == "response":
+                if not isinstance(message, dict):
+                    continue
+                if message.get("type") == "response":
                     self._resolve(message)
+                elif message.get("type") == "route":
+                    self._route_event(message)
         except OSError as error:
             self._last_error = str(error)
         finally:
@@ -357,11 +370,28 @@ class RouterHub:
             except OSError:
                 pass
             self._connected.clear()
+            with self._state_lock:
+                self._routes.clear()
             self._last_error = self._last_error or "router disconnected"
             self._fail_all_pending(NotConnectedError("router disconnected"))
             with self._write_lock:
                 if self._conn is conn:
                     self._close_conn_locked()
+
+    def _route_event(self, message: dict[str, Any]) -> None:
+        route = message.get("route")
+        action = message.get("action")
+        if not isinstance(route, str) or not route:
+            return
+        with self._state_lock:
+            if action == "register":
+                self._routes[route] = {
+                    "route": route,
+                    "app": message.get("app"),
+                    "device_id": message.get("device_id"),
+                }
+            elif action == "unregister":
+                self._routes.pop(route, None)
 
     def _resolve(self, response: dict[str, Any]) -> None:
         request_id = response.get("id")

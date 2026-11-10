@@ -151,6 +151,20 @@ static int hub_send_json(router_t *router, cJSON *root) {
     return rc;
 }
 
+static void hub_route_event(router_t *router, const char *action, const char *route,
+                            const char *app) {
+    if (!router->hub_connected || !route) return;
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+    cJSON_AddStringToObject(root, "type", "route");
+    cJSON_AddStringToObject(root, "action", action);
+    cJSON_AddStringToObject(root, "route", route);
+    cJSON_AddStringToObject(root, "device_id", router->device_id);
+    if (app) cJSON_AddStringToObject(root, "app", app);
+    hub_send_json(router, root);
+    cJSON_Delete(root);
+}
+
 static void send_hub_response(router_t *router, const char *job_id, const char *route,
                               bool ok, cJSON *result_or_error) {
     cJSON *root = cJSON_CreateObject();
@@ -285,6 +299,13 @@ static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
         hub_send_json(router, hello);
         cJSON_Delete(hello);
         logmsg("INFO", "hub connected %s:%d", router->hub_host, router->hub_port);
+        /* Let the server learn which local routes are currently online. */
+        for (plugin_t *p = router->plugins; p; p = p->next) {
+            if (!p->registered) continue;
+            for (size_t i = 0; i < p->route_count; i++) {
+                hub_route_event(router, "register", p->routes[i], p->app);
+            }
+        }
         return;
     }
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
@@ -453,6 +474,9 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
             }
         }
         plugin->registered = true;
+        for (size_t i = 0; i < plugin->route_count; i++) {
+            hub_route_event(plugin->router, "register", plugin->routes[i], plugin->app);
+        }
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "hello_ok");
         cJSON_AddNumberToObject(reply, "version", 1);
@@ -505,6 +529,9 @@ static void plugin_event_cb(struct bufferevent *bev, short events, void *arg) {
                 job_free(job);
             }
             job = next;
+        }
+        for (size_t i = 0; i < plugin->route_count; i++) {
+            hub_route_event(router, "unregister", plugin->routes[i], plugin->app);
         }
         detach_plugin(router, plugin);
         logmsg("INFO", "plugin disconnected app=%s", plugin->app ? plugin->app : "");
