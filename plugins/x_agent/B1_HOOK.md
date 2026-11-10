@@ -150,6 +150,29 @@ mechanism is still required.
   a natural trigger or a controlled cache state is needed for a first test.
 - Restarting an app kills its injected signer; re-inject after app restart.
 
+## Correction: r0.b is a trigger, not the final refresh
+
+The interceptor calls `r0.b()` only when token parsing says
+`needsRefetch`:
+
+```text
+com.x.attestation.d#intercept
+  -> nVarA.getNeedsRefetch()
+  -> r0.b()
+```
+
+`r0.b()` itself logs "Attempt attestation" and schedules a coroutine
+(`n0`) on r0's scope. The actual token generation/network logic is in
+`r0.d(boolean, Continuation)` / the coroutine implementation.
+
+So `r0.b()` is an entry used by the normal interceptor path, but it is not
+necessarily a synchronous forced-refresh API. Calling it with a still-valid
+cached token may just schedule/observe and return without changing the cache.
+
+The B1 test below reached b() successfully but did not extend the token. This
+is consistent with b() being a scheduling trigger rather than a guaranteed
+force-refresh call.
+
 ## Early loader and B1 test result
 
 The DejaVu Agent now has a real early Lua hook loader:
