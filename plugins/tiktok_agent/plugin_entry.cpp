@@ -3,6 +3,7 @@
 
 #include <android/log.h>
 #include <arpa/inet.h>
+#include <jni.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -34,10 +35,15 @@ constexpr size_t kMaxFile = 8 * 1024 * 1024;
 
 struct AgentState {
     const DejavuPluginHost *host = nullptr;
+    JavaVM *vm = nullptr;
     pthread_t thread{};
     bool thread_started = false;
     std::atomic<bool> stop{false};
     std::atomic<int> router_fd{-1};
+    pthread_mutex_t signer_mutex = PTHREAD_MUTEX_INITIALIZER;
+    jobject class_loader = nullptr;
+    jclass rpc_class = nullptr;
+    jmethodID sign_method = nullptr;
 };
 
 std::atomic<AgentState *> g_state{nullptr};
@@ -364,7 +370,126 @@ cJSON *credentials_result(const std::string &account) {
     return result;
 }
 
-void handle_request(AgentState *state, int fd, const char *line, size_t length,
+std::string jstring_utf(JNIEnv *env, jstring value) {
+    if (!value) return "";
+    const char *chars = env->GetStringUTFChars(value, nullptr);
+    std::string out = chars ? chars : "";
+    if (chars) env->ReleaseStringUTFChars(value, chars);
+    return out;
+}
+
+bool ensure_signer(JNIEnv *env, AgentState *state, std::string *error) {
+    pthread_mutex_lock(&state->signer_mutex);
+    if (state->rpc_class != nullptr && state->sign_method != nullptr) {
+        pthread_mutex_unlock(&state->signer_mutex);
+        return true;
+    }
+    bool ok = false;
+    std::string dex;
+    const std::string path = user_data_dir() + "/files/ttrpc.dex";
+    if (!read_file(path, &dex)) {
+        *error = "ttrpc dex not readable";
+        pthread_mutex_unlock(&state->signer_mutex);
+        return false;
+    }
+    if (env->PushLocalFrame(32) != 0) {
+        *error = "JNI local frame failed";
+        pthread_mutex_unlock(&state->signer_mutex);
+        return false;
+    }
+    jclass activity_thread = env->FindClass("android/app/ActivityThread");
+    jmethodID current_application = activity_thread
+        ? env->GetStaticMethodID(activity_thread, "currentApplication",
+                                 "()Landroid/app/Application;") : nullptr;
+    jobject application = current_application
+        ? env->CallStaticObjectMethod(activity_thread, current_application) : nullptr;
+    jclass context_class = env->FindClass("android/content/Context");
+    jmethodID get_class_loader = context_class
+        ? env->GetMethodID(context_class, "getClassLoader", "()Ljava/lang/ClassLoader;") : nullptr;
+    jobject parent = (application && get_class_loader)
+        ? env->CallObjectMethod(application, get_class_loader) : nullptr;
+    jobject buffer = env->NewDirectByteBuffer(const_cast<char *>(dex.data()),
+                                               static_cast<jlong>(dex.size()));
+    jclass loader_class = env->FindClass("dalvik/system/InMemoryDexClassLoader");
+    jmethodID loader_ctor = loader_class
+        ? env->GetMethodID(loader_class, "<init>",
+                           "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V") : nullptr;
+    jobject loader = (buffer && loader_ctor && loader_class)
+        ? env->NewObject(loader_class, loader_ctor, buffer, parent) : nullptr;
+    jclass loader_parent = loader ? env->FindClass("java/lang/ClassLoader") : nullptr;
+    jmethodID load_class = loader_parent
+        ? env->GetMethodID(loader_parent, "loadClass",
+                           "(Ljava/lang/String;)Ljava/lang/Class;") : nullptr;
+    jstring rpc_name = env->NewStringUTF("ttrpc.Rpc");
+    jclass rpc = (loader && load_class)
+        ? static_cast<jclass>(env->CallObjectMethod(loader, load_class, rpc_name)) : nullptr;
+    jmethodID sign = rpc
+        ? env->GetStaticMethodID(rpc, "sign",
+                                 "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;") : nullptr;
+    if (sign && !env->ExceptionCheck()) {
+        state->class_loader = env->NewGlobalRef(loader);
+        state->rpc_class = static_cast<jclass>(env->NewGlobalRef(rpc));
+        state->sign_method = sign;
+        ok = true;
+    } else {
+        env->ExceptionClear();
+        *error = "ttrpc.Rpc#sign unavailable";
+    }
+    env->PopLocalFrame(nullptr);
+    pthread_mutex_unlock(&state->signer_mutex);
+    return ok;
+}
+
+bool sign_url(JNIEnv *env, AgentState *state, const std::string &url,
+              const std::string &headers_json, cJSON **out, std::string *error) {
+    if (!ensure_signer(env, state, error)) return false;
+    if (env->PushLocalFrame(16) != 0) {
+        *error = "JNI local frame failed";
+        return false;
+    }
+    jstring jurl = env->NewStringUTF(url.c_str());
+    jstring jheaders = env->NewStringUTF(headers_json.c_str());
+    jstring result = static_cast<jstring>(
+        env->CallStaticObjectMethod(state->rpc_class, state->sign_method, jurl, jheaders));
+    if (env->ExceptionCheck() || !result) {
+        env->ExceptionClear();
+        *error = "ttrpc.Rpc.sign failed";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    const std::string text = jstring_utf(env, result);
+    cJSON *root = cJSON_Parse(text.c_str());
+    if (!root) {
+        *error = "ttrpc sign returned invalid JSON";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    cJSON *direct = cJSON_GetObjectItemCaseSensitive(root, "direct");
+    cJSON *headers = direct ? cJSON_GetObjectItemCaseSensitive(direct, "headers") : nullptr;
+    if (!cJSON_IsObject(headers)) {
+        cJSON *captured = cJSON_GetObjectItemCaseSensitive(root, "captured");
+        cJSON *best = captured ? cJSON_GetObjectItemCaseSensitive(captured, "best") : nullptr;
+        cJSON *sent = best ? cJSON_GetObjectItemCaseSensitive(best, "sent") : nullptr;
+        headers = sent ? cJSON_GetObjectItemCaseSensitive(sent, "headers") : nullptr;
+    }
+    if (!cJSON_IsObject(headers)) {
+        cJSON_Delete(root);
+        *error = "ttrpc sign returned no headers";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    *out = cJSON_Duplicate(headers, 1);
+    cJSON_Delete(root);
+    if (!*out) {
+        *error = "unable to copy sign headers";
+        env->PopLocalFrame(nullptr);
+        return false;
+    }
+    env->PopLocalFrame(nullptr);
+    return true;
+}
+
+void handle_request(AgentState *state, JNIEnv *env, int fd, const char *line, size_t length,
                     const std::string &account) {
     cJSON *root = cJSON_ParseWithLength(line, length);
     if (!root) return;
@@ -386,13 +511,37 @@ void handle_request(AgentState *state, int fd, const char *line, size_t length,
         cJSON *result = credentials_result(account);
         if (!result) send_error(state, fd, id, route, "credentials_unavailable", "credential files are unavailable");
         else send_response(state, fd, id, route, true, result);
+    } else if (method == "sign") {
+        cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+        cJSON *url_node = params ? cJSON_GetObjectItemCaseSensitive(params, "url") : nullptr;
+        cJSON *headers_node = params ? cJSON_GetObjectItemCaseSensitive(params, "headers") : nullptr;
+        if (!cJSON_IsString(url_node) || !url_node->valuestring || !url_node->valuestring[0]) {
+            send_error(state, fd, id, route, "invalid_request", "url is required");
+        } else {
+            char *headers_text = cJSON_IsObject(headers_node)
+                ? cJSON_PrintUnformatted(headers_node) : strdup("{}");
+            std::string error;
+            cJSON *headers = nullptr;
+            if (!headers_text || !sign_url(env, state, url_node->valuestring,
+                                           headers_text ? headers_text : "{}", &headers, &error)) {
+                if (headers_text) cJSON_free(headers_text);
+                send_error(state, fd, id, route, "signer_unavailable",
+                           error.empty() ? "ttrpc signer unavailable" : error.c_str());
+            } else {
+                cJSON_free(headers_text);
+                cJSON *result = cJSON_CreateObject();
+                cJSON_AddStringToObject(result, "account_id", account.c_str());
+                cJSON_AddItemToObject(result, "headers", headers);
+                send_response(state, fd, id, route, true, result);
+            }
+        }
     } else {
         send_error(state, fd, id, route, "method_not_found", "unknown method");
     }
     cJSON_Delete(root);
 }
 
-void serve_router(AgentState *state, int fd, const std::string &account) {
+void serve_router(AgentState *state, JNIEnv *env, int fd, const std::string &account) {
     struct timeval timeout = { .tv_sec = 0, .tv_usec = 500000 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     cJSON *hello = cJSON_CreateObject();
@@ -412,7 +561,7 @@ void serve_router(AgentState *state, int fd, const std::string &account) {
         size_t length = 0;
         char *line = read_line(state, fd, &length);
         if (!line) break;
-        handle_request(state, fd, line, length, account);
+        handle_request(state, env, fd, line, length, account);
         free(line);
     }
 }
@@ -430,6 +579,8 @@ int connect_router() {
 
 void *agent_main(void *arg) {
     AgentState *state = static_cast<AgentState *>(arg);
+    JNIEnv *env = nullptr;
+    if (state->vm) state->vm->AttachCurrentThread(&env, nullptr);
     LOGI("worker started pid=%d uid=%u", getpid(), static_cast<unsigned>(getuid()));
     while (!state->stop.load()) {
         std::string account, username, device_id, install_id;
@@ -440,10 +591,11 @@ void *agent_main(void *arg) {
         int fd = connect_router();
         if (fd < 0) { if (!sleep_interruptible(state, 1000)) break; continue; }
         state->router_fd.store(fd);
-        serve_router(state, fd, account);
+        serve_router(state, env, fd, account);
         close_fd(state);
         if (!sleep_interruptible(state, 1000)) break;
     }
+    if (env && state->vm) state->vm->DetachCurrentThread();
     LOGI("worker stopped");
     return nullptr;
 }
@@ -457,6 +609,7 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
     auto *state = new (std::nothrow) AgentState();
     if (!state) { snprintf(error, error_size, "out of memory"); return -1; }
     state->host = host;
+    state->vm = host->java_vm;
     g_state.store(state);
     if (pthread_create(&state->thread, nullptr, agent_main, state) != 0) {
         g_state.store(nullptr);
