@@ -21,11 +21,11 @@ local removed = native.clear()
 `native.install(module, symbol, c_source)`:
 
 - `module` must be a shared library already loaded in the target process (for
-  example `"libc.so"` or `"libtarget.so"`). It is resolved with
-  `dlopen(RTLD_NOW | RTLD_NOLOAD)` and `dlsym`, so the symbol must be
-  dynamically exported.
-- `symbol` is the exported symbol name (`"read"`, `"getpid"`, a mangled C++
-  symbol, ...).
+  example `"libc.so"` or `"libtarget.so"`). Symbol resolution first tries
+  `dlopen(RTLD_NOW | RTLD_NOLOAD)` and `dlsym`, then searches the loaded image's
+  ELF symbol table if that lookup fails.
+- `symbol` is the function's symbol name, including its mangled name for C++.
+  Non-exported symbols require a matching entry in the image's symbol table.
 - `c_source` must define exactly one replacement function named
   `dejavu_native_target` with the target function's signature.
 
@@ -114,9 +114,10 @@ crashing the host on validation failures.
 
 ## Active calls (native.call)
 
-`native.call(module, symbol, c_source, ...typed_args)` actively invokes an
-exported native function through a TinyCC-generated wrapper, without installing
-a hook. It returns the wrapper's return value as a Lua integer.
+`native.call(module, symbol, c_source, ...typed_args)` uses the same symbol
+resolver as `native.install` and invokes the function directly through a
+TinyCC-generated wrapper. It returns the wrapper's return value as a Lua
+integer.
 
 The C source must define `void dejavu_native_call(void)` and may use:
 
@@ -261,8 +262,8 @@ it into the Lua chunk and prints the returned hook id.
 - **Trusted code.** Like Java hooks, native replacements run with the target
   process privileges and cannot be sandboxed by Dejavu. A wrong signature,
   missing trampoline call or ABI mismatch can crash the process.
-- **No automatic reload.** After `dejavu deploy-agent` you must restart the
-  target app so the new agent (and native API) is loaded.
+- **Reload on process restart.** `./dejavu deploy-agent` restarts the target by
+  default. With `--no-restart`, restart the target later to load the new Agent.
 - Native hooks and LSPlant both use Dobby; hooking the same address that
   LSPlant already manages is not supported. Prefer non-ART functions.
 

@@ -1,25 +1,28 @@
 # Zygisk modularization plan
 
-## Goal
+This document records the original split and the source boundaries in this
+checkout. See the [current implementation](#current-implementation).
+
+## Original goal
 
 Reduce high-centrality implementation code without changing the Lua API, Hook
 C ABI, LSPlant behavior, control protocol, package layout or supported Android
 target.
 
-## Current boundary problem
+## Original boundary problem
 
-`src/hook_manager.cpp` currently owns four separate concerns:
+Before the split, `src/hook_manager.cpp` owned four separate concerns:
 
 1. Hook lifecycle and RCU-style hook table management.
 2. Lua management commands.
 3. Hook C ABI injection and helper symbol registration.
 4. JNI primitive boxing, unboxing and per-call Hook context operations.
 
-The last two concerns are independent of hook installation and account for a
-large part of the file. Keeping them in the manager makes future String,
-object and exception helpers harder to add or review.
+The last two concerns were independent of hook installation and accounted for
+a large part of the file. The split gave String, object and exception helpers
+their own implementation boundaries.
 
-## Target modules
+## Initial target modules
 
 - `dejavu_hook_api.h`: stable public Hook C ABI and inline user conveniences.
 - `hook_api_runtime.h/.cpp`: private ABI runtime, TinyCC preamble, helper symbol
@@ -28,15 +31,9 @@ object and exception helpers harder to add or review.
 - `hook_manager.h/.cpp`: LSPlant installation, record lifetime, Lua control and
   before/original/after orchestration.
 
-The next helper batch is contract-gated. String helpers, object type checks and
-controlled Java calls must follow the reference, buffer, class-loader and
-exception rules in [hook-c-api.md](hook-c-api.md#helper-lifetime-contract)
-before any ABI symbols are added. No helper in that batch may expose `JNIEnv`,
-raw `jmethodID`, a borrowed string pointer, C varargs or an implicitly retained
-reference.
-
-No new dependency or generalized framework will be introduced. Control and
-LSPlant modules remain unchanged.
+String helpers, object type checks and controlled Java calls follow the
+reference, buffer, class-loader and exception rules in the
+[Hook C ABI](hook-c-api.md#helper-lifetime-contract).
 
 ## Behavioral locks
 
@@ -50,20 +47,28 @@ Before and after the move:
   return, after-result replacement, concurrent dispatch and logical removal.
 - The production package must contain the non-stress Agent build.
 
-## Stop condition
+## Original acceptance criteria
 
-The refactor is complete when `hook_manager.cpp` no longer implements or
-registers Hook C ABI helpers, all verification passes, and the device is
-restored to the production Agent with no active user hooks.
+The initial refactor moved Hook C ABI implementation and registration out of
+`hook_manager.cpp`. The acceptance run included verification and a return to
+the production Agent with no active user hooks.
 
-## Landed
+## Current implementation
 
-- `hook_api_runtime.cpp` now owns the TinyCC preamble, JNI primitive boxing and
-  unboxing, per-call context helpers, C ABI helper implementations and native
-  symbol registration.
-- `hook_manager.cpp` now owns hook installation, Lua control registration,
-  record lifetime and before/original/after dispatch only.
-- Host tests, Android API 26-35 arm64 compatibility builds, MT Manager protocol
-  stress and production deployment all pass. The stress run reached `calls=160000`,
-  `max_parallel=15`, `java_failures=0`; the final production `hook.list()` is
-  empty.
+- The manager handles Java hook installation, record lifetime and session
+  startup. Lua management commands and dispatch have separate implementations.
+  [Hook manager](../src/hook_manager.cpp), [hook control](../src/hook_control.cpp)
+  and [hook dispatch](../src/hook_dispatch.cpp).
+- The ABI runtime defines the TinyCC preamble and registers helper symbols.
+  Helpers have their own source files.
+  [ABI runtime](../src/hook_api_runtime.cpp), [primitive values](../src/hook_api_primitives.cpp),
+  [strings](../src/hook_api_strings.cpp), [Java calls](../src/hook_api_java_call.cpp)
+  and [stream events](../src/hook_api_stream.cpp).
+- JNI descriptor parsing is separate from hook management. CMake lists the
+  Agent and Loader source files. [Hook signatures](../src/hook_signature.cpp)
+  and [CMake](../CMakeLists.txt).
+
+The original verification covered host tests, Android arm64 compatibility
+builds, the MT Manager protocol stress test and production deployment. That
+stress run recorded `calls=160000`, `max_parallel=15`, `java_failures=0` and
+ended with an empty production `hook.list()`.

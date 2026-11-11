@@ -39,5 +39,7 @@ Live stream viewer:
 For UDP/KCP use `--no-adb-reverse` and `<host-lan-ip>:<port>` as endpoint.
 Transport numbers: `1=tcp`, `2=udp`, `3=kcp`.
 
-It is unload-safe: `on_unload_prepare` stops the hooks before module teardown.
+The plugin is marked unload-safe. `on_unload_prepare` attempts to stop capture
+and remove its hooks. The host attempts any remaining tracked-hook cleanup
+before closing the module.
 Captured logs can contain sensitive tokens; delete them after debugging.

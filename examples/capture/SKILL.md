@@ -12,7 +12,7 @@ BoringSSL boundary:
 - installs both hooks through the host `hook` interface;
 - writes `OUT len=N ...` / `IN len=N ...` records (first 900 printable bytes)
   to a file and/or a framework **TCP/UDP/KCP stream**;
-- stops/uninstalls its hooks in `on_unload_prepare`, so `plugin.unload` is safe.
+- attempts to stop capture and remove hooks in `on_unload_prepare`.
 
 The stream interface is framework-level: any plugin declaring
 `DEJAVU_PLUGIN_CAP_STREAM` can open a TCP/UDP/KCP stream and write records;
@@ -86,5 +86,5 @@ decode HTTP/2, gzip or binary frames.
 - `capture.status()` reports `out=<calls>/<bytes>B in=<calls>/<bytes>B`;
 - `capture.stop()` uninstalls hooks, closes the file and stream;
 - `capture.probe(transport, endpoint)` sends a one-record test;
-- unloading without stop is refused by the host if hooks remain, but
-  `on_unload_prepare` normally handles it.
+- `plugin.unload` calls `on_unload_prepare` and the host attempts to remove any
+  remaining tracked hooks. Failed cleanup leaves the module loaded for retry.

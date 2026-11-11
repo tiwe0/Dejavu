@@ -12,48 +12,45 @@ const DejavuPluginDescriptor *dejavu_plugin_entry(void);
 
 The descriptor contains `abi_version`, `struct_size`, name/version, flags,
 `initialize`, `on_control_ready`, `shutdown`, optional `capabilities` and
-optional `on_unload_prepare`. All ABI structs are
-append-only and must be validated with `struct_size`; v2 is the current frozen layout (the pre-freeze v1 descriptor had a different shape and is rejected).
+optional `on_unload_prepare`. The loader requires ABI v2 and a `struct_size`
+that covers `shutdown`. ABI structs are append-only. Read an appended field
+only when `struct_size` covers its full extent.
 
 `initialize` receives a per-instance `DejavuPluginHost` table with stable function
 pointers and an opaque `host_context`. Save this instance's host table and pass
 its context unchanged to host services, including from native worker or hook
 callback threads. Contexts and stream handles are never shared between plugins.
 An initializer that returns failure must stop and join any workers it started
-before returning; the framework cancels its streams but cannot join unknown
-plugin-owned threads or call shutdown on an uninitialized state.
+before returning. The framework retires its streams and attempts to remove
+tracked hooks. It skips `on_unload_prepare` and `shutdown` for an uninitialized
+plugin.
 
-- `register_function(host, namespace, name, function, context, error, size)`
-  registers a Lua function. Namespaces must be simple identifiers and must not
-  use reserved framework names (`hook`, `fs`, `module`, `native`, `java`,
-  `mem`, `plugin`); duplicate namespace/function pairs are rejected.
-- `log_message` writes to logcat under `DejavuPlugin`;
-- `get_app_class_loader` returns the current app ClassLoader (or `NULL` before
-  Lua control is initialized);
-- `alloc` / `free` are agent-owned allocation helpers for plugin results;
-- `get_interface(host, "mem"|"module"|"hook", version)` returns optional host
-  services (see below).
+- `host->register_function(host->host_context, namespace_name, function_name,
+  function, function_context, error, error_size)` registers a Lua function
+  during `initialize`. JIT plugins call `dejavu_jit_register` during
+  `dejavu_jit_plugin_init`. Namespace and function names must be simple
+  identifiers. The host rejects duplicate namespace/function pairs and reserves
+  the `hook`, `fs`, `module`, `native`, `java`, `mem` and `plugin` namespaces.
+- `host->log_message(host->host_context, priority, message)` writes to logcat
+  under `DejavuPlugin`.
+- `host->get_app_class_loader(host->host_context)` returns a host-owned global
+  reference to the current app ClassLoader, or `NULL` before Lua control is
+  initialized.
+- `host->alloc(size)` and `host->free(pointer)` are agent-owned allocation
+  helpers for plugin results.
+- `host->get_interface(host->host_context, name, version)` looks up `mem`,
+  `module`, `hook`, `fs` or `stream`. It returns `NULL` for unavailable
+  interfaces, unsupported versions and undeclared capabilities.
 
 The descriptor may append optional `capabilities` bits
 (`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA/STREAM`); `plugin.list()` prints them as
-`caps=0x...`. Read the field only when `struct_size` reaches its offset.
-Capabilities are enforced: `get_interface("mem"|"module"|"hook"|"fs")` and
-the corresponding `dejavu_jit_*` helpers return failure unless the plugin
-declared the matching bit. A plugin that resolves `libc.so` symbols and then
-installs a hook needs `HOOK|MODULE`; declare every service actually used.
+`caps=0x...`. A descriptor without the field defaults to zero capabilities.
+Interface lookup and the corresponding `dejavu_jit_*` helpers require the
+matching `MEM`, `MODULE`, `HOOK`, `FS` or `STREAM` bit. Declare every service
+the plugin uses. JavaVM and ClassLoader access are direct host-table members.
 
-`on_control_ready` is called once the Lua control session exists; plugins that
-need the control session/ClassLoader should defer that work there instead of
-doing it in `initialize`.
-
-`on_unload_prepare` (read only when `struct_size` reaches its offset) is called
-after new callbacks are disabled and the plugin's streams are retired. Blocking
-stream reads/accepts are cancelled before this callback, which must stop and
-join the plugin's workers. The callback runs without the manager mutex. The
-framework then removes remaining owned hooks; failed unpatch/protection cleanup
-retains the module for a later unload retry. `shutdown` also runs without the
-manager mutex and precedes module teardown. An executing registered callback
-prevents its own plugin from being unloaded.
+`on_control_ready` runs once the Lua control session exists. Use it for work
+that needs the session or ClassLoader.
 
 The ABI lives in [`include/dejavu_plugin.h`](../../include/dejavu_plugin.h) and
 is versioned with `DEJAVU_PLUGIN_ABI_VERSION`. Plugins are built with
@@ -61,11 +58,12 @@ is versioned with `DEJAVU_PLUGIN_ABI_VERSION`. Plugins are built with
 
 ## Host services
 
-Through `host->get_interface`:
+Each native service method takes the saved `host->host_context` as its first
+argument. The signatures below omit that common parameter where abbreviated.
 
-- **mem** (`DEJAVU_MEM_INTERFACE_VERSION`): safe same-process
-  `read`/`write` (via `process_vm_readv`) and `query` mapping bounds/protection
-  (bit 1 read, 2 write, 4 execute).
+- **mem** (`DEJAVU_MEM_INTERFACE_VERSION`) provides same-process `read` and
+  `write` via `process_vm_readv` and `process_vm_writev`. `query` returns
+  mapping bounds and protection bits (1 read, 2 write, 4 execute).
 - **module** (`DEJAVU_MODULE_INTERFACE_VERSION`): `resolve(library, symbol)`
   including non-dynamic `LOCAL` symbols (ELF symbol table).
 - **fs** (`DEJAVU_FS_INTERFACE_VERSION`): `read_file`, `write_file`, `exists`,
@@ -83,7 +81,8 @@ Through `host->get_interface`:
   v2 adds device-side RPC servers: `listen(transport, endpoint, backlog)`,
   `accept(listener, timeout_ms)` and `read(handle, buffer, capacity,
   timeout_ms, &size_read)`. Request it with
-  `host->get_interface("stream", 2)` (`DejavuStreamInterfaceV2`). `listen` is
+  `host->get_interface(host->host_context, "stream", DEJAVU_STREAM_INTERFACE_VERSION_2)`
+  (`DejavuStreamInterfaceV2`). `listen` is
   TCP-only; the endpoint is `host:port` (no transport prefix). Bind
   `127.0.0.1` for loopback (e.g. `adb forward`) or `0.0.0.0` for LAN peers
   (the target process needs the INTERNET permission). `read`
@@ -141,27 +140,40 @@ An empty allowlist rejects every plugin; there is no implicit "module/tmp/app
 data" prefix fallback. `plugin install`/`plugin allow` manage the property
 slots. Plugin files must be regular (non-symlink), not group/world writable,
 and owned by root or the target uid. Optional per-slot SHA-256 hashes bind the
-path to expected file bytes.
+path to expected file bytes. `plugin install` pins the artifact and any selected
+sidecar. It checks `--skill`, then `<artifact>.SKILL.md`, then the sibling
+`SKILL.md`, and installs the selected file as `<device-artifact>.SKILL.md`.
+A pinned sidecar must be nonempty, fit the 128 KiB read limit and match its hash.
 On Android, the app process may also need executable file permissions and a
 loadable SELinux label (for example mode `755` and
 `chcon u:object_r:apk_data_file:s0` for an app-files plugin).
 
 ## Auto-loading early
 
-Set a colon/space-separated list in the system property
-`debug.dejavu.plugins` before the target process starts. The agent loads those
-plugins in `HookManager::initialize()`, before app code runs, which is useful
-for hooks that must observe process startup. Plugin Lua registrations are
-queued until the control session exists, then registered automatically.
+Set a colon/space-separated list of native plugin paths in
+`debug.dejavu.plugins` before the target process starts. The agent loads them
+during `HookManager::initialize()`, before installing the application
+bootstrap hook. It queues Lua registrations until the control session exists.
 
-Unloading refuses active callbacks, revokes registered and returned Lua host
-functions, retires stream handles, and calls optional `on_unload_prepare`
-without holding the manager mutex. The host then removes remaining tracked
-hooks, calls `shutdown`, and finally `dlclose()`s (or releases the cached JIT
-module). Failed hook removal retains the module so unload can be retried.
-A plugin is refused unless its descriptor sets
-`DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE`; in-flight functions are also refused.
-There is currently no automatic re-load; load the path again.
+## Unloading
+
+Normal unload requires `DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE`, or a nonzero return
+from `dejavu_jit_plugin_unload_safe` for JIT. The host refuses unload while a
+registered or returned Lua host function is in flight. Once it starts unload,
+the host revokes those functions and retires the plugin's stream handles,
+cancelling blocking stream reads and accepts before `on_unload_prepare`.
+
+The optional `on_unload_prepare` must quiesce plugin-owned callbacks and stop
+and join any workers that still use plugin code. The host then attempts to
+remove remaining tracked hooks. A failed unpatch or protection restore keeps
+the module mapped for a later `plugin.unload` retry. After cleanup succeeds,
+the host calls `shutdown` when provided and closes the native library, destroys
+an uncached JIT module or releases its cache reference. Both lifecycle callbacks
+run without the manager mutex. Load the path again to reload the plugin.
+
+If initialization fails and hook cleanup is pending, `plugin.unload(name)`
+can retry cleanup even without the unload-safe flag. The host skips both
+lifecycle callbacks for that failed initialization.
 
 Host functions returned as `DEJAVU_VALUE_HOST_FUNCTION` are wrapped in the
 same revocable dispatch as registered functions, including functions returned
@@ -183,11 +195,13 @@ completes, otherwise they keep pointing into the unloaded library.
 `plugin.load_jit(device_path)` reads a trusted C source (allowlist + optional
 SHA-256), prepends the prelude generated from
 [`include/dejavu_jit.h`](../../include/dejavu_jit.h), compiles it in-process with
-`dejavu_engine_compile()` and calls `dejavu_jit_plugin_init()`. JIT plugins are
-C-only, compiled with `-nostdlib`, need the Lua control engine, and are loaded
-on demand (not through early autoload). Source size limit: 512 KiB.
+`dejavu_engine_compile()` and calls the required `int dejavu_jit_plugin_init(void)`
+entry point. The initializer returns `0` on success and can set a failure message
+with `dejavu_jit_set_error`. JIT plugins are C-only, compiled with `-nostdlib`,
+and loaded on demand once the Lua control engine is available. The source size
+limit is 512 KiB.
 
-Optional exports:
+The following exports are optional.
 
 ```c
 const char *dejavu_jit_plugin_name(void);
@@ -196,18 +210,22 @@ int dejavu_jit_plugin_unload_safe(void);
 int dejavu_jit_plugin_capabilities(void);
 void dejavu_jit_plugin_control_ready(void);
 void dejavu_jit_plugin_unload_prepare(void);
-int dejavu_jit_plugin_init(void);
 void dejavu_jit_plugin_shutdown(void);
 ```
+
+Without a name export, the loader uses the source filename without its
+extension. The name must be a simple identifier. The version defaults to an
+empty string, capabilities to zero and unload-safe to disabled.
 
 The prelude exposes `dejavu_jit_register`, alloc/free/log/classloader helpers,
 `dejavu_jit_mem_*`, `dejavu_jit_module_resolve`, `dejavu_jit_hook_*`,
 `dejavu_jit_fs_*`, `dejavu_jit_stream_*` (TCP/UDP/KCP) and the typed
-arg/return helpers. Compiled modules are
-cached by source SHA-256 (up to four entries); unload releases the reference and
-reload of the same source hits the cache (`JIT cache hit`), so JIT static/global
-state can survive reload until PluginManager shutdown. Example:
-[`examples/hello/hello_jit.c`](../../examples/hello/hello_jit.c).
+arg/return helpers. The per-process cache holds up to four modules keyed by
+source SHA-256. If full, it evicts the least recently used unreferenced entry.
+A compile with all four entries in use remains uncached. Unload releases a
+cached module reference, so reloading the same source while the entry is still
+cached may retain static or global state. Initialize that state for each load.
+[`examples/hello/hello_jit.c`](../../examples/hello/hello_jit.c)
 
 ## Example
 

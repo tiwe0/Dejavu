@@ -32,7 +32,7 @@ hold its runtime controls, target selection and complete metadata.
 - **One scope per plugin.** Select multiple apps or exact process names. The
   framework merges their injection targets; changing the inspected process does
   not stop instances running elsewhere.
-- **ZIP import.** Add a package with a valid `manifest.json` and declared
+- **ZIP import.** Add one plugin per ZIP with a valid `manifest.json` and declared
   resources. Validation finishes before replacement; importing never executes it.
 - **Lua-authored pages, native Compose UI.** Use the default `monitor` and
   `controls` layouts or existing declarative Lua pages.
@@ -59,9 +59,13 @@ available.
    [Build Dejavu run](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml).
    This CI APK uses a debug signature and is separate from the stable module ZIP.
    Grant Manager root access.
-4. **Add and activate a plugin.** Tap **+**, choose its ZIP, configure **Scope**,
-   restart affected target apps, then select a process and explicitly **Start**
-   or **Load** the plugin. Scope changes and imports do not start code automatically.
+4. **Add and activate a plugin.** Extract the public examples release bundle
+   and ZIP a single plugin folder before selecting it with **+**. You can also
+   copy the extracted plugin folders into the device library and refresh the
+   list. Configure **Scope**, restart affected target apps, and select a process.
+   In **Control**, tap **Start** for Lua or **Load** for native and JIT plugins.
+   Scope changes and imports do not start code automatically. See the
+   [import requirements](app/README.md#zip-plugin-import).
 
 Public packages and buildable examples live in [`examples/`](examples/README.md).
 The optional `plugins/` submodule points to a private repository; public framework
@@ -82,6 +86,9 @@ builds and releases do not require access to it.
 Startup scripts run after application binding and before live RPC starts.
 They are **not guaranteed to run before `Application.onCreate`**. Read the timing
 and recovery contract before relying on startup interception.
+
+Manager and `./dejavu targets` preserve per-plugin scope ownership. The module
+WebUI saves a plain process list and discards that ownership metadata.
 
 ## Build and reference
 
@@ -106,7 +113,7 @@ The Zygisk integration supports both Java/Kotlin method hooks (LSPlant) and
 inline native function hooks (Dobby + a TinyCC-compiled replacement); see
 `zygisk/docs/native-hook-api.md` for the `native.*` API and its limits.
 
-Active invocation is available as well: `native.call(...)` calls an exported
+Active invocation is available as well. `native.call(...)` calls a resolved
 native function through a TinyCC wrapper, and `java.invoke(...)` /
 `java.new(...)` / `java.release(...)` / `java.load_dex(...)` call Java methods
 and load raw dex files through JNI with a
@@ -115,17 +122,17 @@ strings and object/array handles) can be chained into subsequent calls (see
 `zygisk/docs/java-invoke-api.md` and `zygisk/docs/native-hook-api.md`).
 
 The control session also exposes agent helpers: `fs.read/write/exists/remove/
-list/stat` for files in the target sandbox, and `module.load/unload/loaded/
+list/stat` for files accessible to the target process, and `module.load/unload/loaded/
 symbols/resolve` for loading shared libraries, enumerating ELF symbols and
 resolving hidden (`LOCAL`) symbols; `native.call`/`native.install` fall back
 to the ELF symbol table for non-exported symbols. A native **plugin** mechanism
 (`plugin.load/list/call/unload`, C ABI in `include/dejavu_plugin.h`, see
 `zygisk/docs/plugin-api.md`) lets a shared object register Lua functions, use
-host mem/module/hook services, and auto-load plugins from
+host services declared by its capability bits, and auto-load plugins from
 `debug.dejavu.plugins` before app code runs. A trusted allowlist
 (`debug.dejavu.plugins.allowed` / `config/plugins.txt`) plus optional per-path
-SHA-256 hashes and unload-safety flags bound what may load. Memory helpers
-(`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
+SHA-256 hashes govern loading. The unload-safety flag governs hot unload.
+Memory helpers (`mem.read/write`, typed `read_u*/write_u*`, `mem.dump`, `mem.query`,
 `mem.protect`, `mem.maps`) provide guarded access to the target address space.
 See `zygisk/docs/agent-helpers.md`.
 
@@ -226,8 +233,8 @@ LSPlant compatibility validation.
 
 ### Automated releases
 
-Pushes to `main` and pull requests run the full build and test pipeline. A
-release is published when a version is explicitly introduced:
+Pushes and pull requests targeting `main` or `develop` run the build and test
+pipeline. The release triggers are listed below.
 
 - bump the `version=` line in `zygisk/module/module.prop` and push to `main`:
   CI detects the change and publishes the stable `vX.Y.Z` release after all
@@ -240,8 +247,7 @@ A release is created only after the host tests, Android API 26 baseline,
 compatibility builds, Manager build/lint, Zygisk package, and code-quality
 checks all pass. Each release carries two assets: the framework-only Zygisk module zip and
 `dejavu-plugins-vX.Y.Z-arm64.zip` with the example plugins, SKILL sidecars, JIT
-sources and unpack CLI. A push that does not change the module version only
-builds artifacts and never publishes a release.
+sources and unpack CLI. Other branch pushes produce build artifacts.
 
 The build smoke checks that the output is an ELF64 AArch64 shared object, has
 the expected SONAME, uses 16 KB-compatible load segment alignment, and exports
@@ -267,10 +273,10 @@ control channel into one command:
 ./dejavu status                                 # host/device/module state
 ./dejavu build [--api 26]                       # build libdejavu.so
 ./dejavu package [--api 26]                     # build and package the module zip
-./dejavu install [--zip PATH] [--soft-reboot]   # push + install via ksud/magisk
+./dejavu install [--zip PATH] [--soft-reboot]   # install via ksud/magisk; soft reboot requires ksud
 ./dejavu targets list|add|remove|set|clear      # manual targets; preserves plugin scopes
-./dejavu deploy-agent -p <process>              # hot-deploy agent + init.lua
-./dejavu exec -p <process> -e 'return hook.list()'
+./dejavu deploy-agent -p <process> [--no-restart] # replace core, Agent and init.lua
+./dejavu exec -p <process> [--timeout SECONDS] -e 'return hook.list()'
 ./dejavu exec -p <process> hooks/demo.lua
 ./dejavu native -p <process> list|stats|uninstall|clear
 ./dejavu native -p <process> install libc.so read replacement.c
@@ -301,7 +307,12 @@ files over the adb shell when the adb binary cannot read host paths (for
 example the Windows `adb.exe` invoked from WSL). Run `./dejavu --help` or
 `./dejavu <command> --help` for the full option list.
 
-Agent/assistant usage is documented in the companion [SKILL.md](SKILL.md).
+`deploy-agent` restarts the target by default. `exec --timeout` defaults to 40
+seconds for the RPC exchange. A client timeout does not cancel Lua already
+running in the target. Check the target state before retrying a request whose
+outcome is unknown.
+
+See [SKILL.md](SKILL.md) for example selection, CLI workflows and ABI contracts.
 
 ## Versions
 
@@ -374,9 +385,10 @@ Example MCP client configuration:
 }
 ```
 
-The server exposes 21 tools covering status/state, measured targets, Lua exec,
+The server exposes 21 tools covering status/state, configured targets, Lua exec,
 plugin install/load/JIT/call/unload/skill/allow, native list/call, Java
-invoke/new, log tail, the device acceptance suite, agent deployment, and a `dejavu_cli` escape hatch for the remaining CLI surface. Tool
+invoke/new/load-dex, log tail, the device acceptance suite, agent deployment,
+and a `dejavu_cli` tool for the remaining CLI surface. Tool
 results are MCP text content; `./dejavu mcp --help` and
 [tests/mcp_server_test.py](tests/mcp_server_test.py) show the protocol surface.
 For an authorized rooted device, run the real lifecycle check with:
@@ -402,8 +414,10 @@ SKILL.md text is exposed only on demand and remains untrusted documentation.
   Zygisk host tests also cover bounded TCP writes and concurrent close.
 - Device: `TARGET_PROCESS=<package> ./zygisk/scripts/device-test.sh` automates
   the on-device acceptance flow against a rooted device with a Zygisk provider
-  and this module installed (see `zygisk/README.md`). It uses the file control
-  channel, never reboots the device, and verifies control, instance-method
+  and this module installed. It replaces `config/targets.txt` with the single
+  test process without restoring the previous scopes, clears existing
+  `run/*.lua` requests, and restarts the target. It uses the file control
+  channel and verifies control, instance-method
   hooks, native function hooks (install and active call), Java active
   invocation (static/constructor/instance with type conversions), chained
   invocation results (including cross-API), filesystem and module/symbol

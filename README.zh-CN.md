@@ -29,7 +29,7 @@ Manager 分为**概览、插件、配置**三个主页面。外部插件列表�
 
 - **每个插件独立配置作用域。** 支持多选应用与精确进程名，框架合并各插件的
   注入目标；切换查看进程不会停止其他进程中已运行的插件实例。
-- **ZIP 导入。** 插件包需包含合法的 `manifest.json` 及声明资源。完整校验后
+- **ZIP 导入。** 每个 ZIP 只包含一个插件，需提供合法的 `manifest.json` 及声明资源。完整校验后
   才替换现有版本，导入本身不执行代码。
 - **Lua 编写页面，Compose 原生渲染。** 支持默认 `monitor`、`controls` 布局，
   并兼容已有声明式 Lua 页面。
@@ -52,9 +52,11 @@ Console 已移除，CLI 和 MCP 接口继续保留。
    [Build Dejavu 工作流](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml)
    下载 `dejavu-manager-debug` 产物。CI APK 使用调试签名，与正式模块 ZIP 分开提供。
    为 Manager 授予 root 权限。
-4. **添加并启用插件。** 点击右下角 **+** 选择 ZIP，在插件内配置**作用域**，
-   重启受影响的目标应用，再选择进程并手动**启动／加载**。修改作用域或导入文件
-   都不会自动执行插件代码。
+4. **添加并启用插件。** 先解压公开示例发布包，再把单个插件目录打成 ZIP，
+   点击右下角 **+** 选择该 ZIP。也可以把解出的插件目录复制到设备插件库后刷新。
+   在插件内配置**作用域**，重启受影响的应用，再选择进程并在**控制**页操作。
+   Lua 插件用**启动**，Native/JIT 插件用**加载**。修改作用域或导入文件
+   都不会自动执行插件代码。见 [导入要求](app/README.md#zip-plugin-import)。
 
 公开插件和可构建示例位于 [`examples/`](examples/README.md)。可选的 `plugins/`
 子模块指向私有仓库，公开框架构建与发布不要求访问它。
@@ -73,6 +75,9 @@ Console 已移除，CLI 和 MCP 接口继续保留。
 
 启动脚本在应用绑定之后、实时 RPC 启动之前执行，**不保证早于
 `Application.onCreate`**。依赖启动时机前，请先阅读执行与错误恢复约定。
+
+Manager 和 `./dejavu targets` 会保留逐插件的作用域归属。模块 WebUI 保存的是
+普通进程列表，会丢弃归属元数据。
 
 ## 构建与参考
 
@@ -95,15 +100,15 @@ Zygisk 集成同时支持 Java/Kotlin 方法 hook（LSPlant）和已加载模块
 native 函数 inline hook（Dobby + TinyCC 生成的替换函数）；`native.*`
 API 与限制见 `zygisk/docs/native-hook-api.md`。
 
-也支持主动调用：`native.call(...)` 通过 TinyCC 包装器直接调用已加载模块的
-导出函数；`java.invoke(...)` / `java.new(...)` / `java.release(...)` /
+主动调用时，`native.call(...)` 通过 TinyCC 包装器调用已加载模块中解析到的
+原生函数。`java.invoke(...)` / `java.new(...)` / `java.release(...)` /
 `java.load_dex(...)` 通过 JNI
 直接调用 Java 方法，参数由 JNI 签名驱动转换；返回值（primitive、string、
 对象/数组 handle）可以继续参与后续调用（见 `zygisk/docs/java-invoke-api.md`
 和 `zygisk/docs/native-hook-api.md`）。
 
 控制会话还提供 agent helper：`fs.read/write/exists/remove/list/stat` 用于
-目标进程沙箱内的文件读写；`module.load/unload/loaded/symbols/resolve` 用于
+目标进程可访问路径的文件读写；`module.load/unload/loaded/symbols/resolve` 用于
 加载 so、枚举 ELF 符号和解析隐藏（`LOCAL`）符号；`native.call` /
 `native.install` 在导出符号查找失败时会回退 ELF 符号表。原生 **plugin** 机制
 （`plugin.load/list/call/unload`，C ABI 见 `include/dejavu_plugin.h`，文档见
@@ -208,7 +213,8 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 
 ### 自动发布
 
-向 `main` 推送和 Pull Request 会执行完整构建与测试。只有显式引入版本时才发布：
+向 `main` 或 `develop` 推送、以它们为目标发起 Pull Request，都会执行构建与测试。
+正式发布和预发布的触发条件如下。
 
 - 修改 `zygisk/module/module.prop` 的 `version=` 并推送到 `main`：CI 检测到
   版本变化后，在所有检查通过时从该提交创建稳定版 `vX.Y.Z` 并发布（自动创建
@@ -220,8 +226,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 只有主机测试、Android API 26 基线、兼容性构建、Manager 编译与 lint、Zygisk
 打包和代码质量检查全部通过后才会发布。每个 Release 带两个资产：framework-only 的 Zygisk 模块
 zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
-`dejavu-plugins-vX.Y.Z-arm64.zip`。版本未变化的普通 push 只构建 artifact，
-不会发布 Release。
+`dejavu-plugins-vX.Y.Z-arm64.zip`。其他分支推送生成构建 artifact。
 
 构建冒烟检查会验证产物满足以下条件：
 
@@ -249,10 +254,10 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 ./dejavu status                                 # 主机/设备/模块状态
 ./dejavu build [--api 26]                       # 构建 libdejavu.so
 ./dejavu package [--api 26]                     # 构建并打包模块 zip
-./dejavu install [--zip PATH] [--soft-reboot]   # 推送并通过 ksud/magisk 安装
+./dejavu install [--zip PATH] [--soft-reboot]   # 通过 ksud/magisk 安装，软重启需要 ksud
 ./dejavu targets list|add|remove|set|clear      # 编辑手动目标，保留插件作用域
-./dejavu deploy-agent -p <进程>                 # 热部署 agent + init.lua
-./dejavu exec -p <进程> -e 'return hook.list()'
+./dejavu deploy-agent -p <进程> [--no-restart]    # 替换核心库、Agent 和 init.lua
+./dejavu exec -p <进程> [--timeout SECONDS] -e 'return hook.list()'
 ./dejavu exec -p <进程> hooks/demo.lua
 ./dejavu native -p <进程> list|stats|uninstall|clear
 ./dejavu native -p <进程> install libc.so read replacement.c
@@ -281,7 +286,10 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 （例如从 WSL 调用 Windows 的 `adb.exe`）时会自动改用 adb shell 流式传输
 文件。`./dejavu --help` 或 `./dejavu <命令> --help` 查看完整选项。
 
-供 agent/助手使用的配套说明见 [SKILL.md](SKILL.md)。
+`deploy-agent` 默认重启目标进程。`exec --timeout` 是 RPC 交换期限，默认 40 秒。
+客户端超时不会取消目标内已开始执行的 Lua。遇到执行结果未知的请求，先检查目标状态再决定是否重试。
+
+示例选型、CLI 操作流程和 ABI 约定见 [SKILL.md](SKILL.md)。
 
 ## 版本语义
 
@@ -347,7 +355,8 @@ ADB=/path/to/adb ADB_SERIAL=<serial> TARGET_PROCESS=com.android.settings \
 - Zygisk：`make -C zygisk test` 运行主机侧 C/C++/Lua/CLI 测试。
 - 真机：`TARGET_PROCESS=<包名> ./zygisk/scripts/device-test.sh` 在已 root、
   装有 Zygisk provider 且已安装模块的设备上自动验收（见 `zygisk/README.md`）。
-  脚本走文件控制通道、**不会重启设备**，覆盖控制面、实例方法 hook、可写
+  脚本会把 `config/targets.txt` 覆盖为单一测试进程，结束时不会恢复原作用域。
+  它会清除现有的 `run/*.lua` 请求并重启目标进程。验收走文件控制通道，覆盖控制面、实例方法 hook、可写
   生成数据、超大响应与头文件 include 行为；`--with-hang-test` 额外验证
   relay 超时。
 - 依赖补丁：见 `patches/README.md`。

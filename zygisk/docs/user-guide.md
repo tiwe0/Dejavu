@@ -37,8 +37,8 @@ APatch 本身不实现 Zygisk。APatch 用户需要额外安装并启用 ZygiskN
 module.prop
 customize.sh
 zygisk/arm64-v8a.so                 # Zygisk Loader
-lib/arm64-v8a/libdejavu_agent.so    # LSPlant/Dobby/Lua/TinyCC Agent
-lib/arm64-v8a/libdejavu.so          # Dejavu runtime
+lib/arm64-v8a/libdejavu_agent.so    # LSPlant/Dobby Agent
+lib/arm64-v8a/libdejavu.so          # Lua/TinyCC runtime
 config/targets.txt                   # 进程作用域
 config/init.lua                      # Agent 启动时执行一次
 webroot/index.html                   # APatch Manager WebUI
@@ -97,7 +97,9 @@ adb push zygisk/dist/dejavu-zygisk-v0.8.2-arm64.zip /sdcard/Download/
 在 Magisk Manager 或 APatch Manager 中选择该 ZIP 安装，然后重启设备。
 首次安装、Loader 改动、Zygisk provider 改动都需要重启 Zygote。
 
-重启后先确认模块和作用域：
+默认安装包的目标列表为空。重启后先在 Manager 的插件详情设置作用域，或用
+`./dejavu targets add <进程名>` 添加手动目标。再启动目标应用并核对配置和 PID。
+以下示例以 `bin.mt.plus` 为目标。
 
 ```sh
 adb shell su -c 'nsenter -t 1 -m -- cat /data/adb/modules/dejavu_zygisk/config/targets.txt'
@@ -122,10 +124,15 @@ abstract-socket RPC control connected
 
 ## 5. 配置作用域
 
-### 5.1 直接编辑 `targets.txt`
+### 5.1 Manager 与 CLI
 
-`config/targets.txt` 每行写一个精确的 Android 进程名，空行和 `#` 注释
-会被忽略：
+在 Manager 的插件详情设置每个插件的作用域。
+`./dejavu targets add/remove/set/clear` 修改手动目标，保留各插件
+的作用域，`./dejavu targets list` 显示合并后的有效列表。配置作用域后，还需在
+插件详情中手动启动或加载插件。详见[逐插件作用域](../../app/README.md#per-plugin-scopes)。
+
+自定义安装包可直接编辑源码中的 `zygisk/config/targets.txt`。普通列表每行写一个
+精确的 Android 进程名。Loader 忽略空行和 `#` 注释。
 
 ```text
 # MT Manager 主进程
@@ -143,7 +150,7 @@ adb shell ps -A | grep bin.mt.plus
 adb shell pidof bin.mt.plus
 ```
 
-修改后需要重启目标进程；Loader 配置变化通常直接重启 Zygote 最可靠：
+Loader 在每个应用进程启动时读取有效列表。修改作用域后重启受影响的进程即可。
 
 ```sh
 adb shell am force-stop bin.mt.plus
@@ -158,21 +165,20 @@ adb shell monkey -p bin.mt.plus 1
 1. 通过 APatch/KernelSU bridge 获取已安装应用和图标；
 2. 读取 `/data/adb/modules/dejavu_zygisk/config/targets.txt`；
 3. 按应用名称或包名搜索并勾选作用域；
-4. 使用临时文件、权限设置和 `mv` 原子替换配置；
+4. 使用临时文件和 `mv` 替换为普通进程列表；
 5. 可选地对选中包执行 `am force-stop`。
 
-保存只影响后续启动的进程。页面提示保存后重启已运行的应用。对于声明
-了 `android:process="包名:xxx"` 的多进程应用，WebUI 默认只写入包名，
-额外进程需要手工加入 `targets.txt`。
+WebUI 保存会丢弃 `targets.txt` 中记录逐插件作用域归属的元数据。要保留这些
+归属，请通过 Manager 编辑插件作用域，通过 `./dejavu targets` 编辑手动目标。
+WebUI 的应用选择列表按包名勾选。添加 `包名:xxx` 等额外进程可用 Manager
+或 `./dejavu targets add`。
 
 如果页面提示 `WebUI bridge is unavailable`，说明当前管理器没有提供
-`window.ksu` bridge。此时不影响 native Agent，改用文件编辑或下面的
-CLI 即可。
+`window.ksu` bridge。此时可用 Manager 或 `./dejavu targets` 配置作用域。
 
 ## 6. 不重启设备的开发循环
 
-Loader 和 Zygote 已经正常工作后，日常修改只需要替换 Agent 和
-`init.lua`，不需要重启整台设备：
+Loader 和 Zygote 已正常工作时，可热部署核心库、Agent 和 `init.lua`。
 
 ```sh
 ADB_SERIAL=c44d68aa make -C zygisk deploy-agent
@@ -187,17 +193,20 @@ ACTIVITY=bin.mt.plus/.MainLightIcon \
 make -C zygisk deploy-agent
 ```
 
-脚本会先把 `config/hookx.lua` 和 `config/init.lua` 拼成最终部署的
-`init.lua`，再复制到临时文件，原子替换模块中的 Agent 和 `init.lua`，然后
-停止并重新启动目标进程。已经运行的进程不会自动映射新 Agent；只需重启
-目标进程即可。Loader、module.prop、Zygisk provider 或模块安装状态变化
-仍然需要 Zygote 重启。
+脚本先把 `config/hookx.lua` 和 `config/init.lua` 拼成最终部署的 `init.lua`，
+再在设备端部署锁内暂存、备份并逐个替换 `libdejavu.so`、`libdejavu_agent.so`
+和 `config/init.lua`。替换失败时会尝试回滚，回滚失败会保留备份。
+
+部署成功后默认重启目标进程。用 `./dejavu deploy-agent -p <进程名> --no-restart`
+或 `NO_RESTART=1 make -C zygisk deploy-agent` 可稍后手动重启目标。Loader、
+Zygisk provider 或模块安装状态变化仍需要重启 Zygote。
 
 ## 7. Lua 管理 API
 
-`config/init.lua` 在 `Application.attach(Context)` 之后执行一次，此时目标
-应用的 class loader 已可用。通过 CLI 发送的 Lua 也运行在同一个管理会话
-中。
+原始 `ActivityThread.handleBindApplication` 返回且取得应用 ClassLoader 后，
+Agent 执行 `config/init.lua` 初始化持久 Lua 会话，再执行可选的进程启动脚本，
+最后启动实时 RPC。此时 `Application.onCreate` 可能已经运行。CLI 发送的 Lua
+也使用这个会话。详见[进程启动脚本](early-hooks.md)。
 
 ```lua
 local id = hook.install(class_name, method_name, jni_signature, c_source)
@@ -379,11 +388,20 @@ v0.8.0 起 Lua 会话可以自己开 TCP 服务，把手机内进程变成可被
 RPC/事件端点（事件上报仍用 `hook.stream_start`，两者独立）：
 
     local listener = hook.stream_listen("127.0.0.1:18766", 4)
-    local connection = hook.stream_accept(listener, 5000)  -- 0=超时
-    local payload = hook.stream_read(connection, 65536, 5000)  -- nil=超时
-    hook.stream_write(connection, "reply:" .. payload)  -- 0=成功
-    hook.stream_close(connection)
+    local connection
+    local ok, result = pcall(function()
+        connection = hook.stream_accept(listener, 5000)
+        if connection == 0 then return "accept timed out" end
+        assert(connection > 0, "stream accept failed")
+        local payload = hook.stream_read(connection, 65536, 5000)
+        if payload == nil then return "read timed out" end
+        assert(hook.stream_write(connection, "reply:" .. payload) == 0, "stream write failed")
+        return "sent"
+    end)
+    if connection and connection > 0 then hook.stream_close(connection) end
     hook.stream_close(listener)
+    if not ok then error(result) end
+    return result
 
 - `hook.stream_listen(endpoint[, backlog])`：TCP 监听，返回正句柄，失败抛 Lua 错误。
   `127.0.0.1` 配合 `adb forward tcp:18766 tcp:18766` 最安全；绑定
@@ -593,8 +611,9 @@ int before_hook(dejavu_hook_context *context) {
 - 引用只能在当前 callback、当前线程使用，不能保存或传给其他线程。
 - C source 没有 `JNIEnv`，也没有手工 `DeleteLocalRef`；runtime 在 dispatch
   结束时清理临时引用。
-- 原 Java 方法抛出的异常不会被 Dejavu 清除，after 会跳过，调用方仍会
-  观察到原始异常的 reflective wrapper。
+- 原 Java 方法抛出异常时会跳过 `after`，并向调用方传播同一个异常对象。
+  桥接层只解开 `Method.invoke` 新增的一层 `InvocationTargetException`，
+  保留原异常的类型和 cause。
 - helper 产生的 JNI 异常会被清除并返回 `DEJAVU_HOOK_ERROR_JNI`，不会把
   偶然的 pending exception 留给原方法。
 - native `SIGSEGV`、错误函数指针、栈破坏和死循环无法转换成 Lua 错误，
@@ -644,8 +663,8 @@ ADB_SERIAL=c44d68aa \
 ```
 
 CLI 支持 `nil`、布尔、整数、浮点数和字符串结果。Lua 错误、目标不可用
-和协议错误写入 stderr，并返回非零状态。Lua 状态本身是单线程的，因此
-主机 CLI 调用使用 advisory lock 串行化。
+和协议错误写入 stderr，并返回非零状态。主机上的 `dejavuctl` 按当前用户
+共用一把 advisory lock，跨目标进程和设备串行化调用。
 
 REPL 模式会复用同一轮 PID/endpoint 发现、临时 `adb forward`、token 认证
 和主机侧串行化逻辑；每输入一行就发送一次 Lua，请求之间不并发。使用
@@ -709,9 +728,8 @@ adb -s c44d68aa push \
   zygisk/dist/dejavu-zygisk-v0.8.2-arm64.zip \
   /sdcard/Download/
 
-# 3. 确认作用域并启动 MT Manager
-adb -s c44d68aa shell su -c \
-  'nsenter -t 1 -m -- cat /data/adb/modules/dejavu_zygisk/config/targets.txt'
+# 3. 设置作用域并启动 MT Manager
+./dejavu -s c44d68aa targets add bin.mt.plus
 adb -s c44d68aa shell monkey -p bin.mt.plus 1
 
 # 4. 发送最小 live control
@@ -751,6 +769,11 @@ ADB_SERIAL=c44d68aa \
 
 测试失败时检查 `DejavuAgent`、`DejavuZygisk` 和 `DejavuHook` 日志标签。
 
+完整设备验收脚本 `zygisk/scripts/device-test.sh` 会以单个测试目标覆盖
+`config/targets.txt`，并删除运行目录中已有的 `*.lua` 控制文件。退出后仍保留
+测试目标列表。请在专用测试设备上运行，或在测试前备份作用域配置并在测试后恢复。
+`./dejavu test` 调用的是同一个脚本。
+
 ### 没有 Agent 日志
 
 1. 确认 API 位于 26-35、设备为 arm64。
@@ -770,9 +793,8 @@ adb shell ps -A | grep bin.mt.plus
 
 ### `RPC endpoint is not ready`
 
-Agent 可能还没有执行到 `Application.attach`，或者目标进程是在 Agent
-更新前启动的。重新 force-stop 目标应用，等待几秒后重试，并检查
-`DejavuAgent` 日志。
+检查 `DejavuAgent` 日志中的应用绑定、Lua 初始化和 RPC 连接状态。先等待
+应用完成启动。若目标进程早于 Agent 更新启动，重启目标应用后再试。
 
 ### Lua 或 C 编译失败
 
@@ -803,8 +825,8 @@ adb shell su -c 'nsenter -t 1 -m -- \
   ls -l /data/adb/modules/dejavu_zygisk/webroot/index.html'
 ```
 
-若 bridge 不可用，直接编辑 `config/targets.txt` 或使用 `dejavuctl`；这
-只影响配置界面，不影响 Zygisk Loader 和 Agent。
+若 bridge 不可用，可用 Manager 或 `./dejavu targets` 设置作用域。已配置的
+Zygisk Loader 和 Agent 可继续工作。
 
 ## 13. 设计边界
 

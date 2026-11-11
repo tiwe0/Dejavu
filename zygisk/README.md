@@ -41,9 +41,9 @@ required for the Loader and Agent.
 - `zygisk/arm64-v8a.so` is the Loader registered with Zygisk. It reads the
   exact process allowlist and loads the Agent only in selected processes.
 - `lib/arm64-v8a/libdejavu_agent.so` contains LSPlant, Dobby, the ART ELF
-  resolver, HookManager/NativeHookManager, Lua and TinyCC.
-- `lib/arm64-v8a/libdejavu.so` is the locally built Dejavu runtime loaded by
-  the Agent.
+  resolver and the hook managers.
+- `lib/arm64-v8a/libdejavu.so` is the Dejavu runtime loaded by the Agent. It
+  provides the Lua and TinyCC engines.
 - The root companion creates two random abstract Unix domain sockets per
   process: a persistent Agent channel and a CLI listener. Endpoint metadata is
   stored in `run/<process>.<pid>.rpc` and is readable only through root.
@@ -55,16 +55,24 @@ different Java threads.
 
 ## Select target processes
 
-Edit `config/targets.txt` before packaging. Use one exact Android process name
-per line; comments and blank lines are allowed. An empty file selects nothing.
+The default `config/targets.txt` contains no targets. Set a plugin scope in
+Dejavu Manager, or add a manual target with `./dejavu targets add <process>`.
+The effective list combines plugin scopes and manual targets. See
+[per-plugin scopes](../app/README.md#per-plugin-scopes).
+
+For a custom package with a plain target list, edit
+`zygisk/config/targets.txt` before packaging. Use one exact Android process
+name per line. The Loader ignores comments and blank lines.
 
 ```text
 bin.mt.plus
 bin.mt.plus:worker
 ```
 
-Only selected processes retain the Loader and load the Agent. Other processes
-request `DLCLOSE_MODULE_LIBRARY` after target selection.
+The Loader checks the list when each target process starts. Restart affected
+processes to apply a scope change. Only selected processes retain the Loader
+and load the Agent. Other processes request `DLCLOSE_MODULE_LIBRARY` after
+target selection.
 
 ## Build and install
 
@@ -113,14 +121,16 @@ rescans the module and restarts Zygote. The release package is built against
 native API 26 so one artifact covers the supported API 26-35 range. The module
 installer rejects non-arm64 devices and Android versions outside that range.
 
-The package contains `webroot/index.html`. In APatch Manager, open the module's
-WebUI entry to configure scope without editing files. The page uses the APM
-root bridge to list installed packages and atomically update
-`config/targets.txt`. Magisk users can use the same file, `dejavuctl` or
-`push-control.sh`; Magisk Manager does not provide the APM WebUI entry.
+The bundled APatch WebUI lists packages through the root bridge and replaces
+`config/targets.txt` with a plain target list when saving. This discards the
+plugin ownership metadata stored in that file. Use Dejavu Manager for plugin
+scopes and `./dejavu targets` for manual targets to preserve that metadata.
+`dejavuctl` and `push-control.sh` send Lua to a process already selected for
+injection.
 
-After installation, confirm that `bin.mt.plus` is present in
-`config/targets.txt`, launch MT Manager, and inspect the logs:
+After installation, add the process you want to test to the effective target
+list, then start or restart it and inspect the logs. The examples below use
+`bin.mt.plus` as the test process.
 
 ```sh
 adb logcat -s DejavuZygisk:V DejavuAgent:V DejavuHook:V
@@ -131,16 +141,21 @@ initialized` and `abstract-socket RPC control connected`.
 
 ## Agent-only development loop
 
-The Agent and `config/init.lua` can be updated without replacing the Loader or
-restarting Zygote:
+The core runtime (`libdejavu.so`), Agent (`libdejavu_agent.so`) and assembled
+`config/init.lua` can be updated independently of the Loader and Zygote.
 
 ```sh
 ADB_SERIAL=c44d68aa make -C zygisk deploy-agent
 ```
 
-`deploy-agent.sh` atomically copies the Agent and the assembled init script into
-the module, then force-stops and starts the configured process. Override the
-defaults when testing another process or activity:
+`deploy-agent.sh` stages the three files under a device-side deployment lock,
+backs up the existing files and replaces them one at a time using atomic
+renames. On failure it attempts to restore the previous files and retains
+backups if rollback fails. The script force-stops and starts the configured
+process after a successful deployment unless `NO_RESTART=1` is set. Use
+`./dejavu deploy-agent -p <process> --no-restart` to deploy through the unified
+CLI and restart manually. Override the Make target defaults to select another
+process or activity.
 
 ```sh
 ADB_SERIAL=c44d68aa \
@@ -149,9 +164,9 @@ ACTIVITY=bin.mt.plus/.MainLightIcon \
 make -C zygisk deploy-agent
 ```
 
-An already running process keeps its mapped Agent until it is restarted. A
-Loader change, module reinstall, companion restart or Zygisk restart still
-requires a target-process restart after the Zygote restart.
+An already running process keeps its mapped Agent until it is restarted.
+After a Loader update, module reinstall or Zygisk provider change, restart
+Zygote and then relaunch the target processes.
 
 ### Production size and symbols
 
@@ -204,8 +219,8 @@ Useful options:
 
 `dejavuctl` supports scalar Lua results: `nil`, boolean, integer, number and
 string. Errors, unavailable Agents and protocol failures go to stderr and
-return a non-zero status. Local CLI invocations are serialized by a host-side
-advisory lock because Lua state is intentionally single-threaded.
+return a non-zero status. `dejavuctl` invocations share a host-side advisory
+lock per host user, across target processes and devices.
 
 REPL mode keeps the host-side lock, endpoint discovery, temporary `adb forward`
 and authentication flow alive across commands while still sending one request
@@ -263,10 +278,13 @@ ADB_SERIAL=c44d68aa \
 
 ## Lua hook management
 
-`config/init.lua` runs once after `Application.attach(Context)`, when the app
-class loader is available. Runtime control scripts sent by `dejavuctl` run in
-the same management session. Lua only manages hooks; the callback implementation
-is native C compiled in-process by TinyCC.
+After the original `ActivityThread.handleBindApplication` returns and the app
+ClassLoader is available, the Agent initializes the persistent Lua session with
+`config/init.lua`. It then runs the optional process-specific startup script as
+a separate chunk before starting live RPC. `Application.onCreate` may already
+have run at this point. Runtime control scripts sent by `dejavuctl` use the same
+session. Hook callbacks are native C compiled in-process by TinyCC. See
+[startup Lua hooks](docs/early-hooks.md).
 
 ### API
 
@@ -362,8 +380,8 @@ The full ABI, helper list and lifetime rules are in
 
 ## Native function hooks (ABI 1)
 
-Besides Java methods, the agent can inline-hook exported native functions in an
-already-loaded module with Dobby and a TinyCC-compiled replacement:
+Besides Java methods, the agent can inline-hook native functions in an
+already-loaded module with Dobby and a TinyCC-compiled replacement.
 
 ```lua
 local source = [[
@@ -378,22 +396,23 @@ local hits = native.stats(id)
 native.uninstall(id)
 ```
 
-`native.install(module, symbol, c_source)` resolves the symbol through
-`dlopen(RTLD_NOLOAD)` + `dlsym` (dynamically exported symbols only) and
-returns a positive id. `native.list()`, `native.stats(id)`,
+`native.install(module, symbol, c_source)` tries `dlopen(RTLD_NOLOAD)` and
+`dlsym` first, then searches the loaded image's ELF symbol table. It returns a
+positive id on success. `native.list()`, `native.stats(id)`,
 `native.uninstall(id)` and `native.clear()` manage the hooks. The replacement
 must be named `dejavu_native_target`; `dejavu_native_original()`,
 `dejavu_native_hit()` and `dejavu_native_log()` are provided by the preamble.
 
-Full contract and limitations: [docs/native-hook-api.md](docs/native-hook-api.md).
-Uninstall only while the target is idle: destroying the trampoline while a
-replacement is in flight is undefined behaviour.
+An already-entered callback can finish after `native.uninstall`. Published
+trampolines, JIT code, hook contexts and any retained library references stay
+alive until the target process exits. Synchronize cleanup of application-owned
+state separately. See the [Native Hook API](docs/native-hook-api.md).
 
 ## Active invocation (ABI 1)
 
 The control session can also call into the target without installing a hook:
 
-- `native.call(module, symbol, c_source, ...typed_args)` calls an exported
+- `native.call(module, symbol, c_source, ...typed_args)` calls a resolved
   native function through a TinyCC wrapper (typed arguments: nil/boolean/
   integer/number/string; see [docs/native-hook-api.md](docs/native-hook-api.md)).
 - `java.invoke(class_or_handle, method, jni_signature, ...args)`,
@@ -509,14 +528,15 @@ ADB_SERIAL=<serial> TARGET_PROCESS=<package> TARGET_ACTIVITY=<pkg>/<activity> \
   ./zygisk/scripts/device-test.sh --with-hang-test
 ```
 
-`device-test.sh` writes `config/targets.txt`, restarts the target process and
-drives the file control channel (`run/<process>.lua`). It verifies the control
-plane, an instance-method hook, writable generated data (regression for the
-TinyCC data-page fix), oversized control responses and the documented
-header-include limitation. `--with-hang-test` additionally exercises the relay
-timeout (takes ~35s and restarts the target process afterwards). The script
-never reboots the device; use `su -c 'ksud soft-reboot'` when a Loader change
-needs a Zygote restart.
+`device-test.sh` replaces `config/targets.txt` with the single test process and
+clears existing `run/*.lua` files before restarting the target. Cleanup removes
+the test files and leaves the test target list in place. Use a dedicated test
+device or back up its scope configuration and restore it after the test. The
+script uses the file control channel (`run/<process>.lua`) to verify the
+control plane, an instance-method hook, writable generated data, oversized
+control responses and the header-include limitation. `--with-hang-test`
+exercises the relay timeout and restarts the target afterward. The script
+operates on the target process without rebooting the device.
 
 The production MT Manager smoke path is:
 
@@ -541,9 +561,9 @@ process.
 
 **`RPC endpoint is not ready`**
 
-The Agent has not reached `Application.attach` yet, or the target was started
-before the latest Agent was deployed. Wait briefly, relaunch the target, and
-check `DejavuAgent` logcat output.
+Check `DejavuAgent` logcat for completion of `handleBindApplication`, Lua
+initialization and the RPC connection. Wait briefly for app startup or
+relaunch the target if it was running before the latest Agent deployment.
 
 **Module installs but no Agent logs appear**
 

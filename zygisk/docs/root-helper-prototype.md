@@ -12,18 +12,21 @@ root helper (adb su / Magisk service)
   │  ptrace target, inject mprotect
   ▼
 target process (app UID)
-  agent → root_helper_unlock() → Dobby
+  agent → page-protection client → Dobby
 ```
 
 ## Build
 
 ```sh
-zygisk/scripts/build-root-helper.sh
-# zygisk/out/root-helper/dejavu-root-helper
+make -C zygisk build
+# zygisk/out/lsplant-android-arm64-v8a-api26/dejavu-root-helper
 ```
 
-The helper is a separate arm64 executable; it is **not** part of the app
-process and must run as root.
+The production CMake build produces the helper alongside the Agent. Packaging
+copies it into the module's `lib/arm64-v8a/` directory. The standalone
+`scripts/build-root-helper.sh` script uses the NDK's `linux-x86_64` toolchain
+path and writes to `zygisk/out/root-helper/`. The helper is a separate arm64
+executable that runs as root.
 
 ## Production startup
 
@@ -49,16 +52,18 @@ adb shell su -c 'getprop debug.dejavu.root.port; getprop debug.dejavu.root.token
 
 The helper runs as root; the in-app agent never gains root itself.
 
-The agent reads those two properties, connects to `127.0.0.1:<port>` and asks
-the helper to temporarily `mprotect` the mapping containing the hook target.
-The helper attaches with `ptrace`, injects `mprotect` using a `svc #0` gadget,
-returns the syscall result, restores the target registers and detaches.
+The Agent captures the original page protections for the patch range and tries
+local `mprotect` first. If that fails and the helper is available, the client
+uses the published endpoint and token to request the protection change. After
+patching, the hook backend restores the captured permissions. Failed restoration
+is retained for a cleanup retry. The current client contract is declared in
+[root_helper_client.h](../include/root_helper_client.h).
 
-## Verified behavior
+## Recorded device verification
 
-With `examples/algorithm` on Android 15 / `com.android.settings`:
+Earlier tests used `examples/algorithm` on Android 15 / `com.android.settings`.
 
-- `algorithm.start` installed **16 libcrypto hooks** without crashing;
+- `algorithm.start` installed libcrypto hooks successfully.
 - `algorithm.selftest` produced:
   - `DIGEST_INIT`
   - `DIGEST_UPDATE ... data=616263`
@@ -77,10 +82,10 @@ With `examples/algorithm` on Android 15 / `com.android.settings`:
 Root helper still has broad power by design. Treat the module and token as
 sensitive; do not expose the helper port outside localhost.
 
-## Verified
+## Additional recorded checks
 
 - production `service.sh` starts helper with dynamic port/token;
 - invalid token rejected (`ERR token`);
 - non-target PID rejected (`ERR target is not allowlisted`);
-- algorithm plugin via root helper: 15 libcrypto hooks + EVP digest selftest;
+- algorithm plugin via root helper completed its EVP digest selftest;
 - native `native.install` path also unlocks libcrypto and uninstalls cleanly.

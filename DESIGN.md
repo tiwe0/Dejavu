@@ -1,11 +1,11 @@
 # Design
 
 ## Source of truth
-Status: Active. Updated: 2026-11-10. Scope: Dejavu Manager.
-Evidence: app/README.md, app/docs/plugins.png, MainActivity.kt, Screens.kt,
-ConsoleUiState.kt, Theme.kt, generic test fixtures, and the native plugin ABI docs.
-User requirement: import manifest-based Lua, native and JIT plugin folders;
-control them from the app and show declared events live without history files.
+
+This document describes the active Dejavu Manager design. The Manager imports
+manifest-based Lua, Native and JIT ZIP packages, controls them from the app
+and shows declared live events in memory. The implementation is documented in
+the [Manager guide](app/README.md).
 
 ## Brand
 Focused technical utility. Trust comes from a visible target, explicit actions,
@@ -14,10 +14,11 @@ pixel dog from the launcher mark.
 Avoid decorative dashboards, status inferred from import success and hidden starts.
 
 ## Product goals
-Select a ZIP once, validate its manifest and declared resources, configure a plugin scope, start,
-inspect status/events and stop. Preserve existing native plugin management.
-Success: a complete manifest ZIP imports and can be controlled without
-typing device paths or using the host CLI. Importing alone never runs code.
+
+Select a single-plugin ZIP, validate its manifest and declared resources, and
+configure its scope. Use Control to start or load the plugin, inspect its
+state and events, and stop or unload it. A complete plugin package can be
+imported and controlled entirely from the app.
 Non-goals: marketplace, background message archives, automatic app restarts,
 updating native module ABI or treating arbitrary folders as executable plugins.
 
@@ -26,13 +27,15 @@ The owner of a rooted Android test device manages their own target applications.
 They need repeatable plugin activation and live feedback on a phone screen.
 
 ## Information architecture
-Use three main destinations: Overview, Plugins and Configuration. Overview shows
+
+The three main destinations are Overview, Plugins and Configuration. Overview shows
 module detection, aggregate injection targets, root/helper status and project
-references. Each plugin owns a multi-process scope; the native injection list
+references. Each plugin owns a multi-process scope. The native injection list
 is the union of plugin scopes and legacy/manual targets. Plugins shows compact
 identity rows (icon, name, type/version) and a floating ZIP add button. Details
 are internal Control / Scope / Info tabs. Control selects the inspected process
-and shows native or Lua-authored controls; changing it never stops other targets.
+and shows its runtime state. Lua-authored pages render inline here. Switching
+the inspected process changes the displayed state only.
 Scope is multi-select and Info contains manifest metadata and configured targets.
 Configuration offers persisted palettes and system/light/dark mode plus log access.
 The language picker remains at the far right of the top bar. The mobile console
@@ -48,16 +51,19 @@ complete package before replacing an existing import. Do not erase a usable
 version on failed import. Stop/cleanup errors remain visible and retryable.
 
 ## Visual language
+
 Reuse MaterialTheme colorScheme, typography and shapes from Theme.kt, with
-16dp page padding and 48dp minimum action targets. The green overview panel shows
-module detection and version. Native and directory
-cards share the existing outlined surface treatment. Long names and paths wrap
-or appear in a selectable details view. Status includes text as well as color.
+16dp page padding and 48dp minimum action targets. The Overview module panel
+shows detection and version with colors from the selected theme. Native, JIT
+and Lua summary rows share a rounded surface. List names can span two lines
+before truncating. Status includes text as well as color.
 
 ## Components
-Reuse TargetMenu, EmptyState, StatusPill, outlined cards and Material dialogs.
-Add a directory-plugin card, import progress/error area and a live-event sheet.
-Use existing Compose dependencies and platform Storage Access Framework.
+
+The plugin list uses a shared summary row, a floating add button, an import
+progress indicator and error banners. Details reuse TargetMenu, StatusPill
+and Material dialogs. Declared events appear in the Lua page or a live-event
+sheet. The ZIP picker uses the platform Storage Access Framework.
 
 ## Accessibility
 Keep touch targets >=48dp, label icon actions, preserve TalkBack reading order,
@@ -69,28 +75,30 @@ Single-column phone layout; sheets scroll with keyboard and large text.
 Constrain controls to available width and avoid fixed-height content containers.
 
 ## Interaction states
-Import: idle/selecting/validating/importing/success/error. User cancellation is
-quiet. Missing or invalid manifest gives a concrete folder-selection error.
-Runtime: unknown/stopped/starting/running/stopping/error. Prevent repeated actions
-and stale-target results. A failed stop retains running/unknown state for retry.
-Events: connecting/listening/empty/error; bounded memory and clear-on-dismiss.
+
+The ZIP picker closes quietly on cancellation. Missing or invalid manifests
+surface an import error. Lua runtime status is unknown, stopped, running or
+error. Pending start and stop actions show progress and disable conflicting
+controls. A failed stop shows an error and leaves cleanup available for retry.
+Live events show connection state and keep a bounded list that clears on exit.
 
 ## Content voice
-English and Simplified Chinese resources with a follow-system option. Use Add plugin, Start, Stop and
-Live events consistently. Distinguish an imported package from a running plugin.
+
+English and Simplified Chinese resources with a follow-system option. Use
+Start and Stop for Lua, Load and Unload for Native/JIT, and Live events for the
+event sheet. Distinguish an imported package from a running plugin.
 Explain only actionable prerequisites; no internal stack traces in normal UI.
 
 ## Implementation constraints
+
 Kotlin + Jetpack Compose Material 3, minSdk26. No new third-party dependencies.
-Directory contract: one immediate subfolder per plugin, with a required
-manifest.json schemaVersion1, identifier/name/version, kind, entry and explicitly
-declared resources. Missing manifests, bare files and legacy manifest names do
-not create plugins. Reject path traversal, duplicate names,
-oversized packages and unsupported kinds. Read sources via the document provider,
-stage/validate them, then write the root library through the existing root shell.
-Use temporary staging plus rollback when replacing a package. Do not require
-general storage access. Root directories are private; Lua resources are embedded
-in the authenticated RPC script so targets need no direct root-directory access.
+Each ZIP contains one `manifest.json` at its root or one folder deep. The
+library stores each plugin in an immediate subfolder named for its manifest ID.
+The manifest uses `schemaVersion: 1` and declares the identity, kind, entry and
+resources. Manager reads and validates the ZIP through the document provider,
+then stages the declared resources in the root library. Replacement uses a
+temporary directory and rollback. The generated Lua RPC script embeds the
+runtime resources. Manager consumes the page JSON declared in `ui` locally.
 Native/JIT manifests declare `.so`/`.c` entry files and SKILL sidecars. Discover
 only manifest folders directly under the default root, skipping Lua package
 resources. Import and scan never load code. Before an explicit

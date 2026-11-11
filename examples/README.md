@@ -1,8 +1,8 @@
 # Example plugins
 
-These shared objects are **examples and ABI contract tests**, not part of the
-framework. They are built separately from the agent and loaded through
-`plugin.load()` / `debug.dejavu.plugins`.
+These **examples and ABI contract tests** are packaged separately from the
+framework. The agent loads native shared objects through `plugin.load()` or
+native autoload and compiles JIT sources through `plugin.load_jit()`.
 
 - [`capture/`](capture/) — example SSL plaintext capture plugin using the host
   module+hook interfaces.
@@ -12,8 +12,8 @@ framework. They are built separately from the agent and loaded through
   native/JIT lifecycle smoke test (`make plugin-device-test`).
 - [`hello/hello_fs_jit.c`](hello/hello_fs_jit.c) — JIT plugin exercising the
   host fs interface (read/write/exists/remove) without libc.
-- [`hello/hello_hook_jit.c`](hello/hello_hook_jit.c) — JIT plugin installing a
-  host-tracked `atoi` hook and relying on host teardown at unload.
+- [`hello/hello_hook_jit.c`](hello/hello_hook_jit.c) — JIT example of removing
+  a host-tracked hook in `dejavu_jit_plugin_unload_prepare`.
 - [`hello/hello_jit.c`](hello/hello_jit.c) — TinyCC JIT version: `plugin jit`
   reads/compiles the C source in-process; exercises host mem/module services.
 - [`hello/`](hello/plugin_entry.cpp) — minimal unload-safe plugin that
@@ -32,20 +32,21 @@ One-stop install (push + permissions + allowlist + load):
 ./dejavu plugin -p <pkg> install examples/hello/hello_jit.c
 ```
 
-Build both:
+Build all four native examples and package the release bundle.
 
 ```sh
 ./examples/hello/build.sh
 ./examples/capture/build.sh
+./examples/algorithm/build.sh
 ./examples/unpack/build.sh
 ./examples/package.sh
 ```
 
-Each plugin may ship a `SKILL.md` next to its source. At install time copy it
-next to the loaded library as `<plugin>.so.SKILL.md` (or a shared
-`SKILL.md` in the same directory); the running plugin then exposes it through
-`plugin.skill(name)` and `./dejavu plugin skill <name>` so an agent can read the
-plugin-specific instructions without guessing the repo path.
+`plugin install` uses `--skill` when provided. Otherwise it looks for
+`<artifact>.SKILL.md`, then a sibling `SKILL.md`. It copies the selected file
+next to the deployed artifact as `<device-artifact>.SKILL.md` and pins its
+SHA-256. Loading rejects a missing or changed pinned sidecar. Read the loaded
+plugin's sidecar through `plugin.skill(name)` or `./dejavu plugin skill <name>`.
 
 Example plugins are built separately from the module. `examples/package.sh`
 creates `dejavu-plugins-vX.Y.Z-arm64.zip` containing the native `.so` files,
@@ -54,11 +55,15 @@ Every plugin has its own folder and `manifest.json` declaring its identifier,
 display name, version, description, kind, entry and resource files. The app only
 recognizes manifest folders directly under `/data/adb/dejavu/plugins`; bare
 `.so`/`.c` files and folders without manifests are ignored. Run
-`python3 examples/prepare-library.py` after native builds to assemble the seven
-importable folders under `out/plugins`. Import an individual folder in the app,
-or copy these folders to the default device library and scan. Import and scan
-do not execute plugins; native/JIT loading deploys and hash-pins only the selected
-plugin for the selected target.
+`python3 examples/prepare-library.py` after native builds to assemble the same
+seven plugin directories under `out/plugins` without creating the release ZIP.
+
+Manager's **+** action accepts a ZIP with exactly one `manifest.json`. Extract
+the release bundle, then create a new ZIP containing one plugin folder and all
+its declared resources. For a direct library scan, copy the extracted plugin
+folders into `/data/adb/dejavu/plugins` and refresh the list. Use **Load** in
+the plugin's details to deploy and hash-pin the selected native or JIT example
+for the selected target. [Manager import guide](../app/README.md#zip-plugin-import)
 
 CI uploads the zip as the
 `dejavu-example-plugins` artifact and attaches the zip to the GitHub Release as

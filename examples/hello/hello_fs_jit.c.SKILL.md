@@ -18,10 +18,10 @@ Test (use a path in the app files dir):
 
 ```sh
 ./dejavu plugin -p <pkg> install examples/hello/hello_fs_jit.c
-./dejavu plugin -p <pkg> call hellofsjit write /data/user_de/0/<pkg>/files/jit-fs.txt hello
-./dejavu plugin -p <pkg> call hellofsjit read /data/user_de/0/<pkg>/files/jit-fs.txt
-./dejavu plugin -p <pkg> call hellofsjit exists /data/user_de/0/<pkg>/files/jit-fs.txt
-./dejavu plugin -p <pkg> call hellofsjit remove /data/user_de/0/<pkg>/files/jit-fs.txt
+./dejavu plugin -p <pkg> call hellofsjit write --arg 's:/data/user_de/0/<pkg>/files/jit-fs.txt' --arg s:hello
+./dejavu plugin -p <pkg> call hellofsjit read --arg 's:/data/user_de/0/<pkg>/files/jit-fs.txt'
+./dejavu plugin -p <pkg> call hellofsjit exists --arg 's:/data/user_de/0/<pkg>/files/jit-fs.txt'
+./dejavu plugin -p <pkg> call hellofsjit remove --arg 's:/data/user_de/0/<pkg>/files/jit-fs.txt'
 ./dejavu plugin -p <pkg> unload hellofsjit
 ```
 
