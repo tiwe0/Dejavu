@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "tiktok_agent",
+  "name": "TikTok Agent",
+  "version": "0.1.0",
+  "description": "TikTok account credential agent over the local dejavurouter TCP channel.",
+  "kind": "native",
+  "entry": "libdejavu_tiktok_agent.so",
+  "files": [
+    "libdejavu_tiktok_agent.so",
+    "SKILL.md"
+  ]
+}
