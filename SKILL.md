@@ -19,6 +19,8 @@ Lua 5.4 + TinyCC，可在目标进程里用 Lua 编排、现场编译 C 回调�
 `zygisk/` 集成通过 Zygisk provider 注入目标进程，内置 LSPlant（ART Java
 hook）+ Dobby（inline hook）。本仓库同时提供统一 CLI `./dejavu`。
 
+常见场景的专项技能维护在 [SKILLS/](SKILLS/README.md)，按需读取对应技能的 `SKILL.md`。
+
 ## 何时使用
 
 - 在已 root、启用 Zygisk provider 的设备上动态 hook Java 方法、观察/修改

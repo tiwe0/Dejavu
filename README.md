@@ -313,6 +313,7 @@ running in the target. Check the target state before retrying a request whose
 outcome is unknown.
 
 See [SKILL.md](SKILL.md) for example selection, CLI workflows and ABI contracts.
+Reusable skills for common scenarios live in [SKILLS/](SKILLS/README.md).
 
 ## Versions
 

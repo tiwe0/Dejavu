@@ -40,12 +40,12 @@ Terminal B:
 ```sh
 # file only
 ./dejavu plugin -p <pkg> call capture start --arg s:/data/user_de/0/<pkg>/files/capture.log
-# file + TCP stream
-./dejavu plugin -p <pkg> call capture start --arg s: --arg 1 --arg s:127.0.0.1:39001
-# stream-only UDP (host LAN IP)
-./dejavu plugin -p <pkg> call capture start --arg s: --arg 2 --arg s:<host-lan-ip>:39001
-# stream-only KCP
-./dejavu plugin -p <pkg> call capture start --arg s: --arg 3 --arg s:<host-lan-ip>:39001
+# TCP stream with discarded file output
+./dejavu plugin -p <pkg> call capture start --arg s:/dev/null --arg 1 --arg s:127.0.0.1:39001
+# UDP stream (host LAN IP)
+./dejavu plugin -p <pkg> call capture start --arg s:/dev/null --arg 2 --arg s:<host-lan-ip>:39001
+# KCP stream
+./dejavu plugin -p <pkg> call capture start --arg s:/dev/null --arg 3 --arg s:<host-lan-ip>:39001
 ```
 
 Transport numbers: `1=tcp`, `2=udp`, `3=kcp`. `capture.probe <transport>
@@ -81,8 +81,10 @@ decode HTTP/2, gzip or binary frames.
 
 ## Agent notes
 
-- `capture.start(path)` requires a writable app-files path; an empty path
-  (`--arg s:`) means stream-only;
+- `capture.start(path)` opens a writable file sink. Use `/dev/null` to discard
+  file output when streaming. The current record callback returns early if
+  that descriptor is closed, so an empty path skips records and counters even
+  when the stream connects. [Record callback](plugin_entry.cpp)
 - `capture.status()` reports `out=<calls>/<bytes>B in=<calls>/<bytes>B`;
 - `capture.stop()` uninstalls hooks, closes the file and stream;
 - `capture.probe(transport, endpoint)` sends a one-record test;

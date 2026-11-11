@@ -290,6 +290,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 客户端超时不会取消目标内已开始执行的 Lua。遇到执行结果未知的请求，先检查目标状态再决定是否重试。
 
 示例选型、CLI 操作流程和 ABI 约定见 [SKILL.md](SKILL.md)。
+常见场景的专项技能位于 [SKILLS/](SKILLS/README.md)。
 
 ## 版本语义
 
