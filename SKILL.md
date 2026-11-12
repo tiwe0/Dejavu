@@ -25,7 +25,7 @@ hook）+ Dobby（inline hook）。本仓库同时提供统一 CLI `./dejavu`。
 
 - 在已 root、启用 Zygisk provider 的设备上动态 hook Java 方法、观察/修改
   参数与返回值；
-- 对目标进程里已加载模块导出的 native 函数做 inline hook（`native.*`）；
+- 对目标进程的 native 函数按模块符号或绝对运行时地址做 inline hook（`native.*`）；
 - 需要免重启设备的开发循环（热部署 agent、重启单个 App）；
 - 验证 Dejavu 构建/模块/设备链路（CI 之外的本地验收）。
 
@@ -183,7 +183,7 @@ return hook.list()
 
 ### 4.1 Native 函数 hook（Dobby）
 
-在目标进程里 hook **已加载模块的导出函数**：
+在目标进程里按已加载模块的符号或已知运行时地址安装 hook：
 
 ```lua
 local source = [[
@@ -198,10 +198,32 @@ local hits = native.stats(id)
 native.uninstall(id)
 ```
 
+`v0.9.1` 新增地址入口：
+
+```lua
+local address = module.resolve("libc.so", "read")
+local id = native.install_address(address, source)
+-- 设备已有 C 源码时：native.install_address_file(address, "/data/.../hook.c")
+native.uninstall(id)
+```
+
+```sh
+./dejavu native -p com.android.settings install-address 0x7abcdef000 replacement.c
+./dejavu native -p com.android.settings install-address-file 0x7abcdef000 /data/.../hook.c
+```
+
 - 替换函数必须命名为 `dejavu_native_target`，签名与目标一致；preamble 提供
   `dejavu_native_original()` / `dejavu_native_hit()` / `dejavu_native_log()`。
-- 仅支持已加载模块的动态导出符号（`dlopen(RTLD_NOLOAD)+dlsym`）、可执行映射、
-  arm64；不要在其他线程可能调用目标函数时 uninstall。
+- 符号入口先用 `dlsym`，再查已加载 ELF 的符号表；地址入口无需符号，接受正 Lua
+  integer 或 `0xHEX` 字符串，拒绝浮点、零、负值、溢出。目标须四字节对齐，且
+  完整入口指令位于可执行映射。CLI 接受十进制或十六进制地址。
+- 地址只对当前进程本次加载有效；ASLR、进程重启或模块重载后重新获取。文件
+  offset 不能直接作为运行时地址。匿名可执行映射由调用方保持有效，直到所有
+  已进入的回调及保存的 original 的后续使用全部结束；卸载不等待这些使用结束，
+  无法证明静默时保留至进程退出。安装全过程须保持同一目标映射稳定；已识别的
+  模块会保留引用，无法保留时拒绝安装。
+- 原跳板在替换生效前发布，卸载后保留已暴露的代码和上下文以供在途回调完成；
+  插件自己的状态仍须同步，重复安装/卸载保留的内存在进程退出时释放。
 - `native.list()` 查看、`native.clear()` 全部卸载；详见
   `zygisk/docs/native-hook-api.md`。
 

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -52,12 +53,36 @@ struct Scenario {
     unsigned int destroy_calls = 0;
     unsigned int observations_before_return = 0;
     unsigned long long context = 0;
+    int mapping_protection = PROT_EXEC;
+    bool anonymous_mapping = false;
+    bool pin_failure = false;
     std::string source;
 } scenario;
 std::string library;
 void *cold_target = nullptr;
 std::vector<dejavu_module *> modules;
 std::unordered_map<std::string, const void *> helper_symbols;
+std::unordered_map<std::string, dejavu_host_function> lua_functions;
+bool address_mode = false;
+
+int register_function(dejavu_control_session *, const char *name_space, const char *name,
+                      dejavu_host_function function, void *, char *, size_t) {
+    expect(std::strcmp(name_space, "native") == 0, "register in native namespace");
+    lua_functions[name] = function;
+    return DEJAVU_OK;
+}
+dejavu_value text_value(const std::string &text) {
+    dejavu_value value{};
+    value.type = DEJAVU_VALUE_STRING;
+    value.string_value = text.data(); value.string_size = text.size();
+    return value;
+}
+dejavu_value address_value() {
+    dejavu_value value{};
+    value.type = DEJAVU_VALUE_INTEGER;
+    value.integer_value = static_cast<long long>(reinterpret_cast<uintptr_t>(cold_target));
+    return value;
+}
 
 int compile(const dejavu_engine *, const char *source, dejavu_module **out, char *error,
             size_t error_size) {
@@ -90,6 +115,7 @@ DejavuRuntime runtime() {
     value.engine_compile = compile;
     value.module_symbol = module_symbol;
     value.module_destroy = destroy_module;
+    value.control_session_register = register_function;
     return value;
 }
 
@@ -115,10 +141,29 @@ struct NativeHookManagerTest {
     NativeHookManagerTest() {
         scenario = {};
         helper_symbols.clear();
+        lua_functions.clear();
         std::string error;
         expect(manager.initialize(&api, reinterpret_cast<dejavu_engine *>(this), &error), error);
+        expect(manager.register_lua(reinterpret_cast<dejavu_control_session *>(this), &error), error);
+    }
+    int invoke(const char *name, const std::vector<dejavu_value> &arguments,
+               dejavu_value *result, std::string *error) {
+        const auto found = lua_functions.find(name);
+        expect(found != lua_functions.end(), std::string("missing native.") + name);
+        char buffer[512]{};
+        const int status = found->second(nullptr, &manager, arguments.data(), arguments.size(),
+                                          result, buffer, sizeof(buffer));
+        *error = buffer;
+        return status;
     }
     bool install(unsigned long long *id, std::string *error) {
+        if (address_mode) {
+            const std::string source = "int dejavu_native_target(int value) { return value; }";
+            dejavu_value result{};
+            const int status = invoke("install_address", {address_value(), text_value(source)}, &result, error);
+            if (status == DEJAVU_OK) *id = result.integer_value;
+            return status == DEJAVU_OK;
+        }
         return manager.install(library, "dejavu_test_cold_target",
                                "int dejavu_native_target(int value) { return value; }", id, error);
     }
@@ -154,10 +199,21 @@ FILE *native_test_fopen(const char *path, const char *mode) {
     const uintptr_t page_size = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
     const uintptr_t address = reinterpret_cast<uintptr_t>(cold_target);
     const uintptr_t start = address - address % page_size;
-    std::fprintf(file, "%lx-%lx --xp 00000000 00:00 0 %s\n", static_cast<unsigned long>(start),
-                 static_cast<unsigned long>(start + page_size), library.c_str());
+    const char *permissions = scenario.mapping_protection == PROT_EXEC ? "--xp" : "r--p";
+    std::fprintf(file, "%lx-%lx %s 00000000 00:00 0 %s\n", static_cast<unsigned long>(start),
+                 static_cast<unsigned long>(start + page_size), permissions, library.c_str());
     std::rewind(file);
     return file;
+}
+
+int native_test_dladdr(const void *address, Dl_info *information) {
+    if (scenario.anonymous_mapping) return 0;
+    if (scenario.pin_failure) {
+        *information = {};
+        information->dli_fname = "/nonexistent/dejavu-pin-failure.so";
+        return 1;
+    }
+    return dladdr(address, information);
 }
 
 extern "C" int __android_log_print(int, const char *, const char *, ...) {
@@ -256,6 +312,132 @@ bool root_helper_restore(void *, size_t, int, std::string *) {
 }
 
 namespace {
+void address_owner_failures_and_anonymous_mapping() {
+    const std::string source = "int dejavu_native_target(int value) { return value; }";
+    {
+        NativeHookManagerTest test;
+        scenario.pin_failure = true;
+        dejavu_value result{}; std::string error;
+        expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) != DEJAVU_OK,
+               "identified image must be retained before installation");
+        expect(error.find("retain") != std::string::npos && scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0,
+               "module pin failure must not compile or touch target protection");
+    }
+    {
+        NativeHookManagerTest test;
+        scenario.anonymous_mapping = true;
+        dejavu_value result{}; std::string error;
+        expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) == DEJAVU_OK,
+               "caller-owned executable mapping does not require a linker image");
+        expect(test.list().find("<address>#") != std::string::npos, "anonymous mapping must identify its raw target");
+        expect(test.uninstall(result.integer_value, &error), error);
+    }
+}
+
+void isolated_address_module_lifetime(void *handle) {
+    // This runs in its own process before any published hook can pin the fixture.
+    dlclose(handle);
+    void *probe = dlopen(library.c_str(), RTLD_NOW | RTLD_NOLOAD);
+    expect(probe == nullptr, "lifetime fixture must actually unload without framework references");
+    handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
+    expect(handle != nullptr, "reload lifetime fixture");
+    cold_target = dlsym(handle, "dejavu_test_cold_target");
+    {
+        NativeHookManagerTest test;
+        scenario.compile_failure = true;
+        address_mode = true;
+        unsigned long long id = 0; std::string error;
+        expect(!test.install(&id, &error), "injected address compile failure");
+    }
+    dlclose(handle);
+    probe = dlopen(library.c_str(), RTLD_NOW | RTLD_NOLOAD);
+    expect(probe == nullptr, "unpublished failed install must release its module reference");
+    handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
+    expect(handle != nullptr, "reload for successful address installation");
+    cold_target = dlsym(handle, "dejavu_test_cold_target");
+    unsigned long long context = 0;
+    {
+        NativeHookManagerTest test;
+        unsigned long long id = 0; std::string error;
+        expect(test.install(&id, &error), error);
+        context = scenario.context;
+        dlclose(handle); // The framework is now the only owner of the loaded image.
+        probe = dlopen(library.c_str(), RTLD_NOW | RTLD_NOLOAD);
+        expect(probe != nullptr, "address installation must keep the target image loaded");
+        dlclose(probe);
+        check_original(context);
+        expect(test.uninstall(id, &error), error);
+        check_original(context);
+        test.manager.shutdown();
+    }
+    check_original(context);
+    std::cout << "OK: isolated unloadable image: failed install releases pin; original survives external dlclose, uninstall and manager teardown\n";
+}
+
+void address_registration_and_validation() {
+    NativeHookManagerTest test;
+    expect(lua_functions.count("install_address") && lua_functions.count("install_address_file"),
+           "both address API variants must be registered");
+    const std::string source = "int dejavu_native_target(int value) { return value; }";
+    std::vector<dejavu_value> invalid(7);
+    invalid[1].type = DEJAVU_VALUE_INTEGER; invalid[1].integer_value = 0;
+    invalid[2].type = DEJAVU_VALUE_INTEGER; invalid[2].integer_value = -1;
+    invalid[3].type = DEJAVU_VALUE_NUMBER; invalid[3].number_value = 4.0;
+    invalid[4].type = DEJAVU_VALUE_NUMBER;
+    invalid[4].number_value = std::numeric_limits<double>::infinity();
+    invalid[5].type = DEJAVU_VALUE_BOOLEAN; invalid[5].boolean_value = 1;
+    invalid[6].type = DEJAVU_VALUE_HANDLE; invalid[6].handle_value = cold_target;
+    dejavu_value result{}; std::string error;
+    for (const auto &address : invalid) {
+        expect(test.invoke("install_address", {address, text_value(source)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+               "invalid address types must be rejected before touching code");
+    }
+    const std::vector<std::string> bad_text = {"", "0x", "0x0", "-0x4", "+0x4", " 0x4", "0x4 ",
+        "1234", "0xg", "0x1;return true", "0x10000000000000000", std::string("0x4\0bad", 7)};
+    for (const auto &text : bad_text) {
+        expect(test.invoke("install_address", {text_value(text), text_value(source)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+               "malformed/overflow address strings must be rejected");
+    }
+    expect(test.invoke("install_address", {address_value()}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+           "address installation requires source");
+    auto unaligned = address_value(); ++unaligned.integer_value;
+    expect(test.invoke("install_address", {unaligned, text_value(source)}, &result, &error) != DEJAVU_OK,
+           "arm64 target address must be four-byte aligned");
+    auto unmapped = address_value(); unmapped.integer_value = 4;
+    expect(test.invoke("install_address", {unmapped, text_value(source)}, &result, &error) != DEJAVU_OK,
+           "unmapped address must fail before backend admission");
+    scenario.mapping_protection = PROT_READ;
+    expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) != DEJAVU_OK,
+           "non-executable addresses must fail before backend admission");
+    expect(scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0,
+           "invalid addresses must not compile or change memory permissions");
+}
+void address_hex_file_and_shared_duplicate_guard() {
+    NativeHookManagerTest test;
+    char address[40];
+    std::snprintf(address, sizeof(address), "0x%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(cold_target)));
+    char path[] = "/tmp/dejavu-address-source.XXXXXX";
+    const int descriptor = mkstemp(path);
+    expect(descriptor >= 0, "create address source fixture");
+    const std::string source = "int dejavu_native_target(int value) { return value; }";
+    expect(write(descriptor, source.data(), source.size()) == static_cast<ssize_t>(source.size()), "write replacement source");
+    close(descriptor);
+    const std::string path_text = path, address_text = address;
+    dejavu_value result{}; std::string error;
+    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)}, &result, &error) == DEJAVU_OK,
+           "hex string target and device source must install");
+    unlink(path);
+    const unsigned long long id = result.integer_value;
+    expect(id > 0 && scenario.source.find(source) != std::string::npos, "file variant must compile the supplied replacement");
+    const std::string symbol = "dejavu_test_cold_target";
+    expect(test.invoke("install", {text_value(library), text_value(symbol), text_value(source)}, &result, &error) != DEJAVU_OK,
+           "symbol entry must reject a target already installed by address");
+    expect(scenario.compiled == 1 && scenario.applies == 1, "duplicate guard is shared by symbol and address paths");
+    expect(test.list().find(address_text) != std::string::npos, "address installs must identify their target in native.list");
+    expect(test.uninstall(id, &error), error);
+    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+           "missing source file must not install a hook");
+}
 void compile_failure_never_changes_permissions() {
     NativeHookManagerTest test;
     scenario.compile_failure = true;
@@ -448,12 +630,17 @@ void shutdown_preserves_published_context() {
 } // namespace
 
 int main(int argc, char **argv) {
-    expect(argc == 2, "pass cold fixture shared library");
+    expect(argc == 2 || argc == 3, "pass cold fixture shared library and optional lifetime mode");
     library = argv[1];
     void *handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     expect(handle != nullptr, "load cold exported-symbol fixture");
     cold_target = dlsym(handle, "dejavu_test_cold_target");
     expect(cold_target != nullptr, "resolve cold exported test function");
+    if (argc == 3) {
+        expect(std::strcmp(argv[2], "--address-pin") == 0, "unknown lifetime mode");
+        isolated_address_module_lifetime(handle);
+        return 0;
+    }
     const struct {
         const char *name;
         void (*run)();
@@ -474,9 +661,18 @@ int main(int argc, char **argv) {
         {"in-flight replacement survives uninstall", in_flight_replacement_survives_uninstall},
         {"shutdown preserves published context", shutdown_preserves_published_context},
     };
-    for (const auto &test : tests) {
-        test.run();
-        std::cout << "OK: " << test.name << '\n';
+    address_registration_and_validation();
+    std::cout << "OK: address registration, strict parsing, alignment and executable mapping validation\n";
+    address_hex_file_and_shared_duplicate_guard();
+    std::cout << "OK: hexadecimal address, device source and shared duplicate guard\n";
+    address_owner_failures_and_anonymous_mapping();
+    std::cout << "OK: module pin failure is side-effect free; anonymous executable target stays caller-owned\n";
+    for (bool use_address : {false, true}) {
+        address_mode = use_address;
+        for (const auto &test : tests) {
+            test.run();
+            std::cout << "OK: " << (use_address ? "address: " : "symbol: ") << test.name << '\n';
+        }
     }
     dlclose(handle);
     // Published fake modules mirror the manager's documented process-lifetime retention.

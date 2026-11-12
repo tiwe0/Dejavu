@@ -20,6 +20,9 @@
 #include <dobby.h>
 
 FILE *native_test_fopen(const char *, const char *);
+int native_test_dladdr(const void *, Dl_info *);
 #define fopen native_test_fopen
+#define dladdr native_test_dladdr
 #include "native_hook_manager.cpp"
+#undef dladdr
 #undef fopen

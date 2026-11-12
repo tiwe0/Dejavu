@@ -668,12 +668,15 @@ def command_native(args: argparse.Namespace) -> int:
         return exec_inline(args, process, f"return native.uninstall({args.id})")
     if action == "clear":
         return exec_inline(args, process, "return native.clear()")
-    if action == "install_file":
+    if action in ("install_file", "install_address_file"):
+        target = (
+            lua_quote(args.address) if action == "install_address_file" else
+            f"{lua_quote(args.module)}, {lua_quote(args.symbol)}"
+        )
         return exec_inline(
             args,
             process,
-            f"return native.install_file({lua_quote(args.module)}, "
-            f"{lua_quote(args.symbol)}, {lua_quote(args.path)})",
+            f"return native.{action}({target}, {lua_quote(args.path)})",
         )
     if action == "call_file":
         call_arguments = "".join(
@@ -703,16 +706,19 @@ def command_native(args: argparse.Namespace) -> int:
             ]
         ) + "\n"
         return exec_lua_file(args, process, script)
-    if action == "install":
+    if action in ("install", "install_address"):
         source_path = Path(args.source).expanduser()
         if not source_path.is_file():
             fail(f"C source file not found: {source_path}")
         source = source_path.read_text(encoding="utf-8")
+        target = (
+            lua_quote(args.address) if action == "install_address" else
+            f"{lua_quote(args.module)}, {lua_quote(args.symbol)}"
+        )
         script = "\n".join(
             [
                 f"local source = {lua_long_string(source)}",
-                "local id = native.install("
-                + f"{lua_quote(args.module)}, {lua_quote(args.symbol)}, source)",
+                f"local id = native.{action}({target}, source)",
                 "return id",
             ]
         ) + "\n"
@@ -1088,6 +1094,22 @@ def command_test(args: argparse.Namespace) -> int:
     return result
 
 
+def native_address(value: str) -> str:
+    """Normalize an unsigned address without passing it through a Lua number."""
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+", value):
+        digits, base, maximum_digits = value[2:].lstrip("0"), 16, 16
+    elif re.fullmatch(r"[0-9]+", value):
+        digits, base, maximum_digits = value.lstrip("0"), 10, 20
+    else:
+        raise argparse.ArgumentTypeError("address must be a positive decimal or 0x hexadecimal integer")
+    if len(digits) > maximum_digits:
+        raise argparse.ArgumentTypeError("address must be within the unsigned 64-bit range and nonzero")
+    address = int(digits or "0", base)
+    if not 0 < address <= 0xffffffffffffffff:
+        raise argparse.ArgumentTypeError("address must be within the unsigned 64-bit range and nonzero")
+    return f"0x{address:x}"
+
+
 def positive_timeout(value: str) -> float:
     try:
         timeout = float(value)
@@ -1204,6 +1226,12 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("symbol", help="exported symbol, e.g. read")
     install_parser.add_argument("source", help="C file defining dejavu_native_target")
     install_parser.set_defaults(func=command_native)
+    address_parser = native_actions.add_parser(
+        "install-address", help="install a native hook at an absolute address"
+    )
+    address_parser.add_argument("address", type=native_address, help="positive decimal or 0x address")
+    address_parser.add_argument("source", help="C file defining dejavu_native_target")
+    address_parser.set_defaults(func=command_native)
     call_parser = native_actions.add_parser(
         "call", help="actively call a native function from a C wrapper source file"
     )
@@ -1230,6 +1258,12 @@ def build_parser() -> argparse.ArgumentParser:
     install_file_parser.add_argument("symbol", help="exported symbol, e.g. read")
     install_file_parser.add_argument("path", help="device path to the C replacement source")
     install_file_parser.set_defaults(func=command_native)
+    address_file_parser = native_actions.add_parser(
+        "install-address-file", help="hook an absolute address using a C file on the device"
+    )
+    address_file_parser.add_argument("address", type=native_address, help="positive decimal or 0x address")
+    address_file_parser.add_argument("path", help="device path to the C replacement source")
+    address_file_parser.set_defaults(func=command_native)
     call_file_parser = native_actions.add_parser(
         "call-file", help="actively call a native function from a C file on the device"
     )

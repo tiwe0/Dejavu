@@ -24,4 +24,5 @@ python3 - "${OUT_DIR}/native_hook_manager_test" "${LIBRARY}" <<'PY'
 import subprocess
 import sys
 subprocess.run(sys.argv[1:], check=True, timeout=20)
+subprocess.run([*sys.argv[1:], "--address-pin"], check=True, timeout=20)
 PY

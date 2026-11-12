@@ -1,7 +1,7 @@
 # Native function hook API
 
-Dejavu can inline-hook exported native functions in an already-loaded module
-inside the target process, in addition to Java/Kotlin method hooks. Native
+Dejavu can inline-hook native functions by symbol in an already-loaded module
+or by absolute runtime address inside the target process. Native
 hooks use Dobby (already linked into the agent for LSPlant) and TinyCC for the
 replacement function.
 
@@ -10,6 +10,7 @@ The API is available from the persistent Lua control session (CLI, REPL,
 
 ```lua
 local id = native.install(module, symbol, c_source)  -- returns positive id
+local address_id = native.install_address(address, c_source)
 local text = native.list()
 local hits = native.stats(id)
 native.uninstall(id)
@@ -77,6 +78,39 @@ int dejavu_native_target(int value) {
 }
 ```
 
+## Address targets (v0.9.1)
+
+`native.install_address(address, c_source)` installs at an absolute runtime
+address without resolving a symbol. `address` must be a positive Lua integer or
+a `0xHEX` string within the process's pointer range. Floating-point values,
+zero, negative values and overflow are rejected. On arm64 the address must be
+four-byte aligned, and the complete entry instruction must be executable.
+
+```lua
+local address = module.resolve("libc.so", "read")
+local id = native.install_address(address, source)
+-- A hexadecimal string preserves the exact pointer without floating-point conversion.
+local id2 = native.install_address("0x7abcdef000", another_source) -- use a valid address in this process
+native.uninstall(id)
+native.uninstall(id2)
+```
+
+Addresses are specific to the current process and mapping lifetime. Obtain them
+again after a process restart or module reload because of ASLR. A file offset
+is not a runtime address. The replacement must have the exact target signature.
+`native.stats`, `list`, `uninstall` and `clear` work with either installation
+entry point; hooking the same target twice is rejected across both APIs.
+
+Keep the target mapping and its loaded instance stable throughout installation.
+When the linker identifies the target's loaded image, Dejavu retains a library
+reference; failure to retain it rejects installation. For anonymous executable
+mappings, the caller must keep the target mapped and unchanged until all entered
+replacements and any later users of a saved original finish. Uninstall does not
+wait for those users. If quiescence cannot be proven, retain the mapping until
+the process exits.
+The native plugin `DejavuHookInterface::install(void *target, ...)` already accepts
+addresses; its ABI is unchanged.
+
 ## File-based variants
 
 The Lua layer can read a C source file directly from the device instead of
@@ -84,6 +118,7 @@ passing the source string through the control channel:
 
 ```lua
 local id = native.install_file("libc.so", "read", "/data/.../hook.c")
+local address_id = native.install_address_file(address, "/data/.../hook.c")
 local pid = native.call_file("libc.so", "__getpid", "/data/.../call.c")
 ```
 
@@ -91,6 +126,7 @@ CLI equivalents:
 
 ```sh
 ./dejavu native -p <pkg> install-file libc.so read /data/.../hook.c
+./dejavu native -p <pkg> install-address-file 0x7abcdef000 /data/.../hook.c
 ./dejavu native -p <pkg> call-file libc.so __getpid /data/.../call.c
 ```
 
@@ -103,6 +139,8 @@ choice), regular, 1 MiB or smaller. The content still follows the same
 | Call | Meaning |
 | --- | --- |
 | `native.install(...)` | resolve, compile, and install; returns a positive id |
+| `native.install_address(address, source)` | compile and install at an absolute runtime address |
+| `native.install_address_file(address, path)` | use a device C source file for an address target |
 | `native.stats(id)` | number of replacement calls recorded so far |
 | `native.list()` | `id active\|uninstalled [protection-pending] module#symbol hits=N` lines |
 | `native.uninstall(id)` | restore the original entry and saved page permissions |
@@ -223,6 +261,8 @@ in the target process, so the API rules above apply):
 ./dejavu native -p com.android.settings list
 ./dejavu native -p com.android.settings install libc.so read replacement.c
 ./dejavu native -p com.android.settings call libc.so getpid call.c
+./dejavu native -p com.android.settings install-address 0x7abcdef000 replacement.c
+./dejavu native -p com.android.settings install-address-file 0x7abcdef000 /data/.../hook.c
 ./dejavu native -p com.android.settings stats <id>
 ./dejavu native -p com.android.settings uninstall <id>
 ./dejavu native -p com.android.settings clear
@@ -230,6 +270,8 @@ in the target process, so the API rules above apply):
 
 `install` expects a C file that defines `dejavu_native_target`; the CLI wraps
 it into the Lua chunk and prints the returned hook id.
+`install-address` takes a decimal or hexadecimal positive 64-bit address instead
+of module/symbol names. It sends an exact hexadecimal string to the Lua API.
 
 ## Limitations (ABI 1)
 
@@ -237,7 +279,8 @@ it into the Lua chunk and prints the returned hook id.
   that fails, the loaded image's ELF symbol table is searched (this can reach
   `LOCAL`/non-exported symbols when the image still has `.symtab`). Use
   `module.symbols`/`module.resolve` to discover them; fully stripped images
-  without a full symbol table still only expose dynamic symbols.
+  without a full symbol table still only expose dynamic symbols through the symbol
+  entry points. `install_address` can target a known function address without a symbol.
 - **arm64 Android.** The agent/module only supports `arm64-v8a`.
 - **Atomic native entry patches.** Native installs require an aligned four-byte
   branch and a fresh anonymous near trampoline. If a suitable near mapping cannot

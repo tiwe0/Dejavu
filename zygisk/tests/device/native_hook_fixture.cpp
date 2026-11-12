@@ -22,6 +22,21 @@ EXPORTED __attribute__((aligned(16384))) long long native_fixture_target(long lo
 }
 
 namespace {
+__attribute__((noinline)) long long hidden_target(long long value) {
+    asm volatile("nop");
+    return value + 17;
+}
+} // namespace
+
+EXPORTED long long native_fixture_hidden_address(long long) {
+    return reinterpret_cast<uintptr_t>(hidden_target);
+}
+
+EXPORTED long long native_fixture_hidden_call(long long value) {
+    return hidden_target(value);
+}
+
+namespace {
 void *worker(void *) {
     while (running.load(std::memory_order_acquire)) {
         if (native_fixture_target(9) != 16)

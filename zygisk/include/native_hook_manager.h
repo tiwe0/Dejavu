@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -33,6 +34,7 @@ struct NativeCallArgument {
  * Native function hooks (ABI 1).
  *
  * Lua API: native.install(module, symbol, c_source) -> id
+ *          native.install_address(address, c_source) -> id
  *          native.uninstall(id), native.list(), native.stats(id), native.clear()
  *
  * The C source must define exactly one replacement function named
@@ -41,9 +43,12 @@ struct NativeCallArgument {
  *   void dejavu_native_hit(void);        // increment this hook's call counter
  *   void dejavu_native_log(const char *message);
  *
- * Hooking requires the symbol to be exported by an already-loaded module
- * (`dlopen(module, RTLD_NOLOAD)` + `dlsym`), and the target must live in an
- * executable mapping. Use `native.uninstall(id)` to restore the original code.
+ * Targets may be resolved from a loaded module's dynamic/ELF symbol table or
+ * supplied as an absolute runtime address. They must live in executable mappings.
+ * Use `native.uninstall(id)` to restore the original code and page protections.
+ * The caller must keep the same target mapping stable throughout installation.
+ * Anonymous mappings must remain valid through all in-flight callbacks and any
+ * later use of a saved original; uninstall does not wait for these users.
  */
 class NativeHookManager {
   public:
@@ -99,6 +104,11 @@ class NativeHookManager {
 
     bool install(const std::string &module_name, const std::string &symbol_name,
                  const std::string &source, unsigned long long *id, std::string *error);
+    bool install_address(uintptr_t address, const std::string &source,
+                         unsigned long long *id, std::string *error);
+    // Caller holds operations_mutex_ and transfers the resolved library reference.
+    bool install_resolved(std::unique_ptr<Record> owned, const std::string &source,
+                          unsigned long long *id, std::string *error);
     bool uninstall(unsigned long long id, std::string *error);
     bool uninstall_locked(unsigned long long id, std::string *error);
     void release_unexposed(Record *record);
@@ -121,6 +131,12 @@ class NativeHookManager {
                         dejavu_value *, char *, size_t);
     static int lua_install_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
                                 dejavu_value *, char *, size_t);
+    static int lua_install_address(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                   dejavu_value *, char *, size_t);
+    static int lua_install_address_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
+                                        dejavu_value *, char *, size_t);
+    static int lua_install_address_impl(bool from_file, void *, const dejavu_value *, size_t,
+                                       dejavu_value *, char *, size_t);
     static int lua_call_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
                              dejavu_value *, char *, size_t);
 

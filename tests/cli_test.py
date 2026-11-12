@@ -106,6 +106,86 @@ class ExecTimeoutTest(unittest.TestCase):
                         parser.parse_args([*prefix, f"--timeout={value}"])
 
 
+class NativeAddressTest(unittest.TestCase):
+    def parse(self, action, address, source):
+        return cli.build_parser().parse_args([
+            "native", "-p", "example.app", action, address, source,
+        ])
+
+    def test_address_source_uses_exact_string_and_safe_source_delimiter(self):
+        source = 'long dejavu_native_target(void) { /* ]] ]=] */ return 7; }'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'source "中文".c'
+            path.write_text(source)
+            args = self.parse("install-address", "0xFFFFFFFFFFFFFFFF", str(path))
+            with mock.patch.object(cli, "exec_lua_file", return_value=17) as execute:
+                self.assertEqual(cli.command_native(args), 17)
+            execute.assert_called_once_with(
+                args, "example.app",
+                f'local source = [==[\n{source}\n]==]\n'
+                'local id = native.install_address("0xffffffffffffffff", source)\n'
+                'return id\n',
+            )
+
+    def test_device_source_path_is_escaped_and_unsigned_addresses_stay_exact(self):
+        path = '/data/user/0/example.app/files/"\\\n中文.c'
+        cases = (
+            ("1", "0x1"),
+            ("4096", "0x1000"),
+            ("0X00001000", "0x1000"),
+            ("0004096", "0x1000"),
+            ("9223372036854775808", "0x8000000000000000"),
+            ("18446744073709551615", "0xffffffffffffffff"),
+        )
+        for address, normalized in cases:
+            with self.subTest(address=address):
+                args = self.parse("install-address-file", address, path)
+                with mock.patch.object(cli, "exec_inline", return_value=23) as execute:
+                    self.assertEqual(cli.command_native(args), 23)
+                execute.assert_called_once_with(
+                    args, "example.app",
+                    f'return native.install_address_file("{normalized}", '
+                    + '"/data/user/0/example.app/files/\\\"\\\\\\n中文.c")',
+                )
+
+    def test_invalid_addresses_fail_before_any_rpc(self):
+        invalid = (
+            "0", "0x0", "-1", "+1", "1.5", "1e3", "nan", "inf", "true",
+            "0x", "0xgg", " 4096", "4096 ", "１", "0x1; os.exit()",
+            "18446744073709551616", "0x10000000000000000", "9" * 5000,
+        )
+        with mock.patch.object(cli, "exec_inline") as inline, \
+                mock.patch.object(cli, "exec_lua_file") as script:
+            for action in ("install-address", "install-address-file"):
+                for address in invalid:
+                    with self.subTest(action=action, address=address[:50]), \
+                            mock.patch("sys.stderr", new_callable=io.StringIO):
+                        with self.assertRaises(SystemExit) as stopped:
+                            self.parse(action, address, "source.c")
+                        self.assertEqual(stopped.exception.code, 2)
+            inline.assert_not_called()
+            script.assert_not_called()
+
+    def test_missing_local_source_does_not_start_rpc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.c"
+            args = self.parse("install-address", "4096", str(path))
+            with mock.patch.object(cli, "exec_lua_file") as execute:
+                with self.assertRaisesRegex(cli.CliError, "C source file not found"):
+                    cli.command_native(args)
+                execute.assert_not_called()
+
+    def test_symbol_install_file_keeps_existing_lua_contract(self):
+        args = cli.build_parser().parse_args([
+            "native", "-p", "example.app", "install-file", "libc.so", "read", "/data/hook.c",
+        ])
+        with mock.patch.object(cli, "exec_inline", return_value=0) as execute:
+            self.assertEqual(cli.command_native(args), 0)
+        execute.assert_called_once_with(
+            args, "example.app", 'return native.install_file("libc.so", "read", "/data/hook.c")',
+        )
+
+
 class PluginTrustLockTest(unittest.TestCase):
     def test_clients_contend_and_nested_updates_release_after_failure(self):
         with tempfile.TemporaryDirectory() as directory:
