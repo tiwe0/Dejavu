@@ -415,6 +415,9 @@ jobs:
       }}
     runs-on: ubuntu-latest
     needs: [version-check, build-host, build-android, build-android-compat, build-manager, build-zygisk-module, code-quality]
+    concurrency:
+      group: dejavu-release-${{ needs.version-check.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
 
