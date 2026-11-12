@@ -1,0 +1,4 @@
+{
+  global: dejavu_plugin_entry;
+  local: *;
+};

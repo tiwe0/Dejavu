@@ -15,6 +15,7 @@
 #include "dejavu_plugin.h"
 #include "root_helper_client.h"
 #include "stream_service.h"
+#include "rpc_service.h"
 
 struct DejavuRuntime;
 struct PluginHostContext;
@@ -60,6 +61,14 @@ class PluginManager {
     static int host_stream_accept(void *host_context, int listener_handle, int timeout_ms);
     static int host_stream_read(void *host_context, int handle, void *buffer, size_t capacity,
                                 int timeout_ms, size_t *size_read);
+    static int host_rpc_register(void *host_context,
+                                  const DejavuRpcServiceDescriptor *descriptor,
+                                  uint64_t *handle, char *error, size_t error_size);
+    static int host_rpc_update_routes(void *host_context, uint64_t handle,
+                                       const char *const *routes, size_t route_count,
+                                       char *error, size_t error_size);
+    static int host_rpc_unregister(void *host_context, uint64_t handle,
+                                    char *error, size_t error_size);
     // Control-session (Lua) stream helpers: the caller supplies the owner token.
     int stream_listen(uint64_t owner_token, uint32_t transport, const std::string &endpoint,
                       int backlog, std::string *error);
@@ -220,6 +229,7 @@ class PluginManager {
     std::map<std::string, JitCacheEntry> jit_cache_;
     unsigned long long jit_cache_clock_ = 0;
     std::unique_ptr<StreamService> streams_;
+    std::unique_ptr<RpcService> rpc_;
     uint64_t next_stream_owner_ = 1;
     bool registered_lua_ = false;
 };

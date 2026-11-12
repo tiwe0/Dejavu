@@ -5,7 +5,7 @@
     <string name="package_import_folder">导入文件夹</string>
     <string name="package_scan">扫描目录</string>
     <string name="package_importing">正在校验并导入插件…</string>
-    <string name="package_scanning">正在扫描插件并检查运行状态…</string>
+    <string name="package_scanning">正在扫描本地插件…</string>
     <string name="package_empty_title">还没有目录插件</string>
     <string name="package_empty_detail">选择包含 manifest.json 的插件文件夹，或放入默认目录后重新扫描。每个插件都需要独立文件夹和清单。</string>
     <string name="package_state_unknown">状态未知</string>

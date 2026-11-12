@@ -31,6 +31,7 @@ done
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginZipArchive.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/LuaPackageScripts.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackageImporter.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginLibraryScan.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RootShell.kt" \
     "${APP_DIR}/tests/importer/stubs/android/net/Uri.kt" \
     "${APP_DIR}/tests/importer/stubs/android/database/Cursor.kt" \

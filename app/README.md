@@ -42,7 +42,7 @@ the profile uses the standard Android debug signing credentials.
   does not stop plugins already running in other processes. Native folders retain
   load/unload and SKILL.md support.
 - **Configuration** – six saved color palettes, Android 12+ wallpaper colors,
-  system/light/dark appearance, and live framework logs. The mobile Lua console has been removed;
+  system/light/dark appearance, the built-in router, and live framework logs. The mobile Lua console has been removed;
   desktop `dejavu`/`dejavuctl` Lua RPC remains available.
 
 Plugin details use **Control**, **Scope** and **Info** tabs. The control panel
@@ -50,6 +50,29 @@ shows the selected process's runtime state and actions, including any declared
 Lua page. **Scope** edits the plugin's target list. **Info** shows the manifest
 metadata and configured targets. Leaving **Control** releases the live viewer
 and clears its message list.
+
+### Router
+
+Open **Configuration → Router** for daemon status, Hub connection state, plugin
+and pending-job counts, online routes, and configured wake rules. The internal executable is `/data/adb/dejavu/bin/dejavuerouter`. Start/stop
+controls manage a root daemon supervised by the module; leaving this page or
+closing Manager does not stop it. Once started, it also resumes after reboot.
+Stop disables both supervision and boot startup until the next explicit Start.
+
+Hub configuration is collapsed by default. A blank token field retains the
+existing token; submitted credentials are cleared from the form. Manager reads
+the local management credential through root and keeps it in memory, then polls
+the authenticated abstract Unix socket only while the page is visible and resumed.
+It checks that the socket peer runs as root before sending the management token.
+Plugin library scanning does not contact the router.
+
+Wake rules map an opaque route to an Android user, package, activity and optional
+plugin path as metadata. Injection remains controlled by each plugin's Scope;
+waking never overwrites the global autoload property. Deleting a rule removes automatic wakeup; an already registered
+online route stays visible until its plugin disconnects. Configuration and wake
+rules persist under `/data/adb/dejavu/router`; forwarded request/response bodies
+and status history are not saved. Existing standalone `dejavurouter` installations
+are not automatically replaced or migrated. See the [router guide](../router/README.md).
 
 ### Appearance
 
@@ -65,7 +88,7 @@ are saved in Manager's private preferences across relaunches.
 Android's predictive-back callback animates internal back navigation with a
 read-only preview of the destination. Complete a gesture to return, or cancel it
 to stay on the current page. Plugin details return to the list, Scope returns to
-Control, and logs return to Configuration. The root pages keep system back/home
+Control, and logs and Router return to Configuration. The root pages keep system back/home
 behavior. Previewing Control never attaches event streams or changes secure-window
 flags; normal viewer cleanup happens only on a completed navigation.
 
@@ -130,6 +153,7 @@ bash app/tests/native/run-host.sh
 bash app/tests/scopes/run-host.sh
 bash app/tests/archive/run-host.sh
 bash app/tests/appearance/run-host.sh
+bash app/tests/router/run-host.sh
 python3 tests/target_scopes_test.py
 ```
 
@@ -332,9 +356,16 @@ of its scoped processes for the displayed runtime state and controls.
 
 - The last inspected target is remembered per plugin for the current Manager session.
 - Native plugin unload asks for confirmation; scope edits require explicit Save.
-- Plugin list refreshes when the Plugins tab opens or the selected target changes.
+- The plugin list reads the local library and keeps that snapshot in memory.
+  The first visit scans manifests and declared resources in batched root commands.
+  Refresh the list to discover external changes; importing also updates the list.
+  Navigation and plugin details remain available while a scan is running.
+- Runtime status is queried only for the open plugin's selected target. Changing
+  targets refreshes that status without rescanning the library. Leaving the detail
+  or changing targets cancels the obsolete status connection.
 - Live logs pause auto-scroll when the toggle is off; the filter is local-only.
-- The header progress bar reflects root-shell/RPC work in progress.
+- Progress appears in the header for module checks, the list for library scans,
+  and the plugin control panel for runtime status and actions.
 - `./gradlew` wrapper is pinned to Gradle 9.4.1; use JDK 21 and Android SDK 36.
 
 

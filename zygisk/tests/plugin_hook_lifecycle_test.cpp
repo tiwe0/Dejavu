@@ -1,6 +1,10 @@
 #include <jni.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <chrono>
 
 #include <atomic>
 #include <condition_variable>
@@ -20,6 +24,7 @@
 
 #include "root_helper_client.h"
 #include "stream_service.h"
+#include "rpc_service.h"
 #include "dejavu.h"
 #include "dejavu_plugin.h"
 
@@ -30,9 +35,9 @@
 
 #if defined(__APPLE__)
 extern "C" ssize_t process_vm_readv(pid_t, const iovec *, unsigned long, const iovec *,
-                                    unsigned long, unsigned long);
+                                    unsigned long, unsigned long) { errno = ENOSYS; return -1; }
 extern "C" ssize_t process_vm_writev(pid_t, const iovec *, unsigned long, const iovec *,
-                                     unsigned long, unsigned long);
+                                     unsigned long, unsigned long) { errno = ENOSYS; return -1; }
 #endif
 
 void *plugin_test_dlsym(void *, const char *);
@@ -287,6 +292,156 @@ void stream_plugin(Fixture &fixture, size_t index, uint64_t token) {
     plugin->capabilities = DEJAVU_PLUGIN_CAP_STREAM;
     plugin->stream_owner_token = token;
     fixture.manager.initialize_plugin_context(plugin.get());
+}
+
+
+int unused_rpc_handler(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t) {
+    return DEJAVU_RPC_ERROR;
+}
+
+void rpc_plugin(Fixture &fixture, size_t index, uint64_t owner) {
+    auto &plugin = fixture.manager.plugins_[index];
+    plugin->capabilities = DEJAVU_PLUGIN_CAP_RPC;
+    plugin->stream_owner_token = owner;
+    fixture.manager.initialize_plugin_context(plugin.get());
+}
+
+void test_rpc_capability_owner_and_index_shift() {
+    Fixture fixture;
+    fixture.add_plugin("second");
+    rpc_plugin(fixture, 0, 117);
+    rpc_plugin(fixture, 1, 123);
+    void *first = fixture.manager.plugins_[0]->host.host_context;
+    void *second = fixture.manager.plugins_[1]->host.host_context;
+    assert(PluginManager::host_get_interface(first, "rpc", DEJAVU_RPC_INTERFACE_VERSION));
+    assert(!PluginManager::host_get_interface(first, "rpc", 99));
+    assert(!PluginManager::host_get_interface(&fixture.manager, "rpc", 1));
+    DejavuRpcMethod method{"echo", unused_rpc_handler};
+    DejavuRpcServiceDescriptor descriptor{sizeof(DejavuRpcServiceDescriptor), "test", "org.example.test",
+        nullptr, 0, &method, 1, nullptr, "unix:/tmp/dejavu-not-listening.sock"};
+    char error[256]{};
+    uint64_t a = 0, b = 0;
+    assert(PluginManager::host_rpc_register(first, &descriptor, &a, error, sizeof(error)) == 0);
+    assert(PluginManager::host_rpc_register(second, &descriptor, &b, error, sizeof(error)) == 0);
+    assert(a != 0 && b != 0 && a != b);
+    assert(PluginManager::host_rpc_update_routes(second, a, nullptr, 0, error, sizeof(error)) < 0);
+    assert(PluginManager::host_rpc_unregister(first, b, error, sizeof(error)) < 0);
+    std::string status, detail;
+    assert(fixture.manager.unload_plugin("first", &status, &detail));
+    assert(fixture.manager.plugins_.size() == 1);
+    assert(PluginManager::host_rpc_update_routes(second, b, nullptr, 0, error, sizeof(error)) == 0);
+    assert(PluginManager::host_rpc_register(first, &descriptor, &a, error, sizeof(error)) < 0);
+    assert(PluginManager::host_rpc_unregister(second, b, error, sizeof(error)) == 0);
+}
+
+struct BlockingRpc {
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+};
+int blocking_rpc_handler(void *opaque, const DejavuRpcRequest *, DejavuRpcResponse *response,
+                         char *, size_t) {
+    auto *state = static_cast<BlockingRpc *>(opaque);
+    assert(g_current_plugin_context && g_current_plugin_context->owner == 217);
+    state->entered = true;
+    while (!state->release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    response->ok = 1;
+    response->payload_json = static_cast<char *>(malloc(3));
+    std::memcpy(response->payload_json, "{}", 3);
+    response->payload_size = 2;
+    return DEJAVU_RPC_OK;
+}
+
+std::thread *rpc_owned_worker = nullptr;
+std::atomic<bool> rpc_owned_stop{false};
+void shutdown_rpc_worker() {
+    shutdown_plugin();
+    rpc_owned_stop = true;
+    rpc_owned_worker->join();
+}
+
+void test_rpc_unload_retains_executing_callback_and_prepares_on_retry(bool destructor_case = false) {
+    auto owned_fixture = std::make_unique<Fixture>();
+    Fixture &fixture = *owned_fixture;
+    rpc_plugin(fixture, 0, 217);
+    char directory[] = "/tmp/djr-XXXXXX";
+    assert(mkdtemp(directory));
+    const std::string path = std::string(directory) + "/plugin.sock";
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+    assert(bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+    assert(listen(listener, 1) == 0);
+    std::atomic<bool> done{false};
+    std::thread daemon([&] {
+        int peer = accept(listener, nullptr, nullptr);
+        assert(peer >= 0);
+        char byte;
+        do { assert(read(peer, &byte, 1) == 1); } while (byte != '\n');
+        const std::string frames = "{\"type\":\"hello_ok\",\"version\":1}\n"
+            "{\"type\":\"request\",\"id\":\"job\",\"route\":\"test\",\"method\":\"block\",\"params\":{},\"deadline_ms\":60000}\n";
+        assert(write(peer, frames.data(), frames.size()) == static_cast<ssize_t>(frames.size()));
+        while (!done.load()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        close(peer);
+    });
+    BlockingRpc state;
+    const char *routes[] = {"test"};
+    DejavuRpcMethod method{"block", blocking_rpc_handler};
+    const std::string endpoint = "unix:" + path;
+    DejavuRpcServiceDescriptor descriptor{sizeof(DejavuRpcServiceDescriptor), "test", "org.example.test",
+        routes, 1, &method, 1, &state, endpoint.c_str()};
+    char error[256]{};
+    uint64_t handle = 0;
+    assert(PluginManager::host_rpc_register(fixture.manager.plugins_[0]->host.host_context,
+        &descriptor, &handle, error, sizeof(error)) == 0);
+    fixture.manager.rpc_->activate_owner(217);
+    for (int i = 0; i < 1000 && !state.entered.load(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    assert(state.entered.load());
+    std::thread own_worker;
+    if (destructor_case) {
+        rpc_owned_stop = false;
+        void *identity = fixture.manager.plugins_[0]->host.host_context;
+        own_worker = std::thread([&] {
+            while (!rpc_owned_stop.load()) {
+                char message[128]{};
+                PluginManager::host_rpc_unregister(identity, handle, message, sizeof(message));
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        });
+        rpc_owned_worker = &own_worker;
+        fixture.manager.plugins_[0]->jit_shutdown = shutdown_rpc_worker;
+        std::thread release_later([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(850));
+            state.release = true;
+        });
+        owned_fixture.reset();
+        release_later.join();
+        assert(rpc_owned_stop && !own_worker.joinable());
+        assert(g_jit_manager.load() == nullptr);
+        assert(scenario.prepares == 1 && scenario.shutdowns == 1 && scenario.modules_destroyed == 1);
+        rpc_owned_worker = nullptr;
+    } else {
+    std::string status, detail;
+    assert(!fixture.manager.unload_plugin("first", &status, &detail));
+    assert(detail.find("RPC callback") != std::string::npos);
+    assert(scenario.prepares == 0 && scenario.shutdowns == 0 && scenario.modules_destroyed == 0);
+    assert(!PluginManager::host_get_interface(fixture.manager.plugins_[0]->host.host_context, "rpc", 1));
+    state.release = true;
+    bool unloaded = false;
+    for (int i = 0; i < 20 && !unloaded; ++i) {
+        unloaded = fixture.manager.unload_plugin("first", &status, &detail);
+        if (!unloaded) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(unloaded);
+    assert(scenario.prepares == 1 && scenario.shutdowns == 1 && scenario.modules_destroyed == 1);
+    }
+    done = true;
+    daemon.join();
+    close(listener);
+    unlink(path.c_str());
+    rmdir(directory);
 }
 
 void test_native_initializers_and_v1_callbacks_keep_their_identity() {
@@ -1003,6 +1158,9 @@ int main() {
     test_returned_closure_survives_slot_shift_but_not_reload();
     test_callback_identity_is_stable_across_another_plugins_unload();
     test_reentrant_load_masks_parent_identity_and_unlocks_initializers();
+    test_rpc_capability_owner_and_index_shift();
+    test_rpc_unload_retains_executing_callback_and_prepares_on_retry();
+    test_rpc_unload_retains_executing_callback_and_prepares_on_retry(true);
     test_native_initializers_and_v1_callbacks_keep_their_identity();
     test_explicit_jit_workers_are_isolated_and_survive_other_plugin_removal();
     test_unload_and_shutdown_do_not_hold_manager_lock_while_joining();
@@ -1017,6 +1175,6 @@ int main() {
     test_unpatched_permission_cleanup_remains_owned();
     test_failed_initializer_without_unload_safe_retries_host_cleanup();
     test_initialized_unsafe_plugin_keeps_unload_restriction();
-    std::puts("OK: 24 plugin lifecycle groups: native/JIT ownership, callback identity, worker "
+    std::puts("OK: 27 plugin lifecycle groups: native/JIT ownership, callback identity, worker "
               "joins and retryable hook cleanup");
 }

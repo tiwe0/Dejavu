@@ -45,6 +45,7 @@ data class ConsoleUiState(
     val nativeRuntimeKnown: Boolean = false,
     val nativePluginActionPath: String? = null,
     val directoryPlugins: List<DirectoryPluginUi> = emptyList(),
+    val directoryRuntimeSnapshot: Map<String, PackageRuntimeSnapshot>? = null,
     val pluginDirectoryLoading: Boolean = false,
     val pluginDirectoryError: String? = null,
     val directoryRuntimeError: String? = null,
@@ -60,6 +61,28 @@ data class ConsoleUiState(
     val lastMessage: String? = null,
     val lastError: Boolean = false,
 )
+
+internal val ConsoleUiState.pluginOperationInProgress: Boolean
+    get() = pluginImporting || pluginActionId != null || nativePluginActionPath != null || scopeSavingId != null
+
+internal fun ConsoleUiState.withDirectoryPackages(packages: List<ImportedPluginPackage>): ConsoleUiState {
+    val previous = directoryPlugins.associateBy { it.plugin.manifest.id }
+    return copy(directoryPlugins = packages.map { plugin ->
+        val status = directoryRuntimeSnapshot?.get(plugin.manifest.id)
+        DirectoryPluginUi(
+            plugin = plugin,
+            runState = when {
+                selectedTarget == null || directoryRuntimeSnapshot == null -> DirectoryPluginState.UNKNOWN
+                status != null -> status.state
+                else -> DirectoryPluginState.STOPPED
+            },
+            session = status?.session,
+            error = previous[plugin.manifest.id]?.takeIf {
+                status?.state == DirectoryPluginState.ERROR && it.session == status.session
+            }?.error,
+        )
+    })
+}
 
 internal fun ConsoleUiState.canOperatePlugin(id: String, target: String): Boolean =
     activePluginId == id && selectedTarget == target && target in pluginScopes[id].orEmpty() &&
@@ -77,8 +100,8 @@ internal fun ConsoleUiState.withSelectedTarget(target: String?): ConsoleUiState 
         directoryPlugins = directoryPlugins.map {
             it.copy(runState = DirectoryPluginState.UNKNOWN, session = null, error = null)
         },
+        directoryRuntimeSnapshot = null,
         pluginActionId = null,
-        pluginDirectoryLoading = false,
         directoryRuntimeError = null,
         directoryTargetOffline = false,
         packageEvents = null,

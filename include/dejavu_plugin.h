@@ -33,6 +33,7 @@
 #define DEJAVU_PLUGIN_CAP_FS 8u
 #define DEJAVU_PLUGIN_CAP_JAVA 16u
 #define DEJAVU_PLUGIN_CAP_STREAM 32u
+#define DEJAVU_PLUGIN_CAP_RPC 64u
 
 /* Host service interface versions. */
 #define DEJAVU_MEM_INTERFACE_VERSION 1u
@@ -40,6 +41,68 @@
 #define DEJAVU_HOOK_INTERFACE_VERSION 1u
 #define DEJAVU_FS_INTERFACE_VERSION 1u
 #define DEJAVU_STREAM_INTERFACE_VERSION 1u
+#define DEJAVU_RPC_INTERFACE_VERSION 1u
+#define DEJAVU_RPC_DEFAULT_ENDPOINT "abstract:dejavu.router.plugins"
+#define DEJAVU_RPC_OK 0
+#define DEJAVU_RPC_ERROR (-1)
+#define DEJAVU_RPC_BUSY (-2)
+
+/* Business RPC contract. Strings in a request are borrowed for the callback. */
+typedef struct DejavuRpcRequest {
+    uint32_t struct_size;
+    const char *id;
+    const char *route;
+    const char *method;
+    const char *params_json;
+    size_t params_size;
+    uint64_t deadline_monotonic_ms;
+    void *cancellation_context;
+    int (*is_cancelled)(void *cancellation_context);
+} DejavuRpcRequest;
+
+typedef struct DejavuRpcResponse {
+    uint32_t struct_size;
+    int ok;
+    /* Allocate with host->alloc. The host frees this on every callback outcome. */
+    char *payload_json;
+    size_t payload_size;
+} DejavuRpcResponse;
+
+typedef int (*DejavuRpcHandler)(void *context, const DejavuRpcRequest *request,
+                                DejavuRpcResponse *response, char *error,
+                                size_t error_size);
+
+typedef struct DejavuRpcMethod {
+    const char *name;
+    DejavuRpcHandler callback;
+} DejavuRpcMethod;
+
+typedef struct DejavuRpcServiceDescriptor {
+    uint32_t struct_size;
+    const char *service_name;
+    const char *app;
+    const char *const *routes;
+    size_t route_count;
+    const DejavuRpcMethod *methods;
+    size_t method_count;
+    void *context;
+    /* NULL selects the default. Only abstract:NAME and unix:/absolute/path. */
+    const char *endpoint;
+} DejavuRpcServiceDescriptor;
+
+typedef struct DejavuRpcInterface {
+    uint32_t version;
+    uint32_t struct_size;
+    /* Descriptors are copied; callback/context survive until unregister succeeds. */
+    int (*register_service)(void *host_context, const DejavuRpcServiceDescriptor *descriptor,
+                            uint64_t *handle, char *error, size_t error_size);
+    /* Route changes reconnect and cancel the old connection's requests; no replay. */
+    int (*update_routes)(void *host_context, uint64_t handle, const char *const *routes,
+                         size_t route_count, char *error, size_t error_size);
+    /* BUSY retains ownership while a callback is draining; retry is safe. */
+    int (*unregister_service)(void *host_context, uint64_t handle, char *error,
+                              size_t error_size);
+} DejavuRpcInterface;
 /*
  * Append-only stream interface revision: adds TCP listen/accept/read for
  * device-side RPC servers. Request it through host->get_interface("stream", 2);
@@ -162,7 +225,7 @@ typedef struct DejavuPluginHost {
 
     /*
      * Look up an optional host service interface by name and version
-     * ("mem", "module", "hook", "fs", "stream"). Returns NULL if unavailable.
+     * ("mem", "module", "hook", "fs", "stream", "rpc"). Returns NULL if unavailable.
      */
     const void *(*get_interface)(void *host_context, const char *name, uint32_t version);
 } DejavuPluginHost;

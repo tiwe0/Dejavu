@@ -85,6 +85,8 @@ add_library(dejavu_agent SHARED
     src/mapping_protection.cpp
     src/java_invoker.cpp
     src/plugin_manager.cpp
+    src/rpc_service.cpp
+    ../router/third_party/cJSON/cJSON.c
     src/sha256.cpp
     src/stream_service.cpp
     src/root_helper_client.cpp
@@ -105,6 +107,7 @@ target_include_directories(dejavu_agent PRIVATE
     include
     ../include
     third_party/kcp
+    ../router/third_party/cJSON
     ${HOOK_BRIDGE_GENERATED_DIR}
     ${JIT_PRELUDE_GENERATED_DIR}
 )
@@ -190,3 +193,6 @@ set_target_properties(dejavu_zygisk PROPERTIES
     OUTPUT_NAME dejavu_zygisk
     ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON
 )
+
+# The router is an independent executable, never linked into injected targets.
+add_subdirectory(../router ${CMAKE_CURRENT_BINARY_DIR}/router)

@@ -4,6 +4,9 @@ These **examples and ABI contract tests** are packaged separately from the
 framework. The agent loads native shared objects through `plugin.load()` or
 native autoload and compiles JIT sources through `plugin.load_jit()`.
 
+- [`rpc_echo/`](rpc_echo/README.md) — framework-owned Unix RPC example with
+  echo/status handlers, business errors and cooperative cancellation. See the
+  [plugin RPC contract](../zygisk/docs/plugin-rpc.md).
 - [`capture/`](capture/) — example SSL plaintext capture plugin using the host
   module+hook interfaces.
 - [`algorithm/`](algorithm/) — algorithm self-disclosure tracer: native libcrypto
@@ -32,13 +35,14 @@ One-stop install (push + permissions + allowlist + load):
 ./dejavu plugin -p <pkg> install examples/hello/hello_jit.c
 ```
 
-Build all four native examples and package the release bundle.
+Build all five native examples and package the release bundle.
 
 ```sh
 ./examples/hello/build.sh
 ./examples/capture/build.sh
 ./examples/algorithm/build.sh
 ./examples/unpack/build.sh
+./examples/rpc_echo/build.sh
 ./examples/package.sh
 ```
 
@@ -56,7 +60,7 @@ display name, version, description, kind, entry and resource files. The app only
 recognizes manifest folders directly under `/data/adb/dejavu/plugins`; bare
 `.so`/`.c` files and folders without manifests are ignored. Run
 `python3 examples/prepare-library.py` after native builds to assemble the same
-seven plugin directories under `out/plugins` without creating the release ZIP.
+eight plugin directories under `out/plugins` without creating the release ZIP.
 
 Manager's **+** action accepts a ZIP with exactly one `manifest.json`. Extract
 the release bundle, then create a new ZIP containing one plugin folder and all

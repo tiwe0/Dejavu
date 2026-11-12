@@ -42,7 +42,10 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
 
     private var refreshJob: Job? = null
     private var pluginJob: Job? = null
+    private var pluginCancellation: RpcCancellation? = null
     private var pluginRequestSerial = 0
+    private var pluginRuntimeKey: Pair<String, Boolean>? = null
+    private var pluginLibraryLoaded = false
     private var appsLoaded = false
     private var appsLoadJob: Job? = null
     private val logLock = Any()
@@ -168,10 +171,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun operationBusy(): Boolean = _state.value.let {
-        it.loading || it.pluginImporting || it.pluginActionId != null ||
-            it.nativePluginActionPath != null || it.scopeSavingId != null
-    }
+    private fun operationBusy(): Boolean = _state.value.pluginOperationInProgress
 
     fun selectPlugin(id: String): Boolean {
         if (operationBusy()) return false
@@ -207,9 +207,9 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             closePackageEvents()
             ++packageActionSerial
             ++nativeActionSerial
-            ++directoryRequestSerial
-            directoryJob?.cancel()
             ++pluginRequestSerial
+            pluginCancellation?.cancel()
+            pluginCancellation = null
             pluginJob?.cancel()
         }
         _state.update { it.withSelectedTarget(target) }
@@ -235,64 +235,108 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
                 message(text(R.string.msg_unable_write_targets) + ": " + error.message.orEmpty(), error = true)
             } finally {
                 _state.update { it.copy(scopeSavingId = null) }
-                refreshPlugins()
+                refreshPluginRuntime()
             }
         }
     }
 
-    fun refreshPlugins() {
-        refreshPluginLibrary()
-        val target = _state.value.selectedTarget ?: return
+    fun refreshPluginRuntime() {
+        val current = _state.value
+        if (current.pluginOperationInProgress) return
+        val target = current.selectedTarget ?: return
+        val id = current.activePluginId ?: return
+        val native = current.nativeLibrary.any { it.artifact.id == id }
+        if (!native && current.directoryPlugins.none { it.plugin.manifest.id == id }) return
+        val key = target to native
+        if (pluginJob?.isActive == true && pluginRuntimeKey == key) return
+        pluginRuntimeKey = key
         val serial = ++pluginRequestSerial
+        pluginCancellation?.cancel()
         pluginJob?.cancel()
+        val cancellation = RpcCancellation()
+        pluginCancellation = cancellation
         pluginJob = viewModelScope.launch {
             _state.update { it.copy(pluginsLoading = true) }
             try {
-                val raw = withContext(Dispatchers.IO) { DejavuRpc.listPluginStatus(target) }
+                val raw = withContext(Dispatchers.IO) {
+                    DejavuRpc.execute(target, if (native) "return plugin.list()" else LuaPackageScripts.snapshot(), cancellation)
+                }
                 if (serial != pluginRequestSerial || _state.value.selectedTarget != target) return@launch
-                _state.update {
-                    bindNativeRuntime(it.copy(
-                        pluginsLoading = false,
-                        pluginsRaw = raw,
-                        plugins = parsePlugins(raw),
-                        nativeRuntimeKnown = true,
-                    ))
+                if (native) {
+                    _state.update {
+                        bindNativeRuntime(it.copy(
+                            pluginsLoading = false, pluginsRaw = raw, plugins = parsePlugins(raw),
+                            nativeRuntimeKnown = true,
+                        ))
+                    }
+                } else {
+                    val snapshot = parsePackageRuntimeSnapshot(raw)
+                    _state.update {
+                        it.copy(pluginsLoading = false, directoryRuntimeSnapshot = snapshot,
+                            directoryRuntimeError = null, directoryTargetOffline = false)
+                            .withDirectoryPackages(it.directoryPlugins.map { row -> row.plugin })
+                    }
+                    closeStalePackageEvents(target)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (serial != pluginRequestSerial) return@launch
-                _state.update {
-                    bindNativeRuntime(it.copy(pluginsLoading = false, pluginsRaw = "", plugins = emptyList(),
-                        nativeRuntimeKnown = false))
-                }
-                if (error !is TargetProcessNotRunning) {
-                    message(text(R.string.msg_plugin_list_failed, error.message.orEmpty()), error = true)
+                if (serial != pluginRequestSerial || _state.value.selectedTarget != target) return@launch
+                if (native) {
+                    _state.update {
+                        bindNativeRuntime(it.copy(pluginsLoading = false, pluginsRaw = "", plugins = emptyList(),
+                            nativeRuntimeKnown = false))
+                    }
+                    if (error !is TargetProcessNotRunning) {
+                        message(text(R.string.msg_plugin_list_failed, error.message.orEmpty()), error = true)
+                    }
+                } else {
+                    _state.update {
+                        it.copy(pluginsLoading = false, directoryRuntimeSnapshot = null,
+                            directoryRuntimeError = runtimeError(error),
+                            directoryTargetOffline = error is TargetProcessNotRunning)
+                            .withDirectoryPackages(it.directoryPlugins.map { row -> row.plugin })
+                    }
+                    closeStalePackageEvents(target)
                 }
             }
+        }
+    }
+
+    private fun closeStalePackageEvents(target: String?) {
+        val current = _state.value
+        current.packageEvents?.let { events ->
+            if (current.directoryPlugins.none { row ->
+                    row.runState == DirectoryPluginState.RUNNING &&
+                        events.matches(target, row.plugin.manifest.id, row.session)
+                }) closePackageEvents()
         }
     }
 
     fun unloadPlugin(target: String, name: String) {
         val current = _state.value
-        if (current.selectedTarget != target || operationBusy() || current.nativeLibrary.none {
-                it.artifact.id == current.activePluginId && it.runtime?.name == name
-            }) return
+        if (current.selectedTarget != target || operationBusy() || current.pluginsLoading) return
+        val row = current.nativeLibrary.firstOrNull {
+            it.artifact.id == current.activePluginId && it.runtime?.name == name
+        } ?: return
+        val request = ++nativeActionSerial
+        _state.update { it.copy(nativePluginActionPath = row.artifact.path) }
         viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { DejavuRpc.unloadPlugin(target, name) }
+            try {
+                val result = withContext(Dispatchers.IO) { DejavuRpc.unloadPlugin(target, name) }
+                if (request == nativeActionSerial && _state.value.selectedTarget == target) message(result)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (request == nativeActionSerial && _state.value.selectedTarget == target) {
+                    message(text(R.string.msg_unload_failed, error.message.orEmpty()), error = true)
+                }
+            } finally {
+                if (request == nativeActionSerial && _state.value.selectedTarget == target) {
+                    _state.update { it.copy(nativePluginActionPath = null) }
+                    refreshPluginRuntime()
+                }
             }
-            _state.update { it.copy(loading = false) }
-            result.fold(
-                onSuccess = {
-                    message(it)
-                    if (_state.value.selectedTarget == target) refreshPlugins()
-                },
-                onFailure = {
-                    message(text(R.string.msg_unload_failed, it.message ?: ""), error = true)
-                },
-            )
         }
     }
 
@@ -319,8 +363,8 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
 
     fun loadLibraryPlugin(target: String, path: String) {
         val current = _state.value
-        if (current.selectedTarget != target || current.nativePluginActionPath != null ||
-            current.pluginImporting || current.loading) return
+        if (current.selectedTarget != target || current.pluginOperationInProgress ||
+            current.pluginsLoading || current.pluginDirectoryLoading) return
         val artifact = current.nativeLibrary.firstOrNull { it.artifact.path == path }?.artifact ?: return
         if (artifact.id?.let { current.canOperatePlugin(it, target) } != true) return
         val request = ++nativeActionSerial
@@ -348,75 +392,38 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             } finally {
                 if (request == nativeActionSerial && _state.value.selectedTarget == target) {
                     _state.update { it.copy(nativePluginActionPath = null) }
-                    refreshPlugins()
+                    refreshPluginRuntime()
                 }
             }
         }
     }
 
-    fun refreshPluginLibrary() {
-        if (_state.value.pluginImporting || _state.value.pluginActionId != null ||
-            _state.value.nativePluginActionPath != null) return
+    fun refreshPluginLibrary(force: Boolean = true) {
+        if (_state.value.pluginOperationInProgress || directoryJob?.isActive == true ||
+            (!force && pluginLibraryLoaded)) return
         val serial = ++directoryRequestSerial
-        val target = _state.value.selectedTarget
-        directoryJob?.cancel()
         directoryJob = viewModelScope.launch {
-            _state.update {
-                it.copy(
-                    pluginDirectoryLoading = true, pluginDirectoryError = null,
-                    directoryRuntimeError = null, directoryTargetOffline = false,
-                )
-            }
+            _state.update { it.copy(pluginDirectoryLoading = true, pluginDirectoryError = null) }
             try {
                 val (packages, artifacts, scanErrors) = withContext(Dispatchers.IO) {
-                    val packages = packageImporter.list()
-                    val artifacts = nativeLibrary.list()
-                    Triple(packages, artifacts, packageImporter.lastScanErrors + nativeLibrary.lastScanErrors)
+                    val scan = PluginLibraryScan.read()
+                    val packages = packageImporter.list(scan)
+                    val artifacts = nativeLibrary.list(scan)
+                    Triple(packages, artifacts, (packageImporter.lastScanErrors + nativeLibrary.lastScanErrors).distinct())
                 }
                 if (serial != directoryRequestSerial) return@launch
-                _state.update { bindNativeRuntime(it.copy(
-                    nativeLibrary = artifacts.map { artifact ->
-                        NativeLibraryPluginUi(artifact, error = it.nativeLibrary
-                            .firstOrNull { previous -> previous.artifact == artifact }?.error)
-                    },
-                )) }
-                val runtime = if (target != null) withContext(Dispatchers.IO) {
-                    runCatching { parsePackageRuntimeSnapshot(DejavuRpc.execute(target, LuaPackageScripts.snapshot())) }
-                } else null
-                if (serial != directoryRequestSerial) return@launch
-                val sameTarget = _state.value.selectedTarget == target
-                val runtimeFailure = runtime?.exceptionOrNull()?.takeIf { sameTarget }
-                val previous = _state.value.directoryPlugins.associateBy { it.plugin.manifest.id }
-                val rows = packages.map { plugin ->
-                    val status = runtime?.getOrNull()?.get(plugin.manifest.id)
-                    DirectoryPluginUi(
-                        plugin = plugin,
-                        runState = when {
-                            !sameTarget || target == null || runtime?.isFailure == true -> DirectoryPluginState.UNKNOWN
-                            status != null -> status.state
-                            else -> DirectoryPluginState.STOPPED
+                pluginLibraryLoaded = scanErrors.isEmpty()
+                _state.update { previous ->
+                    bindNativeRuntime(previous.copy(
+                        nativeLibrary = artifacts.map { artifact ->
+                            NativeLibraryPluginUi(artifact, error = previous.nativeLibrary
+                                .firstOrNull { it.artifact == artifact }?.error)
                         },
-                        session = status?.session.takeIf { sameTarget },
-                        error = previous[plugin.manifest.id]?.takeIf {
-                            sameTarget && status?.state == DirectoryPluginState.ERROR && it.session == status.session
-                        }?.error,
-                    )
-                }
-                _state.value.packageEvents?.let { events ->
-                    if (rows.none { row ->
-                            row.runState == DirectoryPluginState.RUNNING &&
-                                events.matches(target, row.plugin.manifest.id, row.session)
-                        }) closePackageEvents()
-                }
-                _state.update {
-                    it.copy(
-                        directoryPlugins = rows,
                         pluginDirectoryLoading = false,
-                        pluginDirectoryError = scanErrors.takeIf { errors -> errors.isNotEmpty() }?.joinToString("\n"),
-                        directoryRuntimeError = runtimeFailure?.let(::runtimeError),
-                        directoryTargetOffline = runtimeFailure is TargetProcessNotRunning,
-                    )
+                        pluginDirectoryError = scanErrors.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+                    ).withDirectoryPackages(packages))
                 }
+                closeStalePackageEvents(_state.value.selectedTarget)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -487,7 +494,8 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
         if (current.selectedTarget != target || current.pluginActionId != null || current.pluginImporting ||
             current.nativePluginActionPath != null) return
         val row = current.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } ?: return
-        if (current.activePluginId != id || current.scopeSavingId != null || current.loading) return
+        if (current.activePluginId != id || current.scopeSavingId != null ||
+            current.pluginsLoading || current.pluginDirectoryLoading) return
         if (start && (!current.canOperatePlugin(id, target) || row.runState != DirectoryPluginState.STOPPED)) return
         val session = if (start) newPackageToken() else row.session
         if (!start && current.packageEvents?.packageId == id) closePackageEvents()
@@ -527,7 +535,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
             } finally {
                 if (request == packageActionSerial && _state.value.selectedTarget == target) {
                     _state.update { it.copy(pluginActionId = null) }
-                    refreshPluginLibrary()
+                    refreshPluginRuntime()
                 }
             }
         }
@@ -813,6 +821,7 @@ class ConsoleViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        pluginCancellation?.cancel()
         closePackageEvents()
         stopLogs()
         super.onCleared()

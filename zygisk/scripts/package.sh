@@ -8,6 +8,7 @@ MODULE_LIB=${MODULE_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID
 AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_agent.so"}
 DEJAVU_LIB=${DEJAVU_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
 ROOT_HELPER=${ROOT_HELPER:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavu-root-helper"}
+ROUTER_BIN=${ROUTER_BIN:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavuerouter"}
 TARGETS_FILE=${TARGETS_FILE:-"${ROOT_DIR}/config/targets.txt"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
@@ -19,7 +20,7 @@ DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
     PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
 fi
-PACKAGE_VERSION=${PACKAGE_VERSION:-0.8.2}
+PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.0}
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 LLVM_STRIP=${LLVM_STRIP:-llvm-strip}
 
@@ -34,6 +35,10 @@ fi
 if [[ ! -x "${ROOT_HELPER}" ]]; then
     echo "error: root helper not found or not executable: ${ROOT_HELPER}" >&2
     echo "build it with: make -C ${ROOT_DIR} build" >&2
+    exit 1
+fi
+if [[ ! -x "${ROUTER_BIN}" ]]; then
+    echo "error: router binary missing: ${ROUTER_BIN}" >&2
     exit 1
 fi
 if [[ ! -f "${DEJAVU_LIB}" ]]; then
@@ -101,6 +106,7 @@ rm -rf "${STAGE_DIR}"
 mkdir -p \
     "${STAGE_DIR}/zygisk" \
     "${STAGE_DIR}/lib/arm64-v8a" \
+    "${STAGE_DIR}/bin" \
     "${STAGE_DIR}/config" \
     "${STAGE_DIR}/webroot" \
     "${DIST_DIR}"
@@ -109,6 +115,10 @@ cp "${ROOT_DIR}/module/module.prop" "${STAGE_DIR}/module.prop"
 cp "${ROOT_DIR}/module/customize.sh" "${STAGE_DIR}/customize.sh"
 cp "${ROOT_DIR}/module/service.sh" "${STAGE_DIR}/service.sh"
 cp "${ROOT_DIR}/module/root-watchdog.sh" "${STAGE_DIR}/root-watchdog.sh"
+cp "${ROOT_DIR}/module/router-install.sh" "${STAGE_DIR}/router-install.sh"
+cp "${ROOT_DIR}/module/router-control.sh" "${STAGE_DIR}/router-control.sh"
+cp "${ROOT_DIR}/module/router-watchdog.sh" "${STAGE_DIR}/router-watchdog.sh"
+cp "${ROOT_DIR}/module/router-config.example.json" "${STAGE_DIR}/router-config.example.json"
 cp "${ROOT_DIR}/module/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
 cp "${ROOT_DIR}/module/skip_mount" "${STAGE_DIR}/skip_mount"
 cp "${TARGETS_FILE}" "${STAGE_DIR}/config/targets.txt"
@@ -122,6 +132,7 @@ cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"
 cp "${ROOT_HELPER}" "${STAGE_DIR}/lib/arm64-v8a/dejavu-root-helper"
 cp "${DEJAVU_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
+cp "${ROUTER_BIN}" "${STAGE_DIR}/bin/dejavuerouter"
 cp "${LICENSE_FILE}" "${STAGE_DIR}/LICENSE"
 cp "${NOTICES_FILE}" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"
 mkdir -p "${STAGE_DIR}/LICENSES"
@@ -135,6 +146,8 @@ copy_license() {
         echo "warning: license text not found: ${source}" >&2
     fi
 }
+copy_license "${PROJECT_DIR}/router/third_party/libevent-LICENSE" "libevent-BSD.txt"
+copy_license "${PROJECT_DIR}/router/third_party/cJSON/LICENSE" "cJSON-MIT.txt"
 copy_license "${PROJECT_DIR}/extern/tinycc/COPYING" "TinyCC-LGPL-2.1.txt"
 copy_license "${ROOT_DIR}/third_party/LSPlant/LICENSE" "LSPlant-LGPL-3.0.txt"
 copy_license \
@@ -163,7 +176,8 @@ fi
 "${LLVM_STRIP}" --strip-debug \
     "${STAGE_DIR}/zygisk/arm64-v8a.so" \
     "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so" \
-    "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
+    "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so" \
+    "${STAGE_DIR}/bin/dejavuerouter"
 
 rm -f "${ZIP_PATH}"
 (

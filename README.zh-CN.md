@@ -31,10 +31,14 @@ Manager 分为**概览、插件、配置**三个主页面。外部插件列表�
   注入目标；切换查看进程不会停止其他进程中已运行的插件实例。
 - **ZIP 导入。** 每个 ZIP 只包含一个插件，需提供合法的 `manifest.json` 及声明资源。完整校验后
   才替换现有版本，导入本身不执行代码。
+- **框架统一 RPC。** 原生插件通过 `get_interface("rpc", 1)` 声明路由和业务方法，
+  Agent 负责 Unix 通信、超时取消及卸载保护，详见[对接规范](zygisk/docs/plugin-rpc.md)。
 - **Lua 编写页面，Compose 原生渲染。** 支持默认 `monitor`、`controls` 布局，
   并兼容已有声明式 Lua 页面。
 - **实时反馈。** socket 事件查看器只在内存中保留有界列表，关闭后清空。
   插件自身仍可选择写文件，例如公开的 capture 示例。
+- **内置路由服务。** 配置页提供 daemon 状态、启停、Hub 配置、在线路由与唤醒规则管理。
+  关闭 Manager 后仍继续转发，详见 [Router 指南](router/README.md)。
 - **外观自动保存。** 提供六套配色、Android 12+ 系统取色，以及跟随系统／浅色／
   深色模式；首页狗头随主题变化。支持设备且开启系统动画时可显示预测式返回预览。
 
@@ -83,7 +87,8 @@ Manager 和 `./dejavu targets` 会保留逐插件的作用域归属。模块 Web
 
 按需求查看 [Manager 构建指南](app/README.md)、[Zygisk 构建指南](zygisk/README.md)
 或[公开示例](examples/README.md)。主机开发支持 Linux 和 macOS。公开依赖以固定
-Git 子模块引入，核心内嵌 Lua 5.4.8 和 TinyCC 0.9.27-frida。
+Git 子模块引入，核心内嵌 Lua 5.4.8 和 TinyCC 0.9.27-frida。Router 使用随仓库提供的
+cJSON，以及校验 SHA-256 的固定版本 libevent 源码包。
 
 <details>
 <summary><strong>展开引擎、构建、CLI 与贡献者参考</strong></summary>
@@ -219,7 +224,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 - 修改 `zygisk/module/module.prop` 的 `version=` 并推送到 `main`：CI 检测到
   版本变化后，在所有检查通过时从该提交创建稳定版 `vX.Y.Z` 并发布（自动创建
   标签）；
-- 推送与模块版本一致的 `v*` 标签（例如 `v0.8.2`）时创建正式版本；
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.9.0`）时创建正式版本；
 - 手动运行 `workflow_dispatch` 时，从所选分支创建
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
@@ -297,7 +302,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.8.2`）；模块打包、loader/agent 行为与文档更新独立递增。
+  版本**（当前 `0.9.0`）；模块打包、loader/agent 行为与文档更新独立递增。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
 

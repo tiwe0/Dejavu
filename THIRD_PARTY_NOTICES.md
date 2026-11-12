@@ -15,6 +15,8 @@ and the component license texts that are available in the working tree under
 | parallel-hashmap | `0cd57d29` | Apache-2.0 | <https://github.com/greg7mdp/parallel-hashmap> | fetched: `.../parallel_hashmap/LICENSE` |
 | Dobby | `5dfc854` | Apache-2.0 | <https://github.com/jmpews/Dobby> | fetched: `zygisk/third_party/Dobby/LICENSE` |
 | Dobby Prefab | 1.2 (AAR, SHA-256 `251f48ae...`) | Apache-2.0 | <https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/> | see Dobby source license |
+| cJSON | 1.7.19 (vendored) | MIT | <https://github.com/DaveGamble/cJSON> | `router/third_party/cJSON/LICENSE` |
+| libevent | 2.1.12-stable (SHA-256 pinned archive) | BSD-3-Clause and bundled notices | <https://github.com/libevent/libevent> | fetched: `router` build dependency `LICENSE` |
 | Zygisk API header | API v5 @ `8ce26128` | 0BSD | <https://github.com/topjohnwu/zygisk-module-sample> | `zygisk/include/zygisk.hpp` (header) |
 
 ## Source availability and patches

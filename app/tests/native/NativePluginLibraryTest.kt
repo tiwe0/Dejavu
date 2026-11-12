@@ -56,9 +56,34 @@ fun main() {
     println("OK: ZIP native/JIT install validation and replacement guards preserve originals on rejection")
     val imported = library.importFolder(uri) + library.importFolder(jitUri)
     check(imported.size == 2)
+    val commandsBeforeScan = RootShell.commandCount
     val listed = library.list()
     check(listed.map { it.path }.toSet() == imported.map { it.path }.toSet()) { library.lastScanErrors.toString() }
     check(library.lastScanErrors.isEmpty())
+    check(RootShell.commandCount - commandsBeforeScan == 2) { "Native scanning must batch all manifest and resource checks into two root commands" }
+    val batchFiles = listOf("bin/test.so") + (1..31).map { "resources/data-$it.txt" }
+    val batchDirectory = File(root, "native-batch").apply { mkdirs() }
+    File(batchDirectory, "manifest.json").writeBytes(manifest("native-batch", "native", "bin/test.so", batchFiles))
+    batchFiles.forEach { path ->
+        File(batchDirectory, path).apply {
+            parentFile.mkdirs()
+            writeBytes(if (path.endsWith(".so")) elf else byteArrayOf(1))
+        }
+    }
+    val commandsBeforeBatch = RootShell.commandCount
+    val sharedScan = PluginLibraryScan.read()
+    check(library.list(sharedScan).size == 3) { library.lastScanErrors.toString() }
+    check(RootShell.commandCount - commandsBeforeBatch == 2) { "32 native resources must use the same two scan commands" }
+    File(batchDirectory, "bin/test.so").writeText("not an ELF")
+    check(library.list().map { it.id }.toSet() == setOf("hello", "hellojit"))
+    check(library.lastScanErrors.any { it.startsWith("native-batch:") && "bin/test.so" in it && "invalid ELF header" in it })
+    batchDirectory.deleteRecursively()
+    println("OK: batched native scans keep fixed root command counts and isolate invalid entry files")
+    val largeChecks = (1..8).associate { "chunk-$it" to "# ${"x".repeat(10 * 1024)}\nprintf pass" }
+    val commandsBeforeChunks = RootShell.commandCount
+    val chunkResults = runPluginScanChecks(largeChecks)
+    check(chunkResults.keys == largeChecks.keys && chunkResults.values.all { it.getOrThrow() == "pass" })
+    check(RootShell.commandCount - commandsBeforeChunks == 2) { "Large scans must split before reaching su's argument limit" }
     check(imported.any { it.id == "hello" && it.name == "hello plugin" && it.version == "1.2.3" && !it.jit })
     check(imported.all { it.description == "test description" })
     check(!File(root, "hello/ignored.c").exists())

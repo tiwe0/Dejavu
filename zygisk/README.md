@@ -44,6 +44,12 @@ required for the Loader and Agent.
   resolver and the hook managers.
 - `lib/arm64-v8a/libdejavu.so` is the Dejavu runtime loaded by the Agent. It
   provides the Lua and TinyCC engines.
+- `/data/adb/dejavu/bin/dejavuerouter` is the installed executable of the
+  framework's internal routing component. It runs as an independent root daemon;
+  the module installs its bundled `bin/dejavuerouter` payload atomically. Manager
+  controls it through Configuration → Router. Its watchdog and boot policy are
+  independent of the app and root helper; see the
+  [router guide](../router/README.md).
 - The root companion creates two random abstract Unix domain sockets per
   process: a persistent Agent channel and a CLI listener. Endpoint metadata is
   stored in `run/<process>.<pid>.rpc` and is readable only through root.

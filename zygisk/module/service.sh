@@ -1,6 +1,10 @@
 #!/system/bin/sh
 # Root helper entry for Dejavu. Runs as root from Magisk late_start service.
 MODDIR=${0%/*}
+# Resume only a router explicitly enabled by its owner.
+if sh "$MODDIR/router-install.sh" install >/dev/null 2>&1; then
+    sh "$MODDIR/router-control.sh" boot >/dev/null 2>&1 || true
+fi
 RUN_DIR="$MODDIR/run"
 LOG="$RUN_DIR/root-helper.log"
 PID_FILE="$RUN_DIR/root-helper.pid"

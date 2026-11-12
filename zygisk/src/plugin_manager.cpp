@@ -216,6 +216,12 @@ const DejavuStreamInterfaceV2 g_stream_interface_v2 = {
     &PluginManager::host_stream_accept, &PluginManager::host_stream_read,
 };
 
+const DejavuRpcInterface g_rpc_interface = {
+    DEJAVU_RPC_INTERFACE_VERSION, sizeof(DejavuRpcInterface),
+    &PluginManager::host_rpc_register, &PluginManager::host_rpc_update_routes,
+    &PluginManager::host_rpc_unregister,
+};
+
 bool valid_identifier_text(const char *value) {
     if (value == nullptr || *value == '\0') {
         return false;
@@ -658,13 +664,46 @@ extern "C" void dejavu_jit_return_string(JitValueLayout *result, const char *tex
     result->string_size = size;
 }
 
-PluginManager::PluginManager() : streams_(std::make_unique<StreamService>()) {
+PluginManager::PluginManager()
+    : streams_(std::make_unique<StreamService>()),
+      rpc_(std::make_unique<RpcService>(
+          [this](uint64_t owner, DejavuRpcHandler callback, void *context,
+                 const DejavuRpcRequest *request, DejavuRpcResponse *response,
+                 char *error, size_t error_size) {
+              size_t index = kPluginIndexNone;
+              std::shared_ptr<PluginHostContext> identity;
+              {
+                  std::lock_guard<std::recursive_mutex> lock(mutex_);
+                  for (size_t i = 0; i < plugins_.size(); ++i) {
+                      const auto &plugin = plugins_[i];
+                      if (plugin->stream_owner_token == owner && plugin->loaded &&
+                          plugin->initialized && !plugin->retiring && !plugin->cleanup_pending) {
+                          index = i;
+                          identity = plugin->context;
+                          break;
+                      }
+                  }
+              }
+              if (!identity || index == kPluginIndexNone) {
+                  std::snprintf(error, error_size, "RPC plugin is unavailable or retiring");
+                  return DEJAVU_RPC_ERROR;
+              }
+              PluginContextGuard scope(index, std::move(identity));
+              return callback(context, request, response, error, error_size);
+          })) {
     std::lock_guard<std::mutex> lock(g_context_mutex);
     g_internal_managers.insert(this);
 }
 
 PluginManager::~PluginManager() {
     shutdown();
+    // Keep the host service object available until RPC callbacks and plugin
+    // workers have both quiesced, including a previous BUSY unload attempt.
+    rpc_->stop_and_join();
+    shutdown();
+    rpc_.reset();
+    if (g_jit_manager == this)
+        g_jit_manager = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_context_mutex);
         for (const auto &context : contexts_) {
@@ -1339,9 +1378,20 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
     }
     if (init_status != 0) {
         *error = plugin_error[0] != '\0' ? plugin_error : "plugin initialize failed";
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
         streams_->retire_owner(plugins_[plugin_index]->stream_owner_token);
         plugins_[plugin_index]->context->retiring.store(true);
+        bool drained;
+        {
+            UnlockedCallback unlocked(manager_lock);
+            drained = rpc_->retire_owner(plugins_[plugin_index]->stream_owner_token);
+        }
+        if (!drained) {
+            plugins_[plugin_index]->loaded = true;
+            plugins_[plugin_index]->cleanup_pending = true;
+            invalidate_entries(plugin_index);
+            *error += "; RPC callback cleanup is pending";
+            return false;
+        }
         std::string cleanup_error;
         if (!remove_plugin(plugin_index, &cleanup_error)) {
             plugins_[plugin_index]->loaded = true;
@@ -1360,6 +1410,10 @@ bool PluginManager::load_plugin_locked(const std::string &path, std::string *sta
         UnlockedCallback unlocked(manager_lock);
         descriptor->on_control_ready(plugins_[plugin_index]->state);
         plugins_[plugin_index]->control_ready = true;
+    }
+    if (session_ != nullptr) {
+        plugins_[plugin_index]->control_ready = true;
+        rpc_->activate_owner(plugins_[plugin_index]->stream_owner_token);
     }
     *status =
         plugins_[plugin_index]->name +
@@ -1635,6 +1689,10 @@ bool PluginManager::load_jit_plugin_locked(const std::string &path, std::string 
         control_ready();
         plugins_[plugin_index]->control_ready = true;
     }
+    if (session_ != nullptr) {
+        plugins_[plugin_index]->control_ready = true;
+        rpc_->activate_owner(plugins_[plugin_index]->stream_owner_token);
+    }
     *status =
         plugins_[plugin_index]->name +
         (plugins_[plugin_index]->version.empty() ? "" : " " + plugins_[plugin_index]->version);
@@ -1708,7 +1766,7 @@ bool PluginManager::finish_unload(Plugin *target, std::string *status, std::stri
         target->retiring = true;
         if (target->context)
             target->context->retiring.store(true);
-        prepare = target->initialized && !target->prepare_complete && !target->cleanup_pending;
+        prepare = target->initialized && !target->prepare_complete;
         target->cleanup_pending = true;
         invalidate_entries(index);
     }
@@ -1716,6 +1774,10 @@ bool PluginManager::finish_unload(Plugin *target, std::string *status, std::stri
     // hold manager mutex: workers may be completing their final host call.
     if (target->stream_owner_token != 0)
         streams_->retire_owner(target->stream_owner_token);
+    if (target->stream_owner_token != 0 && !rpc_->retire_owner(target->stream_owner_token)) {
+        *error = "RPC callback is still executing; retry unload after it drains";
+        return false;
+    }
     if (prepare) {
         prepare_plugin_for_unload(index);
         target->prepare_complete = true;
@@ -1881,6 +1943,13 @@ bool PluginManager::attach_session(dejavu_control_session *session, dejavu_engin
             UnlockedCallback unlocked(lock);
             plugin->descriptor->on_control_ready(plugin->state);
             plugin->control_ready = true;
+        }
+    }
+    for (const auto &plugin : plugins_) {
+        if (plugin->loaded && plugin->initialized && !plugin->retiring &&
+            !plugin->cleanup_pending) {
+            plugin->control_ready = true;
+            rpc_->activate_owner(plugin->stream_owner_token);
         }
     }
     return true;
@@ -2320,6 +2389,69 @@ void PluginManager::host_free(void *pointer) {
     free(pointer);
 }
 
+int PluginManager::host_rpc_register(void *host_context,
+                                      const DejavuRpcServiceDescriptor *descriptor,
+                                      uint64_t *handle, char *error, size_t error_size) try {
+    const auto context = find_host_context(host_context);
+    if (!context || !context->alive.load() || context->retiring.load() ||
+        (context->capabilities & DEJAVU_PLUGIN_CAP_RPC) == 0 || context->owner == 0 ||
+        !context->manager->rpc_) {
+        std::snprintf(error, error_size, "RPC capability is unavailable or retiring");
+        return DEJAVU_RPC_ERROR;
+    }
+    std::string detail;
+    const int result = context->manager->rpc_->register_service(context->owner, descriptor,
+                                                               handle, &detail);
+    if (result != DEJAVU_RPC_OK)
+        std::snprintf(error, error_size, "%s", detail.c_str());
+    return result;
+} catch (...) {
+    std::snprintf(error, error_size, "RPC host operation failed");
+    return DEJAVU_RPC_ERROR;
+}
+
+int PluginManager::host_rpc_update_routes(void *host_context, uint64_t handle,
+                                           const char *const *routes, size_t route_count,
+                                           char *error, size_t error_size) try {
+    const auto context = find_host_context(host_context);
+    if (!context || !context->alive.load() || context->retiring.load() ||
+        (context->capabilities & DEJAVU_PLUGIN_CAP_RPC) == 0 || context->owner == 0 ||
+        !context->manager->rpc_) {
+        std::snprintf(error, error_size, "RPC capability is unavailable or retiring");
+        return DEJAVU_RPC_ERROR;
+    }
+    std::string detail;
+    const int result = context->manager->rpc_->update_routes(context->owner, handle, routes,
+                                                            route_count, &detail);
+    if (result != DEJAVU_RPC_OK)
+        std::snprintf(error, error_size, "%s", detail.c_str());
+    return result;
+} catch (...) {
+    std::snprintf(error, error_size, "RPC host operation failed");
+    return DEJAVU_RPC_ERROR;
+}
+
+int PluginManager::host_rpc_unregister(void *host_context, uint64_t handle,
+                                        char *error, size_t error_size) try {
+    const auto context = find_host_context(host_context);
+    // Cleanup remains permitted after admission is retired. Never hold the
+    // manager mutex while the service waits for a plugin callback to finish.
+    if (!context || !context->alive.load() ||
+        (context->capabilities & DEJAVU_PLUGIN_CAP_RPC) == 0 || context->owner == 0 ||
+        !context->manager->rpc_) {
+        std::snprintf(error, error_size, "RPC capability is unavailable");
+        return DEJAVU_RPC_ERROR;
+    }
+    std::string detail;
+    const int result = context->manager->rpc_->unregister_service(context->owner, handle, &detail);
+    if (result != DEJAVU_RPC_OK)
+        std::snprintf(error, error_size, "%s", detail.c_str());
+    return result;
+} catch (...) {
+    std::snprintf(error, error_size, "RPC host operation failed");
+    return DEJAVU_RPC_ERROR;
+}
+
 const void *PluginManager::host_get_interface(void *host_context, const char *name,
                                               uint32_t version) {
     auto *manager = from_host_context(host_context);
@@ -2355,6 +2487,10 @@ const void *PluginManager::host_get_interface(void *host_context, const char *na
     if (interface_name == "stream" && version == DEJAVU_STREAM_INTERFACE_VERSION &&
         has_capability(DEJAVU_PLUGIN_CAP_STREAM)) {
         return &g_stream_interface;
+    }
+    if (interface_name == "rpc" && version == DEJAVU_RPC_INTERFACE_VERSION && manager->rpc_ &&
+        context && !context->retiring.load() && has_capability(DEJAVU_PLUGIN_CAP_RPC)) {
+        return &g_rpc_interface;
     }
     return nullptr;
 }

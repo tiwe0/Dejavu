@@ -35,21 +35,28 @@ object DejavuRpc {
     // Allow the agent's 25s Lua wait and companion's 30s relay deadline to return an error.
     private const val EXCHANGE_TIMEOUT_MS = 40_000
 
-    fun execute(process: String, script: String): String {
-        val metadata = readMetadata(process)
+    fun execute(process: String, script: String): String = executeRequest(process, script, null)
+
+    internal fun execute(process: String, script: String, cancellation: RpcCancellation): String =
+        executeRequest(process, script, cancellation)
+
+    private fun executeRequest(process: String, script: String, cancellation: RpcCancellation?): String {
+        val metadata = readMetadata(process, cancellation)
         val socket = LocalSocket()
-        try {
+        val shutdown = {
+            // shutdown wakes blocked reads/writes; close alone need not interrupt a syscall.
+            runCatching { socket.shutdownInput() }
+            runCatching { socket.shutdownOutput() }
+            runCatching { socket.close() }
+            Unit
+        }
+        val exchange = {
             // Accessing the streams creates the descriptor; setSoTimeout itself does not.
             val input = DataInputStream(BufferedInputStream(socket.inputStream))
             val output = DataOutputStream(BufferedOutputStream(socket.outputStream))
             // LocalSocket sets both SO_RCVTIMEO and SO_SNDTIMEO. Set it before connect.
             socket.soTimeout = EXCHANGE_TIMEOUT_MS
-            return withRpcDeadline(EXCHANGE_TIMEOUT_MS.toLong(), {
-                // shutdown wakes blocked reads/writes; close alone need not interrupt a syscall.
-                runCatching { socket.shutdownInput() }
-                runCatching { socket.shutdownOutput() }
-                runCatching { socket.close() }
-            }) {
+            withRpcDeadline(EXCHANGE_TIMEOUT_MS.toLong(), shutdown) {
                 socket.connect(
                     LocalSocketAddress(metadata.socket, LocalSocketAddress.Namespace.ABSTRACT),
                 )
@@ -100,6 +107,9 @@ object DejavuRpc {
                 }
                 response
             }
+        }
+        try {
+            return if (cancellation == null) exchange() else cancellation.withResource(shutdown, exchange)
         } finally {
             try {
                 socket.close()
@@ -133,29 +143,32 @@ object DejavuRpc {
         return execute(process, "return plugin.$function(${luaString(path)})")
     }
 
-    private fun readMetadata(process: String): RpcMetadata {
+    private fun readMetadata(process: String, cancellation: RpcCancellation? = null): RpcMetadata {
+        fun read(command: String): ShellResult =
+            if (cancellation == null) RootShell.run(command) else RootShell.runCancellable(command, cancellation)
         if (!process.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
             throw RpcException("invalid target process name")
         }
-        val running = RootShell.run("pidof ${RootShell.quote(process)}")
+        val running = read("pidof ${RootShell.quote(process)}")
         val livePids = running.output.trim().split(Regex("\\s+")).mapNotNull {
             it.toIntOrNull()?.takeIf { pid -> pid > 0 }
         }.toSet()
         if (running.exitCode != 0 || livePids.isEmpty()) {
             throw TargetProcessNotRunning(process)
         }
-        val listing = RootShell.run("ls -1t ${RootShell.quote("$MODULE_DIR/run")}")
+        val listing = read("ls -1t ${RootShell.quote("$MODULE_DIR/run")}")
         if (listing.exitCode != 0) {
             throw RpcException("unable to list Dejavu runtime metadata")
         }
         val endpoint = selectRpcEndpoint(process, listing.output.lineSequence().map { it.trim() }, livePids)
             ?: throw RpcException("no RPC endpoint for $process; is the app running with the agent?")
-        val cmdline = RootShell.run("tr '\\000' '\\n' < /proc/${endpoint.pid}/cmdline | head -n 1")
+        val cmdline = read("tr '\\000' '\\n' < /proc/${endpoint.pid}/cmdline | head -n 1")
         if (cmdline.exitCode != 0 || cmdline.output.trimEnd('\r', '\n') != process) {
             throw RpcException("RPC endpoint process no longer matches $process")
         }
-        val raw = RootShell.readFile("$MODULE_DIR/run/${endpoint.fileName}")
-            ?: throw RpcException("unable to read RPC metadata")
+        val metadata = read("cat ${RootShell.quote("$MODULE_DIR/run/${endpoint.fileName}")}")
+        if (metadata.exitCode != 0) throw RpcException("unable to read RPC metadata")
+        val raw = metadata.output
         val json = try {
             JSONObject(raw)
         } catch (error: Exception) {

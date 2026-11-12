@@ -17,35 +17,54 @@ class NativePluginLibrary(context: Context) {
         private set
 
     fun list(): List<NativePluginArtifact> = synchronized(lock) {
-        val result = RootShell.run("""
-            if [ ! -e ${q(DEFAULT_PLUGIN_DIRECTORY)} ] && [ ! -L ${q(DEFAULT_PLUGIN_DIRECTORY)} ]; then exit 0; fi
-            ${directoryGuard(DEFAULT_PLUGIN_DIRECTORY)} || exit 1
-            for parent in ${q(DEFAULT_PLUGIN_DIRECTORY)}/*; do
-                [ -d "${'$'}parent" ] && [ ! -L "${'$'}parent" ] || continue
-                if [ -e "${'$'}parent/manifest.json" ] || [ -L "${'$'}parent/manifest.json" ]; then
-                    printf '%s\n' "${'$'}parent/manifest.json"
-                fi
-            done
-        """.trimIndent())
-        if (result.exitCode != 0) {
-            lastScanErrors = listOf("Unable to scan native plugins: ${result.output.trim()}")
-            return@synchronized emptyList()
-        }
-        val errors = mutableListOf<String>()
-        val artifacts = result.output.lineSequence().filter { it.isNotBlank() }.mapNotNull { path ->
+        list(PluginLibraryScan.read())
+    }
+
+    internal fun list(scan: PluginLibraryScan): List<NativePluginArtifact> = synchronized(lock) {
+        val errors = scan.errors.toMutableList()
+        val candidates = scan.manifests.filter { it.manifest.kind != "lua" }.mapNotNull { stored ->
+            val manifest = stored.manifest
             try {
-                val text = readManifest(path)
-                val manifest = NativePluginManifest.parse(text)
-                if (manifest.kind == "lua") null else {
-                    val directory = path.substringBeforeLast('/')
-                    require(directory.substringAfterLast('/') == manifest.id) { "Plugin identifier does not match its directory" }
-                    manifestArtifact(directory, manifest).also { validateStored(it) }
-                }
+                manifest.files.forEach { path -> path.split('/').forEach(::validateName) }
+                val entry = artifact("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/${manifest.entry}")
+                    .copy(name = manifest.name, id = manifest.id, version = manifest.version, description = manifest.description)
+                stored to entry
             } catch (error: Exception) {
-                errors += "${path.substringBeforeLast('/').substringAfterLast('/')}: ${error.message}"
+                errors += "${manifest.id}: ${error.message}"
                 null
             }
-        }.distinctBy { it.path }.sortedBy { it.name.lowercase() }.toList()
+        }
+        val checks = candidates.associate { (stored, entry) ->
+            val manifest = stored.manifest
+            manifest.id to buildString {
+                appendLine("dejavu_total=0")
+                manifest.files.forEach { path ->
+                    val resource = q("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/$path")
+                    appendLine("scan_plugin_file $resource ${limit(path)} || exit 1")
+                    appendLine("dejavu_total=\$((dejavu_total + dejavu_size))")
+                    appendLine("[ \"\${dejavu_total}\" -le 67108864 ] || { scan_plugin_error $resource 'package resources exceed 64 MiB'; exit 1; }")
+                }
+                appendLine("scan_plugin_file ${q(entry.path)} ${limit(entry.path)} || exit 1")
+                appendLine("[ \"\${dejavu_size}\" -gt 0 ] || { scan_plugin_error ${q(entry.path)} 'empty plugin entry'; exit 1; }")
+                appendLine(if (entry.jit) "grep -q 'dejavu_jit_plugin_init' ${q(entry.path)} || { scan_plugin_error ${q(entry.path)} 'missing dejavu_jit_plugin_init'; exit 1; }" else
+                    "[ \"\$(od -An -tx1 -N4 ${q(entry.path)} | tr -d ' \\n')\" = 7f454c46 ] || { scan_plugin_error ${q(entry.path)} 'invalid ELF header'; exit 1; }")
+            }
+        }
+        val results = try {
+            runPluginScanChecks(checks)
+        } catch (error: Exception) {
+            lastScanErrors = errors + "Unable to scan native resources: ${error.message}"
+            return@synchronized emptyList()
+        }
+        val artifacts = candidates.mapNotNull { (stored, artifact) ->
+            results.getValue(stored.manifest.id).fold(
+                onSuccess = { artifact },
+                onFailure = {
+                    errors += "${stored.manifest.id}: ${it.message}"
+                    null
+                },
+            )
+        }.distinctBy { it.path }.sortedBy { it.name.lowercase() }
         lastScanErrors = errors
         artifacts
     }

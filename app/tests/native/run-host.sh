@@ -13,6 +13,7 @@ done
 "${KOTLINC:-kotlinc}" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginArtifact.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginLibrary.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginLibraryScan.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginManifest.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \

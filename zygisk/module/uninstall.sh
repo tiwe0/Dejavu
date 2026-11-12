@@ -1,5 +1,8 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
+if sh "$MODDIR/router-control.sh" stop >/dev/null 2>&1; then
+    sh "$MODDIR/router-install.sh" remove >/dev/null 2>&1 || true
+fi
 RUN_DIR="$MODDIR/run"
 STOP_FILE="$RUN_DIR/root-helper.stop"
 PID_FILE="$RUN_DIR/root-helper.pid"

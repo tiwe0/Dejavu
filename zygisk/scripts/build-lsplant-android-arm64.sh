@@ -75,7 +75,7 @@ cmake -S "${ROOT_DIR}" -B "${OUT_DIR}" -G Ninja \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DDEJAVU_RUN_DEVICE_SMOKE="${RUN_DEVICE_SMOKE}" \
     -DDEJAVU_RUN_DEVICE_STRESS="${RUN_DEVICE_STRESS}"
-cmake --build "${OUT_DIR}" --target dejavu_zygisk dejavu_agent dejavu_root_helper
+cmake --build "${OUT_DIR}" --target dejavu_zygisk dejavu_agent dejavu_root_helper dejavu_router
 
 TOOLCHAIN=$(find "${NDK_DIR}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)
 READELF="${TOOLCHAIN}/bin/llvm-readelf"

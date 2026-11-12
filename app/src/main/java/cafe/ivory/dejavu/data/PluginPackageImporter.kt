@@ -19,27 +19,56 @@ class PluginPackageImporter(context: Context) {
         private set
 
     fun list(): List<ImportedPluginPackage> = synchronized(storageLock) {
-        val errors = mutableListOf<String>()
-        val result = RootShell.run("""
-            if [ ! -e ${q(DEFAULT_PLUGIN_DIRECTORY)} ] && [ ! -L ${q(DEFAULT_PLUGIN_DIRECTORY)} ]; then exit 0; fi
-            ${directoryGuard(DEFAULT_PLUGIN_DIRECTORY)} || exit 1
-            for path in ${q(DEFAULT_PLUGIN_DIRECTORY)}/*; do
-                [ -d "${'$'}path" ] && [ ! -L "${'$'}path" ] || continue
-                [ -f "${'$'}path/$PLUGIN_MANIFEST_FILE" ] || continue
-                printf '%s\n' "${'$'}{path##*/}"
-            done
-            exit 0
-        """.trimIndent())
-        if (result.exitCode != 0) {
-            lastScanErrors = listOf("Unable to scan $DEFAULT_PLUGIN_DIRECTORY: ${result.output.trim()}")
+        list(PluginLibraryScan.read())
+    }
+
+    internal fun list(scan: PluginLibraryScan): List<ImportedPluginPackage> = synchronized(storageLock) {
+        val errors = scan.errors.toMutableList()
+        val manifests = scan.manifests.filter { it.manifest.kind == "lua" }
+        val checks = manifests.associate { stored ->
+            val manifest = stored.manifest
+            manifest.id to buildString {
+                appendLine("dejavu_remaining=${MAX_PLUGIN_PACKAGE_BYTES - stored.byteSize}")
+                manifest.files.forEach { path ->
+                    val resource = q("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/$path")
+                    appendLine("scan_plugin_file $resource \"\${dejavu_remaining}\" || exit 1")
+                    appendLine("dejavu_remaining=\$((dejavu_remaining - dejavu_size))")
+                    appendLine("base64 $resource || { scan_plugin_error $resource 'cannot read resource'; exit 1; }")
+                    appendLine("printf '.\\n'")
+                }
+            }
+        }
+        val results = try {
+            runPluginScanChecks(checks)
+        } catch (error: Exception) {
+            lastScanErrors = errors + "Unable to scan Lua resources: ${error.message}"
             return@synchronized emptyList()
         }
-        val packages = result.output.lineSequence().filter { it.isNotBlank() }.mapNotNull { id ->
+        val packages = manifests.mapNotNull { stored ->
+            val manifest = stored.manifest
             try {
-                validatePluginId(id)
-                readStoredPackage(id)
+                val encoded = results.getValue(manifest.id).getOrThrow().split('.')
+                require(encoded.last().isBlank() && encoded.size == manifest.files.size + 1) {
+                    "Incomplete stored plugin sources"
+                }
+                var remaining = MAX_PLUGIN_PACKAGE_BYTES - stored.byteSize
+                val sources = manifest.files.mapIndexed { index, path ->
+                    val bytes = decodePluginScanBytes(encoded[index])
+                    require(bytes.size <= remaining) { "$path exceeds the stored package size limit" }
+                    remaining -= bytes.size
+                    val source = try {
+                        decodePluginUtf8(bytes)
+                    } catch (error: Exception) {
+                        throw IOException("Invalid UTF-8 resource: $path", error)
+                    }
+                    path to source
+                }.toMap()
+                ImportedPluginPackage(manifest, sources).also {
+                    it.validate()
+                    LuaPackageScripts.start(it, "0000000000000000")
+                }
             } catch (error: Exception) {
-                errors += "$id: ${error.message ?: "invalid package"}"
+                errors += "${manifest.id}: ${error.message ?: "invalid package"}"
                 null
             }
         }.sortedBy { it.manifest.name.lowercase() }.toList()
@@ -138,24 +167,6 @@ class PluginPackageImporter(context: Context) {
             }
             output.toByteArray()
         } ?: throw IOException("Unable to open a declared plugin resource")
-    }
-
-    private fun readStoredPackage(id: String): ImportedPluginPackage? {
-        val directory = "$DEFAULT_PLUGIN_DIRECTORY/$id"
-        val manifestBytes = readRootFile("$directory/$PLUGIN_MANIFEST_FILE", MAX_PLUGIN_MANIFEST_BYTES)
-        val manifest = PluginPackageManifest.parse(decodePluginUtf8(manifestBytes))
-        require(manifest.id == id) { "Plugin identifier does not match its directory" }
-        if (manifest.kind != "lua") return null
-        var remaining = MAX_PLUGIN_PACKAGE_BYTES - manifestBytes.size
-        val sources = manifest.files.associateWith { path ->
-            val bytes = readRootFile("$directory/$path", remaining)
-            remaining -= bytes.size
-            decodePluginUtf8(bytes)
-        }
-        return ImportedPluginPackage(manifest, sources).also {
-            it.validate()
-            LuaPackageScripts.start(it, "0000000000000000")
-        }
     }
 
     private fun readRootFile(path: String, limit: Int): ByteArray {

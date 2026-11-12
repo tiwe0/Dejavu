@@ -71,6 +71,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import cafe.ivory.dejavu.data.pluginOperationInProgress
+import cafe.ivory.dejavu.data.RouterViewModel
+import cafe.ivory.dejavu.ui.RouterScreen
 import cafe.ivory.dejavu.data.ConsoleViewModel
 import cafe.ivory.dejavu.ui.LogsScreen
 import cafe.ivory.dejavu.ui.OverviewScreen
@@ -90,9 +93,10 @@ private enum class ManagerPage(
     Plugins(R.string.tab_plugins, R.string.title_plugins, Icons.Rounded.Extension),
     Tools(R.string.tab_configuration, R.string.title_configuration, Icons.Rounded.Settings),
     Logs(R.string.tab_logs, R.string.title_logs, Icons.AutoMirrored.Rounded.Article),
+    Router(R.string.router_title, R.string.router_title, Icons.Rounded.Settings),
     ;
 
-    val isToolDetail get() = this == Logs
+    val isToolDetail get() = this == Logs || this == Router
 }
 
 private val tabs = ManagerPage.entries.filterNot { it.isToolDetail }
@@ -142,17 +146,18 @@ private fun ManagerApp(
     onAppearanceChange: (ManagerAppearance) -> Unit,
     onLanguageChange: (String?) -> Unit,
     vm: ConsoleViewModel = viewModel(),
+    routerVm: RouterViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val routerState by routerVm.state.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
     var pluginPageId by remember(page) { mutableStateOf<String?>(null) }
     var scopeEditor by remember(pluginPageId) { mutableStateOf(false) }
     val pluginDetail = pluginPageId?.let { id -> state.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } }
     val nativeDetail = pluginPageId?.let { id -> state.nativeLibrary.firstOrNull { it.artifact.id == id } }
-    val pluginsBusy = state.pluginDirectoryLoading || state.pluginsLoading || state.pluginImporting ||
-        state.pluginActionId != null || state.nativePluginActionPath != null || state.scopeSavingId != null
+    val pluginsBusy = state.pluginOperationInProgress
     val closePluginPage: () -> Unit = close@ {
-        if (pluginsBusy || state.loading) return@close
+        if (pluginsBusy) return@close
         if (scopeEditor) scopeEditor = false else {
             vm.closePackageEvents()
             pluginPageId = null
@@ -166,7 +171,7 @@ private fun ManagerApp(
         if (uri != null) vm.importPluginZip(uri)
     }
     val refreshPlugins = {
-        if (state.selectedTarget == null) vm.refreshPluginLibrary() else vm.refreshPlugins()
+        if (pluginPageId == null) vm.refreshPluginLibrary() else vm.refreshPluginRuntime()
     }
 
     LaunchedEffect(state.lastMessage) {
@@ -175,16 +180,25 @@ private fun ManagerApp(
         vm.consumeMessage()
     }
 
-    LaunchedEffect(page, state.selectedTarget, state.rootGranted) {
+    LaunchedEffect(page, state.rootGranted) {
         if (page != ManagerPage.Plugins || !state.rootGranted) vm.closePackageEvents()
         if (!state.rootGranted) {
             vm.stopLogs()
             return@LaunchedEffect
         }
         if (page == ManagerPage.Logs) vm.startLogs() else vm.stopLogs()
-        if (page == ManagerPage.Plugins) refreshPlugins()
+        if (page == ManagerPage.Plugins) vm.refreshPluginLibrary(force = false)
     }
 
+    LaunchedEffect(page, pluginPageId, state.selectedTarget, state.activePluginId, state.rootGranted) {
+        if (page == ManagerPage.Plugins && pluginPageId != null && state.rootGranted) {
+            vm.refreshPluginRuntime()
+        }
+    }
+
+    LaunchedEffect(pluginPageId, state.activePluginId, pluginsBusy) {
+        if (pluginPageId == null && state.activePluginId != null && !pluginsBusy) vm.leavePlugin()
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -193,6 +207,15 @@ private fun ManagerApp(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    DisposableEffect(lifecycleOwner, page, state.rootGranted) {
+        fun updateRouterVisibility() {
+            routerVm.setVisible(page == ManagerPage.Router && state.rootGranted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        }
+        updateRouterVisibility()
+        val observer = LifecycleEventObserver { _, _ -> updateRouterVisibility() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); routerVm.setVisible(false) }
     }
 
     val renderPage: @Composable (ManagerPage, String?, Boolean, Boolean) -> Unit = { visiblePage, visiblePluginId, visibleScope, preview ->
@@ -218,7 +241,7 @@ private fun ManagerApp(
                 onClosePluginPage = closePluginPage,
                 onShowPluginControl = { scopeEditor = false },
                 onSetPreferredPort = vm::setPluginListenPort,
-                onRefresh = { vm.refreshPlugins() },
+                onRefresh = vm::refreshPluginRuntime,
                 onSelectTarget = { vm.selectTarget(it) },
                 onUnload = { target, name -> vm.unloadPlugin(target, name) },
                 onLoadLibrary = { target, path -> vm.loadLibraryPlugin(target, path) },
@@ -236,6 +259,15 @@ private fun ManagerApp(
                 appearance = appearance,
                 onAppearanceChange = onAppearanceChange,
                 onOpenLogs = { page = ManagerPage.Logs },
+                onOpenRouter = { page = ManagerPage.Router },
+            )
+            ManagerPage.Router -> RouterScreen(
+                state = routerState,
+                onSetRunning = routerVm::setRunning,
+                onReconnect = routerVm::reconnect,
+                onConfigure = routerVm::configure,
+                onPutRoute = routerVm::putRoute,
+                onDeleteRoute = routerVm::deleteRoute,
             )
             ManagerPage.Logs -> LogsScreen(
                 state = state,
@@ -272,7 +304,7 @@ private fun ManagerApp(
                     },
                     navigationIcon = {
                         if (state.rootGranted && (page.isToolDetail || pluginPageId != null)) {
-                            IconButton(enabled = !pluginsBusy && !state.loading, onClick = {
+                            IconButton(enabled = !pluginsBusy, onClick = {
                                 if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools
                             }) {
                                 Icon(
@@ -283,12 +315,12 @@ private fun ManagerApp(
                         }
                     },
                     actions = {
-                        if (state.rootGranted && !page.isToolDetail) {
+                        if (state.rootGranted && (!page.isToolDetail || page == ManagerPage.Router)) {
                             IconButton(
                                 onClick = {
-                                    if (page == ManagerPage.Plugins) refreshPlugins() else vm.refresh()
+                                    if (page == ManagerPage.Router) routerVm.refresh() else if (page == ManagerPage.Plugins) refreshPlugins() else vm.refresh()
                                 },
-                                enabled = !state.loading && (page != ManagerPage.Plugins || !pluginsBusy),
+                                enabled = if (page == ManagerPage.Router) !routerState.busy && !routerState.loading else !state.loading && (page != ManagerPage.Plugins || !pluginsBusy),
                             ) {
                                 Icon(
                                     Icons.Rounded.Refresh,
@@ -321,7 +353,7 @@ private fun ManagerApp(
                                 vm.leavePlugin()
                                 page = tab
                             },
-                            enabled = !pluginsBusy && !state.loading,
+                            enabled = !pluginsBusy,
                             icon = { Icon(tab.icon, contentDescription = null) },
                             label = { Text(stringResource(tab.label)) },
                         )
@@ -364,7 +396,7 @@ private fun ManagerApp(
             }
             PredictiveBackContent(
                 enabled = page.isToolDetail || pluginPageId != null,
-                canNavigate = !pluginsBusy && !state.loading,
+                canNavigate = !pluginsBusy,
                 navigationKey = listOf(page, pluginPageId, scopeEditor),
                 onBack = {
                     if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools

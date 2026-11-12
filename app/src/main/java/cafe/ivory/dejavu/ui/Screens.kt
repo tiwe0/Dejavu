@@ -72,6 +72,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.data.pluginOperationInProgress
 import cafe.ivory.dejavu.data.ConsoleUiState
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -226,9 +227,8 @@ fun PluginsScreen(
 ) {
     val directory = state.directoryPlugins.firstOrNull { it.plugin.manifest.id == pluginId }
     val native = state.nativeLibrary.firstOrNull { it.artifact.id == pluginId }
-    val busy = state.loading || state.pluginImporting || state.pluginDirectoryLoading ||
-        state.pluginsLoading || state.pluginActionId != null || state.nativePluginActionPath != null ||
-        state.scopeSavingId != null
+    val busy = state.pluginOperationInProgress
+    val controlsBusy = busy || state.pluginsLoading || state.pluginDirectoryLoading
     var skillText by remember(pluginId, state.selectedTarget) { mutableStateOf<String?>(null) }
     var skillLoading by remember(pluginId, state.selectedTarget) { mutableStateOf(false) }
     var pendingUnload by remember(pluginId, state.selectedTarget) { mutableStateOf<String?>(null) }
@@ -285,6 +285,7 @@ fun PluginsScreen(
                     modifier = Modifier.weight(1f),
                 )
                 else -> Column(Modifier.weight(1f)) {
+                    if (state.pluginsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TargetMenu(
@@ -307,7 +308,7 @@ fun PluginsScreen(
                     if (directory != null && page != null) {
                         Box(Modifier.weight(1f)) {
                             PluginPageScreen(
-                                page = page, plugin = directory, target = target, busy = busy,
+                                page = page, plugin = directory, target = target, busy = controlsBusy,
                                 working = state.pluginActionId == pluginId,
                                 runtimeError = state.directoryRuntimeError,
                                 events = state.packageEvents?.takeIf { it.packageId == pluginId && it.target == target },
@@ -339,7 +340,7 @@ fun PluginsScreen(
                                         else if (directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN) onScanDirectory()
                                         else onStartDirectory(target, pluginId)
                                     }
-                                }, enabled = target != null && !busy && (canStop || inScope)) {
+                                }, enabled = target != null && !controlsBusy && (canStop || inScope)) {
                                     Text(stringResource(when {
                                         canStop -> R.string.package_stop
                                         directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN -> R.string.package_check_status
@@ -348,14 +349,14 @@ fun PluginsScreen(
                                 }
                                 if (directory.plugin.manifest.events != null) {
                                     OutlinedButton(onClick = { if (target != null) onDirectoryEvents(target, pluginId, null) },
-                                        enabled = inScope && !busy && directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING && directory.session != null) {
+                                        enabled = inScope && !controlsBusy && directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING && directory.session != null) {
                                         Text(stringResource(R.string.package_live_events))
                                     }
                                 }
                             }
                             if (native != null) {
                                 NativeLibraryPluginCard(
-                                    item = native, target = target, busy = busy,
+                                    item = native, target = target, busy = controlsBusy,
                                     working = state.nativePluginActionPath == native.artifact.path,
                                     canLoad = inScope,
                                     onLoad = { if (target != null) onLoadLibrary(target, native.artifact.path) },
@@ -373,7 +374,7 @@ fun PluginsScreen(
                                     },
                                 )
                             }
-                            OutlinedButton(onClick = onRefresh, enabled = !busy) {
+                            OutlinedButton(onClick = onRefresh, enabled = !controlsBusy) {
                                 Text(stringResource(R.string.package_check_status))
                             }
                         }
@@ -397,8 +398,8 @@ fun PluginsScreen(
                 }
         }
         val importing = state.pluginImporting
-        val scanning = state.pluginDirectoryLoading || state.pluginsLoading
-        val canAdd = state.rootGranted && !busy
+        val scanning = state.pluginDirectoryLoading
+        val canAdd = state.rootGranted && !busy && !scanning
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,

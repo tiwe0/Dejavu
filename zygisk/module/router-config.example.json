@@ -1,0 +1,8 @@
+{
+  "hub_host": "",
+  "hub_port": 39010,
+  "device_id": "dejavu-device",
+  "listen_host": "127.0.0.1",
+  "listen_port": 39111,
+  "listen_tcp": false
+}

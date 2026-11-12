@@ -48,18 +48,64 @@ fun main() {
     val provider = MemoryDocumentProvider()
     val importer = PluginPackageImporter(Context(provider))
     val store = File(sandbox, "mapped-data/adb/dejavu/plugins")
+    fun rootCommands(): Int = File(sandbox, "audit.jsonl").takeIf { it.exists() }?.readLines()?.count {
+        JSONObject(it).getString("tool") == "su"
+    } ?: 0
     check(importer.list().isEmpty() && importer.lastScanErrors.isEmpty())
     val uri = provider.tree(providerFiles(original))
     val imported = importer.importFolder(uri)
     check(imported.manifest == original)
     check(imported.sources == code.mapValues { decodePluginUtf8(it.value) })
+    val commandsBeforeScan = rootCommands()
     check(importer.list() == listOf(imported) && importer.lastScanErrors.isEmpty())
+    check(rootCommands() - commandsBeforeScan == 2) { "Library scanning must batch manifest and source reads into two root commands" }
     val installed = File(store, "example-plugin")
     check(Files.getPosixFilePermissions(store.toPath()) == PosixFilePermissions.fromString("rwx------"))
     check(Files.getPosixFilePermissions(File(installed, "hook.c").toPath()) == PosixFilePermissions.fromString("rw-------"))
     val originalDisk = directorySnapshot(installed)
     noTransactionDirectories(store)
     println("OK: real example plugin folder imports/scans via opaque SAF IDs and root stdin, without executing entry code")
+
+    val batchFiles = listOf("entry.lua") + (1..31).map { "resources/source-$it.lua" }
+    val batchManifest = PluginPackageManifest("many-resources", "Many resources", "1", entry = "entry.lua", files = batchFiles)
+    val batchDirectory = File(store, batchManifest.id).apply { mkdirs() }
+    File(batchDirectory, PLUGIN_MANIFEST_FILE).writeText(batchManifest.toJson())
+    batchFiles.forEach { path ->
+        File(batchDirectory, path).apply {
+            parentFile.mkdirs()
+            writeText(if (path == batchFiles.last()) "" else "return {}\n")
+        }
+    }
+    val commandsBeforeBatch = rootCommands()
+    val sharedScan = PluginLibraryScan.read()
+    val batch = importer.list(sharedScan).single { it.manifest.id == batchManifest.id }
+    check(batch.sources.keys == batchFiles.toSet())
+    check(rootCommands() - commandsBeforeBatch == 2) { "32-resource packages must use the same two scan commands" }
+    val diagnosticBody = "return 'scan-source-body-must-not-appear-in-errors'"
+    File(batchDirectory, "entry.lua").writeText(diagnosticBody)
+    val missingPath = batchFiles[1]
+    File(batchDirectory, missingPath).delete()
+    check(importer.list().map { it.manifest.id } == listOf(original.id)) { importer.lastScanErrors.toString() }
+    val missingError = importer.lastScanErrors.single { it.startsWith("many-resources:") }
+    check(missingPath in missingError && "missing" in missingError) { "Missing source diagnostics must identify the relative path and reason: $missingError" }
+    check(diagnosticBody !in missingError && java.util.Base64.getEncoder().encodeToString(diagnosticBody.toByteArray()) !in missingError)
+    check(missingError.length <= 1024)
+    File(batchDirectory, missingPath).writeText("return {}")
+    File(batchDirectory, "entry.lua").writeBytes(byteArrayOf(0xc3.toByte(), 0x28))
+    check(importer.list().map { it.manifest.id } == listOf(original.id)) { importer.lastScanErrors.toString() }
+    check(importer.lastScanErrors.any { it.startsWith("many-resources:") })
+    batchDirectory.deleteRecursively()
+
+    val oversizedManifest = PluginPackageManifest("oversized-stored", "Oversized", "1", entry = "entry.lua", files = listOf("entry.lua", "one.c", "two.c"))
+    val oversizedDirectory = File(store, oversizedManifest.id).apply { mkdirs() }
+    File(oversizedDirectory, PLUGIN_MANIFEST_FILE).writeText(oversizedManifest.toJson())
+    File(oversizedDirectory, "entry.lua").writeText("return {}")
+    File(oversizedDirectory, "one.c").writeText("x".repeat(180 * 1024))
+    File(oversizedDirectory, "two.c").writeText("x".repeat(90 * 1024))
+    check(importer.list().map { it.manifest.id } == listOf(original.id)) { importer.lastScanErrors.toString() }
+    check(importer.lastScanErrors.any { it.startsWith("oversized-stored:") })
+    oversizedDirectory.deleteRecursively()
+    println("OK: batched scanning uses two root commands for 32 resources and preserves aggregate size rejection")
 
     fun zipPackage(manifest: PluginPackageManifest, resources: Map<String, ByteArray>): PluginZipArchive {
         val bytes = ByteArrayOutputStream().also { output ->

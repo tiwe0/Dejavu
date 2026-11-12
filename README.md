@@ -34,11 +34,17 @@ hold its runtime controls, target selection and complete metadata.
   not stop instances running elsewhere.
 - **ZIP import.** Add one plugin per ZIP with a valid `manifest.json` and declared
   resources. Validation finishes before replacement; importing never executes it.
+- **Framework RPC for native plugins.** Declare routes and business methods through
+  `get_interface("rpc", 1)`; Agent owns Unix transport, deadlines and safe teardown.
+  See the [plugin RPC contract](zygisk/docs/plugin-rpc.md).
 - **Lua-authored pages, native Compose UI.** Use the default `monitor` and
   `controls` layouts or existing declarative Lua pages.
 - **Live feedback.** The socket event viewer keeps a bounded list in memory and
   clears it when closed. Plugins can independently choose to write files; the
   capture example does so.
+- **Built-in router.** Configuration includes daemon status, start/stop, Hub settings,
+  online routes and editable wake rules. Routing continues after Manager closes;
+  see the [router guide](router/README.md).
 - **Saved appearance.** Six palettes, Android 12+ system colors and
   system/light/dark modes; the home mark follows the selected theme. Predictive
   back previews work on supported devices when system animations are enabled.
@@ -94,8 +100,9 @@ WebUI saves a plain process list and discards that ownership metadata.
 
 Start with the [Manager build guide](app/README.md),
 [Zygisk build guide](zygisk/README.md) or [public examples](examples/README.md).
-Host development supports Linux and macOS. Public dependencies are pinned Git
-submodules; the core embeds Lua 5.4.8 and TinyCC 0.9.27-frida.
+Host development supports Linux and macOS. Core dependencies are pinned Git
+submodules; the core embeds Lua 5.4.8 and TinyCC 0.9.27-frida. The router uses
+vendored cJSON and a checksum-pinned libevent source archive.
 
 <details>
 <summary><strong>Engine, build, CLI and contributor reference</strong></summary>
@@ -239,7 +246,7 @@ pipeline. The release triggers are listed below.
 - bump the `version=` line in `zygisk/module/module.prop` and push to `main`:
   CI detects the change and publishes the stable `vX.Y.Z` release after all
   checks pass (the tag is created from that commit); or
-- push a matching `v*` tag, such as `v0.8.2`, to create the stable release; or
+- push a matching `v*` tag, such as `v0.9.0`, to create the stable release; or
 - run the workflow manually with `workflow_dispatch` to create a prerelease
   named `v<module-version>-build.<workflow-run>` from the selected branch.
 
@@ -321,7 +328,7 @@ Reusable skills for common scenarios live in [SKILLS/](SKILLS/README.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **Zygisk module package version** (currently `0.8.2`). Module packaging,
+  **Zygisk module package version** (currently `0.9.0`). Module packaging,
   loader/agent behavior and documentation changes bump it independently.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`
   publishes the stable release, a matching `v*` tag publishes the stable

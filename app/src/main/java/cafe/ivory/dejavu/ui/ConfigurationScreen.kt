@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -65,6 +66,7 @@ internal fun ConfigurationScreen(
     appearance: ManagerAppearance,
     onAppearanceChange: (ManagerAppearance) -> Unit,
     onOpenLogs: () -> Unit,
+    onOpenRouter: () -> Unit,
 ) {
     val dark = when (appearance.mode) {
         ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -110,6 +112,14 @@ internal fun ConfigurationScreen(
                         stringResource(R.string.tools_logs_detail),
                         Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                         onOpenLogs,
+                    )
+                    HorizontalDivider()
+                    ManagerLinkRow(
+                        Icons.Rounded.Settings,
+                        stringResource(R.string.router_title),
+                        stringResource(R.string.router_summary),
+                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        onOpenRouter,
                     )
                 }
             }

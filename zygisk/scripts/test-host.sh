@@ -65,13 +65,18 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 else
     PLUGIN_TEST_LINK_FLAGS=(-Wl,--gc-sections -ldl)
 fi
+"${CC}" -std=c11 -O2 -I"${PROJECT_DIR}/router/third_party/cJSON" \
+    -c "${PROJECT_DIR}/router/third_party/cJSON/cJSON.c" -o "${OUT_DIR}/rpc-json.o"
 "${CXX}" -std=c++17 -Wall -Wextra -Werror -pthread \
     -ffunction-sections -fdata-sections -fvisibility=hidden \
     -I"${ROOT_DIR}/tests/plugin-stubs" -I"${ROOT_DIR}/tests/native-stubs" \
     -I"${ROOT_DIR}/include" -I"${PROJECT_DIR}/include" -I"${ROOT_DIR}/src" \
+    -I"${PROJECT_DIR}/router/third_party/cJSON" \
     "${ROOT_DIR}/tests/plugin_hook_lifecycle_test.cpp" \
+    "${ROOT_DIR}/src/rpc_service.cpp" "${OUT_DIR}/rpc-json.o" \
     "${PLUGIN_TEST_LINK_FLAGS[@]}" -o "${OUT_DIR}/plugin_hook_lifecycle_test"
 "${OUT_DIR}/plugin_hook_lifecycle_test"
+bash "${ROOT_DIR}/tests/test-rpc-service.sh"
 
 "${CC}" -std=c11 -O2 \
     -I"${ROOT_DIR}/third_party/kcp" \

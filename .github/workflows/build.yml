@@ -33,6 +33,13 @@ jobs:
 
       - name: Test host stream receiver
         run: make stream-test
+
+      - name: Build and test independent router
+        run: |
+          router/scripts/build.sh host
+          ROUTER_BIN="$PWD/out/router-host/dejavuerouter" python3 router/tests/integration.py
+          python3 router/scripts/test-install.py
+          python3 router/scripts/test-lifecycle.py
       
       - name: Upload smoke test logs
         if: always()
@@ -293,6 +300,7 @@ jobs:
           ./examples/capture/build.sh
           ./examples/algorithm/build.sh
           ./examples/unpack/build.sh
+          ./examples/rpc_echo/build.sh
 
       - name: Package example plugins
         id: plugins-package

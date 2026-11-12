@@ -39,15 +39,16 @@ plugin.
 - `host->alloc(size)` and `host->free(pointer)` are agent-owned allocation
   helpers for plugin results.
 - `host->get_interface(host->host_context, name, version)` looks up `mem`,
-  `module`, `hook`, `fs` or `stream`. It returns `NULL` for unavailable
+  `module`, `hook`, `fs`, `stream` or `rpc`. It returns `NULL` for unavailable
   interfaces, unsupported versions and undeclared capabilities.
 
 The descriptor may append optional `capabilities` bits
-(`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA/STREAM`); `plugin.list()` prints them as
+(`DEJAVU_PLUGIN_CAP_MEM/MODULE/HOOK/FS/JAVA/STREAM/RPC`); `plugin.list()` prints them as
 `caps=0x...`. A descriptor without the field defaults to zero capabilities.
-Interface lookup and the corresponding `dejavu_jit_*` helpers require the
-matching `MEM`, `MODULE`, `HOOK`, `FS` or `STREAM` bit. Declare every service
-the plugin uses. JavaVM and ClassLoader access are direct host-table members.
+Interface lookup requires the capability matching the requested service. The
+existing `dejavu_jit_*` helpers require their corresponding `MEM`, `MODULE`,
+`HOOK`, `FS` or `STREAM` bit; the business RPC v1 interface is native-plugin-only.
+Declare every service the plugin uses. JavaVM and ClassLoader access are direct host-table members.
 
 `on_control_ready` runs once the Lua control session exists. Use it for work
 that needs the session or ClassLoader.
@@ -55,6 +56,15 @@ that needs the session or ClassLoader.
 The ABI lives in [`include/dejavu_plugin.h`](../../include/dejavu_plugin.h) and
 is versioned with `DEJAVU_PLUGIN_ABI_VERSION`. Plugins are built with
 `-fvisibility=hidden`; only `dejavu_plugin_entry` is exported.
+
+## Business RPC
+
+Plugins can declare methods and routes through `host->get_interface(..., "rpc", 1)`
+with `DEJAVU_PLUGIN_CAP_RPC` (`0x40`). The framework owns the default Unix socket,
+reconnection, method dispatch, cancellation and callback retirement. Business
+plugins supply synchronous callbacks and host-allocated result/error JSON.
+See the [v1 business RPC contract](plugin-rpc.md) and the
+[buildable RPC Echo example](../../examples/rpc_echo/README.md).
 
 ## Host services
 

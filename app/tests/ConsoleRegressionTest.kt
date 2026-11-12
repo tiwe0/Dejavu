@@ -49,6 +49,32 @@ fun main(args: Array<String>) {
         PluginPackageManifest("example", "Example", "1", entry = "entry.lua", files = listOf("entry.lua")),
         mapOf("entry.lua" to "return {}"),
     )
+    val scanning = initial.copy(loading = false, pluginDirectoryLoading = true, nativePluginActionPath = null)
+        .withDirectoryPackages(listOf(imported))
+    check(scanning.directoryPlugins.single().plugin == imported)
+    check(scanning.directoryPlugins.single().runState == DirectoryPluginState.UNKNOWN)
+    check(!scanning.pluginOperationInProgress) // background reads allow cards, tabs and back navigation
+    check(!scanning.copy(loading = true).pluginOperationInProgress)
+    check(scanning.copy(pluginImporting = true).pluginOperationInProgress)
+    check(scanning.copy(pluginActionId = "example").pluginOperationInProgress)
+    check(scanning.copy(nativePluginActionPath = "/plugin.so").pluginOperationInProgress)
+    check(scanning.copy(scopeSavingId = "example").pluginOperationInProgress)
+    val snapshot = mapOf("example" to PackageRuntimeSnapshot(DirectoryPluginState.RUNNING, "0123456789abcdef"))
+    val runtimeFirst = initial.copy(directoryRuntimeSnapshot = snapshot)
+        .withDirectoryPackages(listOf(imported))
+    check(runtimeFirst.directoryPlugins.single().runState == DirectoryPluginState.RUNNING)
+    check(runtimeFirst.directoryPlugins.single().session == "0123456789abcdef")
+    val diskFirst = scanning.copy(directoryRuntimeSnapshot = snapshot)
+        .withDirectoryPackages(listOf(imported))
+    check(diskFirst.directoryPlugins == runtimeFirst.directoryPlugins)
+    val emptyRuntime = scanning.copy(directoryRuntimeSnapshot = emptyMap())
+        .withDirectoryPackages(listOf(imported))
+    check(emptyRuntime.directoryPlugins.single().runState == DirectoryPluginState.STOPPED)
+    val switchedDuringScan = diskFirst.withSelectedTarget("app.b")
+    check(switchedDuringScan.pluginDirectoryLoading) // library scans are independent of target selection
+    check(switchedDuringScan.directoryRuntimeSnapshot == null)
+    check(switchedDuringScan.directoryPlugins.single().runState == DirectoryPluginState.UNKNOWN)
+    check(switchedDuringScan.directoryPlugins.single().session == null)
     val viewer = PackageEventsUi(
         "example", "Example", "app.a", events = listOf(LivePluginEvent("test", "body", "now")),
         session = "0123456789abcdef",
@@ -69,7 +95,7 @@ fun main(args: Array<String>) {
     check(!running.directoryTargetOffline)
     check(running.pluginListenPorts["example" to "app.b"] == 39002)
     check(running.withSelectedTarget("app.a").pluginListenPorts["example" to "app.a"] == 39001)
-    check(running.pluginActionId == null && !running.pluginDirectoryLoading)
+    check(running.pluginActionId == null && running.pluginDirectoryLoading)
     check(parsePackageRuntimeSnapshot("dejavu-packages-v1").isEmpty())
     check(parsePackageRuntimeSnapshot("dejavu-packages-v1\nexample\trunning\t0123456789abcdef")["example"]?.state == DirectoryPluginState.RUNNING)
     check(runCatching { parsePackageRuntimeSnapshot("invalid") }.isFailure)

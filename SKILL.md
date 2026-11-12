@@ -91,6 +91,27 @@ hook）+ Dobby（inline hook）。本仓库同时提供统一 CLI `./dejavu`。
 ./dejavu install                 # 自动探测 ksud / magisk 并安装
 ```
 
+### 内置 Router（独立进程）
+
+Router 是框架内部组件，正式可执行文件安装到 `/data/adb/dejavu/bin/dejavuerouter`。
+Manager 的**配置 → Router**管理其独立 root daemon 的状态、启停、Hub 配置和唤醒规则。
+启动后由模块 watchdog 维持，关闭 Manager 不停止；停止会关闭自动重启和开机启动。
+Android 管理通道使用带令牌认证的具名 abstract Unix socket，先校验 root 对端身份。
+数据目录为 `/data/adb/dejavu/router`，只保存配置和唤醒规则，不保存转发正文或状态历史。
+插件的在线路由由插件注册，删除唤醒规则不会断开在线插件。唤醒仍遵循已有插件作用域，
+不会改写全局自动加载属性。旧的独立 `dejavurouter` 模块需另行迁移，不自动覆盖。
+构建、管理协议和隔离测试见 [Router 指南](router/README.md)。
+
+### 插件业务 RPC 规范
+
+原生业务插件声明 `DEJAVU_PLUGIN_CAP_RPC`，通过 `get_interface("rpc", 1)`
+注册方法表和路由。框架负责默认 Unix socket `dejavu.router.plugins`、重连、
+握手、请求信封、超时取消和卸载排空；插件只保留业务参数校验与应用 API 调用。
+回调请求只在调用期间有效，结果 JSON 必须使用 host 分配器；业务错误返回
+`ok=0` 和领域错误码，`rpc.*` 前缀由框架保留。超时不代表业务回滚，不自动重放请求。
+完整约定见 [plugin-rpc.md](zygisk/docs/plugin-rpc.md)，最小示例见
+[RPC Echo](examples/rpc_echo/README.md)。
+
 ### 2. 配置目标进程
 
 ```sh

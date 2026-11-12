@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "rpc_echo",
+  "name": "RPC Echo",
+  "version": "1.0.0",
+  "description": "Business callback example using the framework Unix socket RPC service.",
+  "kind": "native",
+  "entry": "libdejavu_rpc_echo.so",
+  "files": ["libdejavu_rpc_echo.so", "SKILL.md"]
+}
