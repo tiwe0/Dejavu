@@ -69,8 +69,7 @@ typedef struct DejavuRpcResponse {
 } DejavuRpcResponse;
 
 typedef int (*DejavuRpcHandler)(void *context, const DejavuRpcRequest *request,
-                                DejavuRpcResponse *response, char *error,
-                                size_t error_size);
+                                DejavuRpcResponse *response, char *error, size_t error_size);
 
 typedef struct DejavuRpcMethod {
     const char *name;
@@ -100,8 +99,7 @@ typedef struct DejavuRpcInterface {
     int (*update_routes)(void *host_context, uint64_t handle, const char *const *routes,
                          size_t route_count, char *error, size_t error_size);
     /* BUSY retains ownership while a callback is draining; retry is safe. */
-    int (*unregister_service)(void *host_context, uint64_t handle, char *error,
-                              size_t error_size);
+    int (*unregister_service)(void *host_context, uint64_t handle, char *error, size_t error_size);
 } DejavuRpcInterface;
 /*
  * Append-only stream interface revision: adds TCP listen/accept/read for

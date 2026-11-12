@@ -93,24 +93,31 @@ std::string value_string(const dejavu_value &value) {
 
 bool address_value(const dejavu_value &value, uintptr_t *address) {
     if (value.type == DEJAVU_VALUE_INTEGER) {
-        if (value.integer_value <= 0 ||
-            static_cast<unsigned long long>(value.integer_value) > std::numeric_limits<uintptr_t>::max())
+        if (value.integer_value <= 0 || static_cast<unsigned long long>(value.integer_value) >
+                                            std::numeric_limits<uintptr_t>::max())
             return false;
         *address = static_cast<uintptr_t>(value.integer_value);
         return true;
     }
-    if (value.type != DEJAVU_VALUE_STRING) return false;
+    if (value.type != DEJAVU_VALUE_STRING)
+        return false;
     const std::string text = value_string(value);
-    if (text.size() < 3 || text[0] != '0' || (text[1] != 'x' && text[1] != 'X')) return false;
+    if (text.size() < 3 || text[0] != '0' || (text[1] != 'x' && text[1] != 'X'))
+        return false;
     uintptr_t parsed = 0;
     for (size_t i = 2; i < text.size(); ++i) {
         const char c = text[i];
         unsigned digit;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else return false;
-        if (parsed > (std::numeric_limits<uintptr_t>::max() - digit) / 16) return false;
+        if (c >= '0' && c <= '9')
+            digit = c - '0';
+        else if (c >= 'a' && c <= 'f')
+            digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F')
+            digit = c - 'A' + 10;
+        else
+            return false;
+        if (parsed > (std::numeric_limits<uintptr_t>::max() - digit) / 16)
+            return false;
         parsed = parsed * 16 + digit;
     }
     *address = parsed;
@@ -425,7 +432,7 @@ bool NativeHookManager::install(const std::string &module_name, const std::strin
 }
 
 bool NativeHookManager::install_address(uintptr_t address, const std::string &source,
-                                       unsigned long long *id, std::string *error) {
+                                        unsigned long long *id, std::string *error) {
     std::lock_guard<std::mutex> operation(operations_mutex_);
     if (runtime_ == nullptr || engine_ == nullptr) {
         *error = "native hook manager is not initialized";
@@ -437,7 +444,8 @@ bool NativeHookManager::install_address(uintptr_t address, const std::string &so
     }
     void *target = reinterpret_cast<void *>(address);
     int protection = 0;
-    if (query_protection(target, &protection, error) != 0) return false;
+    if (query_protection(target, &protection, error) != 0)
+        return false;
     if ((protection & PROT_EXEC) == 0) {
         *error = "target address is not executable";
         return false;
@@ -459,12 +467,13 @@ bool NativeHookManager::install_address(uintptr_t address, const std::string &so
     }
     owned->caller_owned_target = owned->module_handle == nullptr;
     if (owned->caller_owned_target)
-        LOGD("native address target=%p module reference unavailable; lifetime=caller-owned", target);
+        LOGD("native address target=%p module reference unavailable; lifetime=caller-owned",
+             target);
     return install_resolved(std::move(owned), source, id, error);
 }
 
 bool NativeHookManager::install_resolved(std::unique_ptr<Record> owned, const std::string &source,
-                                        unsigned long long *id, std::string *error) {
+                                         unsigned long long *id, std::string *error) {
     Record *record = owned.get();
     if (DobbyIsHooked(record->target) != 0) {
         *error = "target already has a native hook";
@@ -530,7 +539,7 @@ bool NativeHookManager::install_resolved(std::unique_ptr<Record> owned, const st
         *error = "native hook " + std::to_string(hook_id) + ": ";
         if (hook_status != 0) {
             *error += mutation_rejected ? "reentrant native hook mutation rejected with status "
-                                       : "DobbyHook failed with status ";
+                                        : "DobbyHook failed with status ";
             *error += std::to_string(hook_status);
             if (hook_failure_stage != nullptr)
                 *error += std::string(" (stage=") + hook_failure_stage + ")";
@@ -543,8 +552,9 @@ bool NativeHookManager::install_resolved(std::unique_ptr<Record> owned, const st
                 "; hook remains installed; retry native.uninstall(" + std::to_string(hook_id) + ")";
         return false;
     }
-    LOGD("native hook %llu installed: %s!%s target=%p original=%p", hook_id, record->module_name.c_str(),
-         record->symbol_name.c_str(), record->target, record->original.load(std::memory_order_acquire));
+    LOGD("native hook %llu installed: %s!%s target=%p original=%p", hook_id,
+         record->module_name.c_str(), record->symbol_name.c_str(), record->target,
+         record->original.load(std::memory_order_acquire));
     return true;
 }
 
@@ -971,15 +981,19 @@ int NativeHookManager::lua_install(dejavu_control_session *, void *context,
 }
 
 int NativeHookManager::lua_install_address_impl(bool from_file, void *context,
-                                                const dejavu_value *arguments, size_t argument_count,
-                                                dejavu_value *result, char *error, size_t error_size) {
+                                                const dejavu_value *arguments,
+                                                size_t argument_count, dejavu_value *result,
+                                                char *error, size_t error_size) {
     auto *manager = static_cast<NativeHookManager *>(context);
     uintptr_t address = 0;
-    if (manager == nullptr || argument_count != 2 ||
-        !address_value(arguments[0], &address) || arguments[1].type != DEJAVU_VALUE_STRING) {
-        copy_error(error, error_size, from_file
-            ? "native.install_address_file expects a positive integer/0xHEX address and device C source path"
-            : "native.install_address expects a positive integer/0xHEX address and C source");
+    if (manager == nullptr || argument_count != 2 || !address_value(arguments[0], &address) ||
+        arguments[1].type != DEJAVU_VALUE_STRING) {
+        copy_error(
+            error, error_size,
+            from_file
+                ? "native.install_address_file expects a positive integer/0xHEX address and device "
+                  "C source path"
+                : "native.install_address expects a positive integer/0xHEX address and C source");
         return DEJAVU_ERROR_INVALID_ARGUMENT;
     }
     std::string source = value_string(arguments[1]);
@@ -1001,13 +1015,16 @@ int NativeHookManager::lua_install_address_impl(bool from_file, void *context,
 int NativeHookManager::lua_install_address(dejavu_control_session *, void *context,
                                            const dejavu_value *arguments, size_t argument_count,
                                            dejavu_value *result, char *error, size_t error_size) {
-    return lua_install_address_impl(false, context, arguments, argument_count, result, error, error_size);
+    return lua_install_address_impl(false, context, arguments, argument_count, result, error,
+                                    error_size);
 }
 
 int NativeHookManager::lua_install_address_file(dejavu_control_session *, void *context,
-                                                const dejavu_value *arguments, size_t argument_count,
-                                                dejavu_value *result, char *error, size_t error_size) {
-    return lua_install_address_impl(true, context, arguments, argument_count, result, error, error_size);
+                                                const dejavu_value *arguments,
+                                                size_t argument_count, dejavu_value *result,
+                                                char *error, size_t error_size) {
+    return lua_install_address_impl(true, context, arguments, argument_count, result, error,
+                                    error_size);
 }
 
 int NativeHookManager::lua_uninstall(dejavu_control_session *, void *context,

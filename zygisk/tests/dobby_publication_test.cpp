@@ -156,12 +156,14 @@ int main() {
                 assert(test_code_published && size == 4);
                 static_cast<std::atomic<void *> *>(context)->store(value);
             };
-            assert(DobbyHookWithPrepare(target, reinterpret_cast<void *>(0x30000), callback, &slot) == 0);
+            assert(DobbyHookWithPrepare(target, reinterpret_cast<void *>(0x30000), callback,
+                                        &slot) == 0);
             assert(slot.load() == reinterpret_cast<void *>(0x10000));
             assert(DobbyDestroy(target) == 0);
             completed.fetch_add(1);
         });
     }
-    for (auto &installer : installers) installer.join();
+    for (auto &installer : installers)
+        installer.join();
     assert(completed.load() == 16);
 }

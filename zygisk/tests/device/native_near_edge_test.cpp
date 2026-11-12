@@ -45,8 +45,7 @@ struct PoolCall {
 };
 std::array<PoolCall, kPoolTargets> pool_calls;
 
-template <size_t Index>
-__attribute__((noinline)) int pool_replacement() {
+template <size_t Index> __attribute__((noinline)) int pool_replacement() {
     auto &call = pool_calls[Index];
     call.hits.fetch_add(1, std::memory_order_relaxed);
     auto function = call.original.load(std::memory_order_acquire);
@@ -62,7 +61,7 @@ constexpr auto kPoolReplacements = pool_replacements(std::make_index_sequence<kP
 void pool_prepare(void *function, size_t patch_size, void *opaque) {
     check(patch_size == 4, "pooled entry patch must remain one instruction");
     static_cast<PoolCall *>(opaque)->original.store(reinterpret_cast<Function>(function),
-                                                   std::memory_order_release);
+                                                    std::memory_order_release);
 }
 
 uintptr_t branch_destination(uint32_t *entry) {
@@ -110,11 +109,12 @@ int run_pool_test(bool baseline, bool full) {
     for (size_t index = 0; index < total; ++index) {
         auto *entry = reinterpret_cast<uint32_t *>(base + range + 4 + index * 8);
         entry[0] = 0x52800000U | (static_cast<uint32_t>(42 + index) << 5); // mov w0, #value
-        entry[1] = 0xd65f03c0; // ret
+        entry[1] = 0xd65f03c0;                                             // ret
         targets[index] = entry;
         const auto destination = reinterpret_cast<uintptr_t>(kPoolReplacements[index]);
         const auto source = reinterpret_cast<uintptr_t>(entry);
-        check(source % 4 == 0 && destination % 4 == 0, "pool entry and replacement must be aligned");
+        check(source % 4 == 0 && destination % 4 == 0,
+              "pool entry and replacement must be aligned");
         check(destination > source ? destination - source >= range : source - destination > range,
               "every replacement must require a near trampoline");
     }
@@ -127,13 +127,14 @@ int run_pool_test(bool baseline, bool full) {
     std::array<std::array<unsigned char, slot_size>, kPoolTargets> saved_slots{};
     auto verify_slots = [&](size_t count) {
         for (size_t previous = 0; previous < count; ++previous)
-            check(std::memcmp(reinterpret_cast<void *>(slots[previous]), saved_slots[previous].data(),
-                              slot_size) == 0, "adding a hook must preserve every previous slot");
+            check(std::memcmp(reinterpret_cast<void *>(slots[previous]),
+                              saved_slots[previous].data(), slot_size) == 0,
+                  "adding a hook must preserve every previous slot");
     };
     auto install = [&](size_t index) {
-        const int status = DobbyHookWithPrepare(targets[index],
-                                                reinterpret_cast<void *>(kPoolReplacements[index]),
-                                                pool_prepare, &pool_calls[index]);
+        const int status =
+            DobbyHookWithPrepare(targets[index], reinterpret_cast<void *>(kPoolReplacements[index]),
+                                 pool_prepare, &pool_calls[index]);
         if (baseline && index == 1) {
             check_near_failure(status, targets[index], index);
             return false;
@@ -148,8 +149,9 @@ int run_pool_test(bool baseline, bool full) {
         slots[index] = slot;
         verify_slots(index);
         std::memcpy(saved_slots[index].data(), reinterpret_cast<void *>(slot), slot_size);
-        check(pool_calls[index].original.load() && pool_calls[index].original.load()() ==
-                  42 + static_cast<int>(index), "each pooled original must remain callable");
+        check(pool_calls[index].original.load() &&
+                  pool_calls[index].original.load()() == 42 + static_cast<int>(index),
+              "each pooled original must remain callable");
         check(reinterpret_cast<Function>(targets[index])() == 1042 + 2 * static_cast<int>(index),
               "each pooled replacement must call its own original");
         check(pool_calls[index].hits.load() == 1, "each pooled replacement must record a hit");
@@ -164,8 +166,9 @@ int run_pool_test(bool baseline, bool full) {
         }
     }
     if (full) {
-        const int status = DobbyHookWithPrepare(targets[capacity],
-            reinterpret_cast<void *>(kPoolReplacements[capacity]), pool_prepare, &pool_calls[capacity]);
+        const int status = DobbyHookWithPrepare(
+            targets[capacity], reinterpret_cast<void *>(kPoolReplacements[capacity]), pool_prepare,
+            &pool_calls[capacity]);
         check_near_failure(status, targets[capacity], capacity);
         verify_slots(capacity);
         for (size_t index = 0; index < capacity; ++index) {
@@ -173,7 +176,8 @@ int run_pool_test(bool baseline, bool full) {
             check(pool_calls[index].original.load()() == 42 + static_cast<int>(index),
                   "full pool original survives uninstall");
         }
-        std::printf("PASS: unique %zu-byte page holds %zu hooks; full pool fails safely\n", page, capacity);
+        std::printf("PASS: unique %zu-byte page holds %zu hooks; full pool fails safely\n", page,
+                    capacity);
         return 0;
     }
 
@@ -199,10 +203,11 @@ int run_pool_test(bool baseline, bool full) {
     for (size_t index = 0; index < total; ++index)
         check(reinterpret_cast<Function>(targets[index])() == 42 + static_cast<int>(index),
               "all pooled target entries restored");
-    std::puts("PASS: 80 hooks share one near page; originals and published slots survive uninstall");
+    std::puts(
+        "PASS: 80 hooks share one near page; originals and published slots survive uninstall");
     return 0;
 }
-}
+} // namespace
 
 int main(int argc, char **argv) {
     const bool baseline = argc == 2 && std::strcmp(argv[1], "--expect-failure") == 0;
@@ -241,8 +246,9 @@ int main(int argc, char **argv) {
         check(munmap(reinterpret_cast<void *>(base + 2 * range), page) == 0,
               "release final reachable page");
 
-    const int status = DobbyHookWithPrepare(reinterpret_cast<void *>(instructions),
-                                           reinterpret_cast<void *>(&replacement), prepare, nullptr);
+    const int status =
+        DobbyHookWithPrepare(reinterpret_cast<void *>(instructions),
+                             reinterpret_cast<void *>(&replacement), prepare, nullptr);
     if (baseline || exhausted) {
         check(status != 0, "expected conservative install failure");
         check(original.load() == nullptr, "failed search must not publish original");

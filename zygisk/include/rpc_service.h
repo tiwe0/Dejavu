@@ -13,9 +13,8 @@
 // Owns Unix transport and scheduling; callbacks only implement plugin business logic.
 class RpcService {
   public:
-    using Invoke = std::function<int(uint64_t, DejavuRpcHandler, void *,
-                                     const DejavuRpcRequest *, DejavuRpcResponse *,
-                                     char *, size_t)>;
+    using Invoke = std::function<int(uint64_t, DejavuRpcHandler, void *, const DejavuRpcRequest *,
+                                     DejavuRpcResponse *, char *, size_t)>;
     explicit RpcService(Invoke invoke = {});
     ~RpcService();
     RpcService(const RpcService &) = delete;

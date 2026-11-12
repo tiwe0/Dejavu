@@ -83,7 +83,8 @@ int register_function(dejavu_control_session *, const char *name_space, const ch
 dejavu_value text_value(const std::string &text) {
     dejavu_value value{};
     value.type = DEJAVU_VALUE_STRING;
-    value.string_value = text.data(); value.string_size = text.size();
+    value.string_value = text.data();
+    value.string_size = text.size();
     return value;
 }
 dejavu_value address_value() {
@@ -153,15 +154,16 @@ struct NativeHookManagerTest {
         lua_functions.clear();
         std::string error;
         expect(manager.initialize(&api, reinterpret_cast<dejavu_engine *>(this), &error), error);
-        expect(manager.register_lua(reinterpret_cast<dejavu_control_session *>(this), &error), error);
+        expect(manager.register_lua(reinterpret_cast<dejavu_control_session *>(this), &error),
+               error);
     }
-    int invoke(const char *name, const std::vector<dejavu_value> &arguments,
-               dejavu_value *result, std::string *error) {
+    int invoke(const char *name, const std::vector<dejavu_value> &arguments, dejavu_value *result,
+               std::string *error) {
         const auto found = lua_functions.find(name);
         expect(found != lua_functions.end(), std::string("missing native.") + name);
         char buffer[512]{};
         const int status = found->second(nullptr, &manager, arguments.data(), arguments.size(),
-                                          result, buffer, sizeof(buffer));
+                                         result, buffer, sizeof(buffer));
         *error = buffer;
         return status;
     }
@@ -169,8 +171,10 @@ struct NativeHookManagerTest {
         if (address_mode) {
             const std::string source = "int dejavu_native_target(int value) { return value; }";
             dejavu_value result{};
-            const int status = invoke("install_address", {address_value(), text_value(source)}, &result, error);
-            if (status == DEJAVU_OK) *id = result.integer_value;
+            const int status =
+                invoke("install_address", {address_value(), text_value(source)}, &result, error);
+            if (status == DEJAVU_OK)
+                *id = result.integer_value;
             return status == DEJAVU_OK;
         }
         return manager.install(library, "dejavu_test_cold_target",
@@ -216,16 +220,19 @@ FILE *native_test_fopen(const char *path, const char *mode) {
 }
 
 int native_test_dladdr(const void *address, Dl_info *information) {
-    if (scenario.anonymous_mapping) return 0;
+    if (scenario.anonymous_mapping)
+        return 0;
     const int found = dladdr(address, information);
-    if (found != 0) ++scenario.identified_images;
+    if (found != 0)
+        ++scenario.identified_images;
     return found;
 }
 
 void *native_test_dlopen(const char *filename, int flags) {
     if ((flags & RTLD_NOLOAD) != 0) {
         ++scenario.pin_attempts;
-        if (scenario.pin_unavailable) return nullptr;
+        if (scenario.pin_unavailable)
+            return nullptr;
     }
     return dlopen(filename, flags);
 }
@@ -356,18 +363,22 @@ void caller_owned_address_targets() {
             scenario.anonymous_mapping = anonymous;
             const char *entry = from_file ? "install_address_file" : "install_address";
             const auto source_argument = text_value(from_file ? path_text : source);
-            dejavu_value result{}; std::string error;
-            auto unmapped = address_value(); unmapped.integer_value = 4;
+            dejavu_value result{};
+            std::string error;
+            auto unmapped = address_value();
+            unmapped.integer_value = 4;
             expect(test.invoke(entry, {unmapped, source_argument}, &result, &error) != DEJAVU_OK,
                    "caller-owned path still rejects unmapped addresses");
             scenario.mapping_protection = PROT_READ;
-            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) != DEJAVU_OK,
+            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) !=
+                       DEJAVU_OK,
                    "caller-owned path still rejects non-executable addresses");
             expect(scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0 &&
                        scenario.identified_images == 0 && scenario.pin_attempts == 0,
                    "invalid mappings must fail before compilation, protection or linker lookups");
             scenario.mapping_protection = PROT_EXEC;
-            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) == DEJAVU_OK,
+            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) ==
+                       DEJAVU_OK,
                    "valid caller-owned target must install without a module reference: " + error);
             const unsigned long long id = result.integer_value;
             expect(scenario.identified_images == (anonymous ? 0U : 1U) &&
@@ -382,7 +393,8 @@ void caller_owned_address_targets() {
                 Dl_info identified{};
                 expect(dladdr(cold_target, &identified) != 0 && identified.dli_fname != nullptr,
                        "namespace fixture must still have a real linker image");
-                expect(test.list().find(std::string(identified.dli_fname) + "#") != std::string::npos,
+                expect(test.list().find(std::string(identified.dli_fname) + "#") !=
+                           std::string::npos,
                        "namespace-invisible image must preserve its identified module name");
             }
             check_original(scenario.context);
@@ -390,7 +402,8 @@ void caller_owned_address_targets() {
             dejavu_value hook_id{};
             hook_id.type = DEJAVU_VALUE_INTEGER;
             hook_id.integer_value = static_cast<long long>(id);
-            expect(test.invoke("stats", {hook_id}, &result, &error) == DEJAVU_OK && result.integer_value == 2,
+            expect(test.invoke("stats", {hook_id}, &result, &error) == DEJAVU_OK &&
+                       result.integer_value == 2,
                    "caller-owned replacement must retain callable original and hit accounting");
             expect(test.uninstall(id, &error), error);
             expect(!scenario.installed && !scenario.writable && scenario.destroy_calls == 1,
@@ -417,7 +430,8 @@ void isolated_address_module_lifetime(void *handle) {
         NativeHookManagerTest test;
         scenario.compile_failure = true;
         address_mode = true;
-        unsigned long long id = 0; std::string error;
+        unsigned long long id = 0;
+        std::string error;
         expect(!test.install(&id, &error), "injected address compile failure");
     }
     dlclose(handle);
@@ -429,7 +443,8 @@ void isolated_address_module_lifetime(void *handle) {
     unsigned long long context = 0;
     {
         NativeHookManagerTest test;
-        unsigned long long id = 0; std::string error;
+        unsigned long long id = 0;
+        std::string error;
         expect(test.install(&id, &error), error);
         context = scenario.context;
         dlclose(handle); // The framework is now the only owner of the loaded image.
@@ -442,7 +457,8 @@ void isolated_address_module_lifetime(void *handle) {
         test.manager.shutdown();
     }
     check_original(context);
-    std::cout << "OK: isolated unloadable image: failed install releases pin; original survives external dlclose, uninstall and manager teardown\n";
+    std::cout << "OK: isolated unloadable image: failed install releases pin; original survives "
+                 "external dlclose, uninstall and manager teardown\n";
 }
 
 void address_registration_and_validation() {
@@ -451,34 +467,58 @@ void address_registration_and_validation() {
            "both address API variants must be registered");
     const std::string source = "int dejavu_native_target(int value) { return value; }";
     std::vector<dejavu_value> invalid(7);
-    invalid[1].type = DEJAVU_VALUE_INTEGER; invalid[1].integer_value = 0;
-    invalid[2].type = DEJAVU_VALUE_INTEGER; invalid[2].integer_value = -1;
-    invalid[3].type = DEJAVU_VALUE_NUMBER; invalid[3].number_value = 4.0;
+    invalid[1].type = DEJAVU_VALUE_INTEGER;
+    invalid[1].integer_value = 0;
+    invalid[2].type = DEJAVU_VALUE_INTEGER;
+    invalid[2].integer_value = -1;
+    invalid[3].type = DEJAVU_VALUE_NUMBER;
+    invalid[3].number_value = 4.0;
     invalid[4].type = DEJAVU_VALUE_NUMBER;
     invalid[4].number_value = std::numeric_limits<double>::infinity();
-    invalid[5].type = DEJAVU_VALUE_BOOLEAN; invalid[5].boolean_value = 1;
-    invalid[6].type = DEJAVU_VALUE_HANDLE; invalid[6].handle_value = cold_target;
-    dejavu_value result{}; std::string error;
+    invalid[5].type = DEJAVU_VALUE_BOOLEAN;
+    invalid[5].boolean_value = 1;
+    invalid[6].type = DEJAVU_VALUE_HANDLE;
+    invalid[6].handle_value = cold_target;
+    dejavu_value result{};
+    std::string error;
     for (const auto &address : invalid) {
-        expect(test.invoke("install_address", {address, text_value(source)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+        expect(test.invoke("install_address", {address, text_value(source)}, &result, &error) ==
+                   DEJAVU_ERROR_INVALID_ARGUMENT,
                "invalid address types must be rejected before touching code");
     }
-    const std::vector<std::string> bad_text = {"", "0x", "0x0", "-0x4", "+0x4", " 0x4", "0x4 ",
-        "1234", "0xg", "0x1;return true", "0x10000000000000000", std::string("0x4\0bad", 7)};
+    const std::vector<std::string> bad_text = {"",
+                                               "0x",
+                                               "0x0",
+                                               "-0x4",
+                                               "+0x4",
+                                               " 0x4",
+                                               "0x4 ",
+                                               "1234",
+                                               "0xg",
+                                               "0x1;return true",
+                                               "0x10000000000000000",
+                                               std::string("0x4\0bad", 7)};
     for (const auto &text : bad_text) {
-        expect(test.invoke("install_address", {text_value(text), text_value(source)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+        expect(test.invoke("install_address", {text_value(text), text_value(source)}, &result,
+                           &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
                "malformed/overflow address strings must be rejected");
     }
-    expect(test.invoke("install_address", {address_value()}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+    expect(test.invoke("install_address", {address_value()}, &result, &error) ==
+               DEJAVU_ERROR_INVALID_ARGUMENT,
            "address installation requires source");
-    auto unaligned = address_value(); ++unaligned.integer_value;
-    expect(test.invoke("install_address", {unaligned, text_value(source)}, &result, &error) != DEJAVU_OK,
+    auto unaligned = address_value();
+    ++unaligned.integer_value;
+    expect(test.invoke("install_address", {unaligned, text_value(source)}, &result, &error) !=
+               DEJAVU_OK,
            "arm64 target address must be four-byte aligned");
-    auto unmapped = address_value(); unmapped.integer_value = 4;
-    expect(test.invoke("install_address", {unmapped, text_value(source)}, &result, &error) != DEJAVU_OK,
+    auto unmapped = address_value();
+    unmapped.integer_value = 4;
+    expect(test.invoke("install_address", {unmapped, text_value(source)}, &result, &error) !=
+               DEJAVU_OK,
            "unmapped address must fail before backend admission");
     scenario.mapping_protection = PROT_READ;
-    expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) != DEJAVU_OK,
+    expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) !=
+               DEJAVU_OK,
            "non-executable addresses must fail before backend admission");
     expect(scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0,
            "invalid addresses must not compile or change memory permissions");
@@ -486,27 +526,36 @@ void address_registration_and_validation() {
 void address_hex_file_and_shared_duplicate_guard() {
     NativeHookManagerTest test;
     char address[40];
-    std::snprintf(address, sizeof(address), "0x%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(cold_target)));
+    std::snprintf(address, sizeof(address), "0x%llx",
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(cold_target)));
     char path[] = "/tmp/dejavu-address-source.XXXXXX";
     const int descriptor = mkstemp(path);
     expect(descriptor >= 0, "create address source fixture");
     const std::string source = "int dejavu_native_target(int value) { return value; }";
-    expect(write(descriptor, source.data(), source.size()) == static_cast<ssize_t>(source.size()), "write replacement source");
+    expect(write(descriptor, source.data(), source.size()) == static_cast<ssize_t>(source.size()),
+           "write replacement source");
     close(descriptor);
     const std::string path_text = path, address_text = address;
-    dejavu_value result{}; std::string error;
-    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)}, &result, &error) == DEJAVU_OK,
+    dejavu_value result{};
+    std::string error;
+    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)},
+                       &result, &error) == DEJAVU_OK,
            "hex string target and device source must install");
     unlink(path);
     const unsigned long long id = result.integer_value;
-    expect(id > 0 && scenario.source.find(source) != std::string::npos, "file variant must compile the supplied replacement");
+    expect(id > 0 && scenario.source.find(source) != std::string::npos,
+           "file variant must compile the supplied replacement");
     const std::string symbol = "dejavu_test_cold_target";
-    expect(test.invoke("install", {text_value(library), text_value(symbol), text_value(source)}, &result, &error) != DEJAVU_OK,
+    expect(test.invoke("install", {text_value(library), text_value(symbol), text_value(source)},
+                       &result, &error) != DEJAVU_OK,
            "symbol entry must reject a target already installed by address");
-    expect(scenario.compiled == 1 && scenario.applies == 1, "duplicate guard is shared by symbol and address paths");
-    expect(test.list().find(address_text) != std::string::npos, "address installs must identify their target in native.list");
+    expect(scenario.compiled == 1 && scenario.applies == 1,
+           "duplicate guard is shared by symbol and address paths");
+    expect(test.list().find(address_text) != std::string::npos,
+           "address installs must identify their target in native.list");
     expect(test.uninstall(id, &error), error);
-    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)}, &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
+    expect(test.invoke("install_address_file", {text_value(address_text), text_value(path_text)},
+                       &result, &error) == DEJAVU_ERROR_INVALID_ARGUMENT,
            "missing source file must not install a hook");
 }
 void compile_failure_never_changes_permissions() {
@@ -617,8 +666,8 @@ void activation_error_retains_exposed_code() {
     }
 }
 void backend_failure_stage_survives_cleanup() {
-    for (const char *stage : {"near-allocation", "forward-patch", "original-relocation",
-                              "entry-activation"}) {
+    for (const char *stage :
+         {"near-allocation", "forward-patch", "original-relocation", "entry-activation"}) {
         NativeHookManagerTest test;
         scenario.prepare_failure = std::strcmp(stage, "entry-activation") != 0;
         scenario.activated_failure = !scenario.prepare_failure;
@@ -643,9 +692,11 @@ void rejected_mutation_does_not_borrow_outer_diagnosis() {
     unsigned long long id = 0;
     std::string error;
     expect(!test.install(&id, &error), "nested mutation rejection must fail installation");
-    expect(error.find("reentrant") != std::string::npos && error.find("status -3") != std::string::npos,
+    expect(error.find("reentrant") != std::string::npos &&
+               error.find("status -3") != std::string::npos,
            "control error must explain the distinct mutation rejection: " + error);
-    expect(scenario.stage_queries == 0 && error.find("outer-operation-stage") == std::string::npos &&
+    expect(scenario.stage_queries == 0 &&
+               error.find("outer-operation-stage") == std::string::npos &&
                error.find("cleanup-overwrote-stage") == std::string::npos,
            "a rejected request must not attribute the enclosing operation's diagnosis to itself");
     expect(!scenario.installed && !scenario.writable && scenario.destroyed == 1 &&
@@ -763,19 +814,23 @@ int main(int argc, char **argv) {
          original_is_ready_before_install_returns},
         {"unpublished prepare failure reclaims code", prepare_failure_cleans_up_unpublished_module},
         {"activation failure retains exposed code", activation_error_retains_exposed_code},
-        {"backend failure stage survives permission cleanup", backend_failure_stage_survives_cleanup},
-        {"rejected mutation preserves the outer diagnosis", rejected_mutation_does_not_borrow_outer_diagnosis},
+        {"backend failure stage survives permission cleanup",
+         backend_failure_stage_survives_cleanup},
+        {"rejected mutation preserves the outer diagnosis",
+         rejected_mutation_does_not_borrow_outer_diagnosis},
         {"restoration failure is retryable", restoration_error_is_visible_and_retryable},
         {"uninstall failure is retryable", failed_uninstall_can_be_retried},
         {"in-flight replacement survives uninstall", in_flight_replacement_survives_uninstall},
         {"shutdown preserves published context", shutdown_preserves_published_context},
     };
     address_registration_and_validation();
-    std::cout << "OK: address registration, strict parsing, alignment and executable mapping validation\n";
+    std::cout << "OK: address registration, strict parsing, alignment and executable mapping "
+                 "validation\n";
     address_hex_file_and_shared_duplicate_guard();
     std::cout << "OK: hexadecimal address, device source and shared duplicate guard\n";
     caller_owned_address_targets();
-    std::cout << "OK: namespace-invisible and anonymous targets install inline/from-file with explicit caller-owned lifetime\n";
+    std::cout << "OK: namespace-invisible and anonymous targets install inline/from-file with "
+                 "explicit caller-owned lifetime\n";
     for (bool use_address : {false, true}) {
         address_mode = use_address;
         for (const auto &test : tests) {

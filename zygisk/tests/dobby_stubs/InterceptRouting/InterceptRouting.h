@@ -20,9 +20,11 @@ struct InterceptRouting {
     virtual ~InterceptRouting() = default;
     bool PublishPreparedCode() {
 #ifdef DOBBY_TEST_PUBLISH_OBSERVER
-        if (!DOBBY_TEST_PUBLISH_OBSERVER()) return false;
+        if (!DOBBY_TEST_PUBLISH_OBSERVER())
+            return false;
 #endif
-        if (test_publish_fails) return false;
+        if (test_publish_fails)
+            return false;
         test_code_published = true;
         return true;
     }
@@ -31,14 +33,16 @@ struct InterceptRouting {
     }
     bool GenerateTrampoline() {
 #ifdef DOBBY_TEST_BUILD_OBSERVER
-        if (!DOBBY_TEST_BUILD_OBSERVER()) return false;
+        if (!DOBBY_TEST_BUILD_OBSERVER())
+            return false;
 #endif
         if (test_prepare_fails && test_routing_failure_stage)
             dejavu_dobby::SetHookFailureStage(test_routing_failure_stage);
         return !test_prepare_fails;
     }
     void GenerateRelocatedCode() {
-        if (test_routing_failure_stage && std::strcmp(test_routing_failure_stage, "original-relocation") == 0) {
+        if (test_routing_failure_stage &&
+            std::strcmp(test_routing_failure_stage, "original-relocation") == 0) {
             dejavu_dobby::SetHookFailureStage(test_routing_failure_stage);
             error = 1;
             return;

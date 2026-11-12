@@ -217,8 +217,8 @@ const DejavuStreamInterfaceV2 g_stream_interface_v2 = {
 };
 
 const DejavuRpcInterface g_rpc_interface = {
-    DEJAVU_RPC_INTERFACE_VERSION, sizeof(DejavuRpcInterface),
-    &PluginManager::host_rpc_register, &PluginManager::host_rpc_update_routes,
+    DEJAVU_RPC_INTERFACE_VERSION,        sizeof(DejavuRpcInterface),
+    &PluginManager::host_rpc_register,   &PluginManager::host_rpc_update_routes,
     &PluginManager::host_rpc_unregister,
 };
 
@@ -666,31 +666,31 @@ extern "C" void dejavu_jit_return_string(JitValueLayout *result, const char *tex
 
 PluginManager::PluginManager()
     : streams_(std::make_unique<StreamService>()),
-      rpc_(std::make_unique<RpcService>(
-          [this](uint64_t owner, DejavuRpcHandler callback, void *context,
-                 const DejavuRpcRequest *request, DejavuRpcResponse *response,
-                 char *error, size_t error_size) {
-              size_t index = kPluginIndexNone;
-              std::shared_ptr<PluginHostContext> identity;
-              {
-                  std::lock_guard<std::recursive_mutex> lock(mutex_);
-                  for (size_t i = 0; i < plugins_.size(); ++i) {
-                      const auto &plugin = plugins_[i];
-                      if (plugin->stream_owner_token == owner && plugin->loaded &&
-                          plugin->initialized && !plugin->retiring && !plugin->cleanup_pending) {
-                          index = i;
-                          identity = plugin->context;
-                          break;
-                      }
+      rpc_(std::make_unique<RpcService>([this](uint64_t owner, DejavuRpcHandler callback,
+                                               void *context, const DejavuRpcRequest *request,
+                                               DejavuRpcResponse *response, char *error,
+                                               size_t error_size) {
+          size_t index = kPluginIndexNone;
+          std::shared_ptr<PluginHostContext> identity;
+          {
+              std::lock_guard<std::recursive_mutex> lock(mutex_);
+              for (size_t i = 0; i < plugins_.size(); ++i) {
+                  const auto &plugin = plugins_[i];
+                  if (plugin->stream_owner_token == owner && plugin->loaded &&
+                      plugin->initialized && !plugin->retiring && !plugin->cleanup_pending) {
+                      index = i;
+                      identity = plugin->context;
+                      break;
                   }
               }
-              if (!identity || index == kPluginIndexNone) {
-                  std::snprintf(error, error_size, "RPC plugin is unavailable or retiring");
-                  return DEJAVU_RPC_ERROR;
-              }
-              PluginContextGuard scope(index, std::move(identity));
-              return callback(context, request, response, error, error_size);
-          })) {
+          }
+          if (!identity || index == kPluginIndexNone) {
+              std::snprintf(error, error_size, "RPC plugin is unavailable or retiring");
+              return DEJAVU_RPC_ERROR;
+          }
+          PluginContextGuard scope(index, std::move(identity));
+          return callback(context, request, response, error, error_size);
+      })) {
     std::lock_guard<std::mutex> lock(g_context_mutex);
     g_internal_managers.insert(this);
 }
@@ -2390,8 +2390,8 @@ void PluginManager::host_free(void *pointer) {
 }
 
 int PluginManager::host_rpc_register(void *host_context,
-                                      const DejavuRpcServiceDescriptor *descriptor,
-                                      uint64_t *handle, char *error, size_t error_size) try {
+                                     const DejavuRpcServiceDescriptor *descriptor, uint64_t *handle,
+                                     char *error, size_t error_size) try {
     const auto context = find_host_context(host_context);
     if (!context || !context->alive.load() || context->retiring.load() ||
         (context->capabilities & DEJAVU_PLUGIN_CAP_RPC) == 0 || context->owner == 0 ||
@@ -2400,8 +2400,8 @@ int PluginManager::host_rpc_register(void *host_context,
         return DEJAVU_RPC_ERROR;
     }
     std::string detail;
-    const int result = context->manager->rpc_->register_service(context->owner, descriptor,
-                                                               handle, &detail);
+    const int result =
+        context->manager->rpc_->register_service(context->owner, descriptor, handle, &detail);
     if (result != DEJAVU_RPC_OK)
         std::snprintf(error, error_size, "%s", detail.c_str());
     return result;
@@ -2411,8 +2411,8 @@ int PluginManager::host_rpc_register(void *host_context,
 }
 
 int PluginManager::host_rpc_update_routes(void *host_context, uint64_t handle,
-                                           const char *const *routes, size_t route_count,
-                                           char *error, size_t error_size) try {
+                                          const char *const *routes, size_t route_count,
+                                          char *error, size_t error_size) try {
     const auto context = find_host_context(host_context);
     if (!context || !context->alive.load() || context->retiring.load() ||
         (context->capabilities & DEJAVU_PLUGIN_CAP_RPC) == 0 || context->owner == 0 ||
@@ -2421,8 +2421,8 @@ int PluginManager::host_rpc_update_routes(void *host_context, uint64_t handle,
         return DEJAVU_RPC_ERROR;
     }
     std::string detail;
-    const int result = context->manager->rpc_->update_routes(context->owner, handle, routes,
-                                                            route_count, &detail);
+    const int result =
+        context->manager->rpc_->update_routes(context->owner, handle, routes, route_count, &detail);
     if (result != DEJAVU_RPC_OK)
         std::snprintf(error, error_size, "%s", detail.c_str());
     return result;
@@ -2431,8 +2431,8 @@ int PluginManager::host_rpc_update_routes(void *host_context, uint64_t handle,
     return DEJAVU_RPC_ERROR;
 }
 
-int PluginManager::host_rpc_unregister(void *host_context, uint64_t handle,
-                                        char *error, size_t error_size) try {
+int PluginManager::host_rpc_unregister(void *host_context, uint64_t handle, char *error,
+                                       size_t error_size) try {
     const auto context = find_host_context(host_context);
     // Cleanup remains permitted after admission is retired. Never hold the
     // manager mutex while the service waits for a plugin callback to finish.

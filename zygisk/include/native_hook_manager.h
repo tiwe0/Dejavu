@@ -107,8 +107,8 @@ class NativeHookManager {
 
     bool install(const std::string &module_name, const std::string &symbol_name,
                  const std::string &source, unsigned long long *id, std::string *error);
-    bool install_address(uintptr_t address, const std::string &source,
-                         unsigned long long *id, std::string *error);
+    bool install_address(uintptr_t address, const std::string &source, unsigned long long *id,
+                         std::string *error);
     // Caller holds operations_mutex_ and transfers the resolved library reference.
     bool install_resolved(std::unique_ptr<Record> owned, const std::string &source,
                           unsigned long long *id, std::string *error);
@@ -136,10 +136,10 @@ class NativeHookManager {
                                 dejavu_value *, char *, size_t);
     static int lua_install_address(dejavu_control_session *, void *, const dejavu_value *, size_t,
                                    dejavu_value *, char *, size_t);
-    static int lua_install_address_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
-                                        dejavu_value *, char *, size_t);
+    static int lua_install_address_file(dejavu_control_session *, void *, const dejavu_value *,
+                                        size_t, dejavu_value *, char *, size_t);
     static int lua_install_address_impl(bool from_file, void *, const dejavu_value *, size_t,
-                                       dejavu_value *, char *, size_t);
+                                        dejavu_value *, char *, size_t);
     static int lua_call_file(dejavu_control_session *, void *, const dejavu_value *, size_t,
                              dejavu_value *, char *, size_t);
 

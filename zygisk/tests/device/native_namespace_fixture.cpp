@@ -11,15 +11,16 @@ __attribute__((noinline, aligned(16384))) jlong namespace_target(jlong value) {
     asm volatile("nop");
     return value + 7;
 }
-}
+} // namespace
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_io_dejavu_bridge_NativeNamespaceFixture_address(JNIEnv *, jclass) {
+extern "C" JNIEXPORT jlong JNICALL Java_io_dejavu_bridge_NativeNamespaceFixture_address(JNIEnv *,
+                                                                                        jclass) {
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(namespace_target));
 }
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_io_dejavu_bridge_NativeNamespaceFixture_call(JNIEnv *, jclass, jlong value) {
+extern "C" JNIEXPORT jlong JNICALL Java_io_dejavu_bridge_NativeNamespaceFixture_call(JNIEnv *,
+                                                                                     jclass,
+                                                                                     jlong value) {
     return namespace_target(value);
 }
 
@@ -33,18 +34,19 @@ Java_io_dejavu_bridge_NativeNamespaceFixture_protect(JNIEnv *, jclass, jint prot
                     protection);
 }
 
-extern "C" JNIEXPORT jint JNICALL
-Java_io_dejavu_bridge_NativeNamespaceFixture_permissions(JNIEnv *, jclass) {
+extern "C" JNIEXPORT jint JNICALL Java_io_dejavu_bridge_NativeNamespaceFixture_permissions(JNIEnv *,
+                                                                                           jclass) {
     FILE *maps = std::fopen("/proc/self/maps", "re");
-    if (maps == nullptr) return -1;
+    if (maps == nullptr)
+        return -1;
     const auto address = reinterpret_cast<uintptr_t>(namespace_target);
     char line[512];
     jint protection = -1;
     while (std::fgets(line, sizeof(line), maps) != nullptr) {
         unsigned long start = 0, end = 0;
         char permissions[8]{};
-        if (std::sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3 ||
-            address < start || address >= end)
+        if (std::sscanf(line, "%lx-%lx %7s", &start, &end, permissions) != 3 || address < start ||
+            address >= end)
             continue;
         protection = (permissions[0] == 'r' ? PROT_READ : 0) |
                      (permissions[1] == 'w' ? PROT_WRITE : 0) |

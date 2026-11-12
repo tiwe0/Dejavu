@@ -89,7 +89,8 @@ static void TestAllocator() {
     regions = {{lower + size, upper}};
     mapping_mode = 1;
     assert(AllocateSafeNearPage(source) == nullptr && maps == 1);
-    assert(diagnostics[diagnostics.size() - 2].find("errno=" + std::to_string(ENOMEM)) != std::string::npos);
+    assert(diagnostics[diagnostics.size() - 2].find("errno=" + std::to_string(ENOMEM)) !=
+           std::string::npos);
     maps = 0;
     mapping_mode = 2;
     assert(AllocateSafeNearPage(source) == nullptr && maps == 1 && unmaps == 1);
