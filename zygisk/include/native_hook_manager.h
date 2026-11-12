@@ -46,9 +46,11 @@ struct NativeCallArgument {
  * Targets may be resolved from a loaded module's dynamic/ELF symbol table or
  * supplied as an absolute runtime address. They must live in executable mappings.
  * Use `native.uninstall(id)` to restore the original code and page protections.
- * The caller must keep the same target mapping stable throughout installation.
- * Anonymous mappings must remain valid through all in-flight callbacks and any
- * later use of a saved original; uninstall does not wait for these users.
+ * Absolute-address callers must keep the same target mapping valid during
+ * installation, while active, and through all in-flight callbacks or later uses
+ * of a saved original. Image references are retained when namespace visibility
+ * permits; otherwise the target is explicitly caller-owned. Uninstall does not
+ * wait for these users.
  */
 class NativeHookManager {
   public:
@@ -91,6 +93,7 @@ class NativeHookManager {
         std::string module_name;
         std::string symbol_name;
         void *module_handle = nullptr;
+        bool caller_owned_target = false;
         void *target = nullptr;
         dejavu_module *module = nullptr;
         std::atomic<void *> original{nullptr};

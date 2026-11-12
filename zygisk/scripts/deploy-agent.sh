@@ -13,6 +13,7 @@ AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_A
 CORE_LIB=${CORE_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
 HOOKX_LUA=${HOOKX_LUA:-"${ROOT_DIR}/config/hookx.lua"}
+source "${ROOT_DIR}/scripts/strip-runtime.sh"
 
 case "${PROCESS}" in
     ''|*[!A-Za-z0-9_.:-]*)
@@ -50,8 +51,14 @@ if [[ ! -f "${HOOKX_LUA}" ]]; then
 fi
 
 mkdir -p "${PROJECT_DIR}/out/tooling"
-rendered_init=$(mktemp "${PROJECT_DIR}/out/tooling/dejavu-init.lua.XXXXXX")
-trap 'rm -f "${rendered_init}"' EXIT
+local_stage=$(mktemp -d "${PROJECT_DIR}/out/tooling/dejavu-deploy.XXXXXX")
+trap 'rm -rf "${local_stage}"' EXIT
+chmod 0700 "${local_stage}"
+rendered_init="${local_stage}/init.lua"
+local_script="${local_stage}/deploy.sh"
+cp "${AGENT_LIB}" "${local_stage}/libdejavu_agent.so"
+cp "${CORE_LIB}" "${local_stage}/libdejavu.so"
+strip_runtime_files "${local_stage}/libdejavu_agent.so" "${local_stage}/libdejavu.so"
 {
     cat "${HOOKX_LUA}"
     printf '\n'
@@ -70,15 +77,10 @@ remote_tmp="/data/local/tmp/libdejavu_agent.so.${remote_suffix}"
 remote_init_tmp="/data/local/tmp/dejavu-init.lua.${remote_suffix}"
 remote_core_tmp="/data/local/tmp/libdejavu.so.${remote_suffix}"
 deploy_script="/data/local/tmp/dejavu-deploy.${remote_suffix}.sh"
-"${adb_command[@]}" push "${AGENT_LIB}" "${remote_tmp}" >/dev/null
-"${adb_command[@]}" push "${CORE_LIB}" "${remote_core_tmp}" >/dev/null
+"${adb_command[@]}" push "${local_stage}/libdejavu_agent.so" "${remote_tmp}" >/dev/null
+"${adb_command[@]}" push "${local_stage}/libdejavu.so" "${remote_core_tmp}" >/dev/null
 "${adb_command[@]}" push "${rendered_init}" "${remote_init_tmp}" >/dev/null
 
-local_script=$(mktemp "${PROJECT_DIR}/out/tooling/dejavu-deploy.sh.XXXXXX")
-cleanup() {
-    rm -f "${local_script}" "${rendered_init}"
-}
-trap cleanup EXIT
 sed "s/__SUFFIX__/${remote_suffix}/g" > "${local_script}" <<'DEPLOY_SCRIPT'
 set -e
 module=/data/adb/modules/dejavu_zygisk

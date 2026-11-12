@@ -447,17 +447,17 @@ bool NativeHookManager::install_address(uintptr_t address, const std::string &so
     std::snprintf(text, sizeof(text), "0x%llx", static_cast<unsigned long long>(address));
     owned->symbol_name = text;
     owned->module_name = "<address>";
-    // Pin a loaded image when the linker can identify it. Anonymous executable
-    // mappings remain caller-owned and must outlive all entered replacements.
+    // Retain a public-linker reference when namespace visibility permits. An
+    // identified image can still be invisible to RTLD_NOLOAD (e.g. split APKs).
+    // Such images and anonymous code remain valid caller-owned address targets.
     Dl_info information{};
     if (dladdr(target, &information) != 0 && information.dli_fname != nullptr) {
         owned->module_name = information.dli_fname;
         owned->module_handle = dlopen(information.dli_fname, RTLD_NOW | RTLD_NOLOAD);
-        if (owned->module_handle == nullptr) {
-            *error = "unable to retain the loaded module for target address";
-            return false;
-        }
     }
+    owned->caller_owned_target = owned->module_handle == nullptr;
+    if (owned->caller_owned_target)
+        LOGD("native address target=%p module reference unavailable; lifetime=caller-owned", target);
     return install_resolved(std::move(owned), source, id, error);
 }
 
@@ -633,6 +633,8 @@ std::string NativeHookManager::list() const {
         output += record->symbol_name;
         output += " hits=";
         output += std::to_string(record->hits.load(std::memory_order_relaxed));
+        if (record->caller_owned_target)
+            output += " lifetime=caller-owned";
     }
     return output;
 }

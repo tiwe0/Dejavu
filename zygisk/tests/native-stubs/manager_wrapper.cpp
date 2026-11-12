@@ -21,8 +21,11 @@
 
 FILE *native_test_fopen(const char *, const char *);
 int native_test_dladdr(const void *, Dl_info *);
+void *native_test_dlopen(const char *, int);
 #define fopen native_test_fopen
 #define dladdr native_test_dladdr
+#define dlopen native_test_dlopen
 #include "native_hook_manager.cpp"
+#undef dlopen
 #undef dladdr
 #undef fopen

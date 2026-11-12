@@ -20,9 +20,9 @@ DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
     PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
 fi
-PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.1}
+PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.2}
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
-LLVM_STRIP=${LLVM_STRIP:-llvm-strip}
+source "${ROOT_DIR}/scripts/strip-runtime.sh"
 
 if [[ ! -f "${MODULE_LIB}" ]]; then
     echo "error: Zygisk module library not found: ${MODULE_LIB}" >&2
@@ -70,32 +70,6 @@ if [[ ! -f "${WEBROOT_DIR}/index.html" ]]; then
     echo "error: WebUI entrypoint not found: ${WEBROOT_DIR}/index.html" >&2
     exit 1
 fi
-
-resolve_llvm_strip() {
-    if [[ "${LLVM_STRIP}" == */* ]]; then
-        [[ -x "${LLVM_STRIP}" ]] && return 0
-    elif command -v "${LLVM_STRIP}" >/dev/null 2>&1; then
-        LLVM_STRIP=$(command -v "${LLVM_STRIP}")
-        return 0
-    fi
-
-    local root candidate
-    for root in \
-        "${ANDROID_NDK_HOME:-}" \
-        "${ANDROID_NDK_ROOT:-}" \
-        "${HOME}/Library/Android/sdk/ndk" \
-        "${HOME}/Android/Sdk/ndk"; do
-        [[ -d "${root}" ]] || continue
-        candidate=$(find "${root}" \
-            -path '*/toolchains/llvm/prebuilt/*/bin/llvm-strip' \
-            -print -quit 2>/dev/null || true)
-        if [[ -n "${candidate}" && -x "${candidate}" ]]; then
-            LLVM_STRIP=${candidate}
-            return 0
-        fi
-    done
-    return 1
-}
 
 if ! resolve_llvm_strip; then
     echo "error: llvm-strip not found; set LLVM_STRIP to the Android NDK llvm-strip" >&2
@@ -173,10 +147,11 @@ fi
 
 # Keep the unstripped build outputs in out/ for symbolized debugging. The
 # installable module contains only runtime sections.
-"${LLVM_STRIP}" --strip-debug \
+strip_runtime_files \
     "${STAGE_DIR}/zygisk/arm64-v8a.so" \
     "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so" \
     "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so" \
+    "${STAGE_DIR}/lib/arm64-v8a/dejavu-root-helper" \
     "${STAGE_DIR}/bin/dejavuerouter"
 
 rm -f "${ZIP_PATH}"

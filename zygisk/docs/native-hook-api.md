@@ -80,6 +80,9 @@ int dejavu_native_target(int value) {
 
 ## Address targets (v0.9.1)
 
+Since v0.9.2, an unavailable loader reference across linker namespaces does not
+reject an otherwise valid address. The hook is explicitly marked caller-owned.
+
 `native.install_address(address, c_source)` installs at an absolute runtime
 address without resolving a symbol. `address` must be a positive Lua integer or
 a `0xHEX` string within the process's pointer range. Floating-point values,
@@ -101,13 +104,22 @@ is not a runtime address. The replacement must have the exact target signature.
 `native.stats`, `list`, `uninstall` and `clear` work with either installation
 entry point; hooking the same target twice is rejected across both APIs.
 
-Keep the target mapping and its loaded instance stable throughout installation.
-When the linker identifies the target's loaded image, Dejavu retains a library
-reference; failure to retain it rejects installation. For anonymous executable
-mappings, the caller must keep the target mapped and unchanged until all entered
-replacements and any later users of a saved original finish. Uninstall does not
-wait for those users. If quiescence cannot be proven, retain the mapping until
-the process exits.
+The caller must keep the target mapping and its loaded instance valid and
+unchanged during installation, while the hook is active, and until all entered
+replacements and later users of a saved original finish. Dejavu retains a library
+reference when the public linker APIs permit it, but address hooks do not require
+such a reference. A mapped image identified by `dladdr` may still be invisible to
+`dlopen(RTLD_NOLOAD)` across Android linker namespaces, including split-APK images.
+It is treated as caller-owned, just like an anonymous executable mapping; no
+private linker API is used to bypass namespace boundaries.
+
+For a caller-owned target, `native.list()` appends `lifetime=caller-owned` after
+the hit count, and the diagnostic log reports that a module reference was
+unavailable. The caller must retain that mapping for the complete lifetime above;
+successful installation does not mean the framework pinned its image. Uninstall
+does not wait for in-flight replacements or saved-original users. If their
+quiescence cannot be proven, retain the mapping until the process exits.
+
 The native plugin `DejavuHookInterface::install(void *target, ...)` already accepts
 addresses; its ABI is unchanged.
 
@@ -142,7 +154,7 @@ choice), regular, 1 MiB or smaller. The content still follows the same
 | `native.install_address(address, source)` | compile and install at an absolute runtime address |
 | `native.install_address_file(address, path)` | use a device C source file for an address target |
 | `native.stats(id)` | number of replacement calls recorded so far |
-| `native.list()` | `id active\|uninstalled [protection-pending] module#symbol hits=N` lines |
+| `native.list()` | `id active\|uninstalled [protection-pending] module#symbol hits=N [lifetime=caller-owned]` lines |
 | `native.uninstall(id)` | restore the original entry and saved page permissions |
 | `native.clear()` | uninstall all active native hooks; returns the count |
 
@@ -290,11 +302,12 @@ of module/symbol names. It sends an exact hexadecimal string to the Lua API.
   the execute permission; page protection is saved/widened to patch and then
   restored.
 - **In-flight callbacks.** The original trampoline is published before the
-  replacement becomes callable. Exposed contexts, JIT code and target-library
-  references remain pinned until process exit, so an already-entered callback
-  can finish after uninstall. Repeated install/uninstall cycles therefore retain
-  memory; restarting the target releases it. Plugin-owned state still needs its
-  own synchronization and teardown protocol.
+  replacement becomes callable. Exposed contexts, JIT code and any successfully
+  acquired target-library references remain pinned until process exit, so an
+  already-entered callback can finish after uninstall. Repeated install/uninstall
+  cycles therefore retain memory; restarting the target releases it. Plugin-owned state still needs its
+  own synchronization and teardown protocol. Caller-owned address targets have
+  no retained library reference and depend on their caller to preserve the mapping.
 - **Retryable permission errors.** Permission snapshots retain the original
   page addresses and protections across VMA splits. A failed restore is reported
   with the hook id and kept as `protection-pending`; retry `native.uninstall(id)`

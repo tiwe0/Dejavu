@@ -152,15 +152,41 @@ done
 
 
 class DeployWrapperTest(unittest.TestCase):
+    def fake_strip(self, root):
+        tool = root / "llvm-strip"
+        tool.write_text(f"#!{sys.executable}\n" + r'''
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+args = sys.argv[1:]
+assert args[0] == "--strip-unneeded"
+for value in args[1:]:
+    source = Path(value)
+    assert "out/tooling" in value
+    assert stat.S_IMODE(source.parent.stat().st_mode) == 0o700
+    source.write_bytes(source.read_bytes() + b"-stripped")
+if os.environ.get("FAKE_STRIP_FAIL") == "1":
+    sys.exit(49)
+''')
+        tool.chmod(0o755)
+        return tool
+
+    def wrapper_fixture(self, root):
+        script = root / "zygisk/scripts/deploy-agent.sh"
+        script.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT, script)
+        shutil.copyfile(SCRIPT.with_name("strip-runtime.sh"), script.with_name("strip-runtime.sh"))
+        for name in ("agent", "core", "init", "hookx"):
+            (root / name).write_text(name)
+        return script
+
     def test_normal_wrapper_substitutes_script_and_preserves_shell_exit_status(self):
         for shell_status in (0, 37):
             with self.subTest(shell_status=shell_status), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                script = root / "zygisk/scripts/deploy-agent.sh"
-                script.parent.mkdir(parents=True)
-                shutil.copyfile(SCRIPT, script)
-                for name in ("agent", "core", "init", "hookx"):
-                    (root / name).write_text(name)
+                script = self.wrapper_fixture(root)
                 fake_adb = root / "adb"
                 fake_adb.write_text(f"#!{sys.executable}\n" + r'''
 import json
@@ -174,6 +200,8 @@ log = os.open(os.environ["FAKE_LOG"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o
 os.write(log, (json.dumps(args) + "\n").encode())
 os.close(log)
 if args[0] == "push":
+    if Path(args[1]).name in ("libdejavu_agent.so", "libdejavu.so"):
+        assert Path(args[1]).read_bytes().endswith(b"-stripped")
     if args[2].endswith(".sh"):
         source = Path(args[1]).read_text()
         assert "__SUFFIX__" not in source
@@ -192,6 +220,7 @@ else:
                 env = {**os.environ, "ADB": str(fake_adb), "ADB_SERIAL": "", "NO_RESTART": "1",
                        "AGENT_LIB": str(root / "agent"), "CORE_LIB": str(root / "core"),
                        "INIT_LUA": str(root / "init"), "HOOKX_LUA": str(root / "hookx"),
+                       "LLVM_STRIP": str(self.fake_strip(root)), "FAKE_STRIP_FAIL": "0",
                        "FAKE_LOG": str(root / "log"), "CAPTURED_SCRIPT": str(root / "captured"),
                        "SHELL_STATUS": str(shell_status)}
                 count = 2 if shell_status == 0 else 1
@@ -222,11 +251,34 @@ else:
                     self.assertEqual(sum(call[0] == "push" and suffix in call[2]
                                          for call in calls), 4)
                 self.assertEqual(list((root / "out/tooling").iterdir()), [])
-                temporary_sources = [Path(call[1]).name for call in calls if call[0] == "push"
+                self.assertEqual((root / "agent").read_text(), "agent")
+                self.assertEqual((root / "core").read_text(), "core")
+                temporary_sources = [call[1] for call in calls if call[0] == "push"
                                      and "out/tooling" in call[1]]
-                self.assertEqual(len(temporary_sources), 2 * count)
-                self.assertEqual(len(set(temporary_sources)), 2 * count)
+                self.assertEqual(len(temporary_sources), 4 * count)
+                self.assertEqual(len(set(temporary_sources)), 4 * count)
                 self.assertTrue(all("XXXXXX" not in name for name in temporary_sources))
+
+    def test_missing_or_failed_strip_never_uploads_and_cleans_local_stage(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                script = self.wrapper_fixture(root)
+                fake_adb = root / "adb"
+                fake_adb.write_text("#!/bin/sh\nprintf called >> \"$FAKE_LOG\"\nexit 99\n")
+                fake_adb.chmod(0o755)
+                tool = root / "nonexistent-strip" if missing else self.fake_strip(root)
+                env = {**os.environ, "ADB": str(fake_adb), "ADB_SERIAL": "", "NO_RESTART": "1",
+                       "AGENT_LIB": str(root / "agent"), "CORE_LIB": str(root / "core"),
+                       "INIT_LUA": str(root / "init"), "HOOKX_LUA": str(root / "hookx"),
+                       "LLVM_STRIP": str(tool), "FAKE_STRIP_FAIL": "1", "FAKE_LOG": str(root / "log")}
+                result = subprocess.run(["bash", str(script)], text=True, capture_output=True, timeout=10, env=env)
+                self.assertEqual(result.returncode, 1 if missing else 49, result.stderr)
+                self.assertIn("llvm-strip not found" if missing else "llvm-strip failed", result.stderr)
+                self.assertFalse((root / "log").exists(), "strip must finish before the first ADB command")
+                self.assertEqual((root / "agent").read_text(), "agent")
+                self.assertEqual((root / "core").read_text(), "core")
+                self.assertEqual(list((root / "out/tooling").iterdir()), [])
 
 
 if __name__ == "__main__":

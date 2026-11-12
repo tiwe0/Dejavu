@@ -55,7 +55,9 @@ struct Scenario {
     unsigned long long context = 0;
     int mapping_protection = PROT_EXEC;
     bool anonymous_mapping = false;
-    bool pin_failure = false;
+    bool pin_unavailable = false;
+    unsigned int identified_images = 0;
+    unsigned int pin_attempts = 0;
     std::string source;
 } scenario;
 std::string library;
@@ -208,12 +210,17 @@ FILE *native_test_fopen(const char *path, const char *mode) {
 
 int native_test_dladdr(const void *address, Dl_info *information) {
     if (scenario.anonymous_mapping) return 0;
-    if (scenario.pin_failure) {
-        *information = {};
-        information->dli_fname = "/nonexistent/dejavu-pin-failure.so";
-        return 1;
+    const int found = dladdr(address, information);
+    if (found != 0) ++scenario.identified_images;
+    return found;
+}
+
+void *native_test_dlopen(const char *filename, int flags) {
+    if ((flags & RTLD_NOLOAD) != 0) {
+        ++scenario.pin_attempts;
+        if (scenario.pin_unavailable) return nullptr;
     }
-    return dladdr(address, information);
+    return dlopen(filename, flags);
 }
 
 extern "C" int __android_log_print(int, const char *, const char *, ...) {
@@ -312,26 +319,69 @@ bool root_helper_restore(void *, size_t, int, std::string *) {
 }
 
 namespace {
-void address_owner_failures_and_anonymous_mapping() {
+void caller_owned_address_targets() {
     const std::string source = "int dejavu_native_target(int value) { return value; }";
-    {
-        NativeHookManagerTest test;
-        scenario.pin_failure = true;
-        dejavu_value result{}; std::string error;
-        expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) != DEJAVU_OK,
-               "identified image must be retained before installation");
-        expect(error.find("retain") != std::string::npos && scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0,
-               "module pin failure must not compile or touch target protection");
+    char path[] = "/tmp/dejavu-caller-owned-source.XXXXXX";
+    const int descriptor = mkstemp(path);
+    expect(descriptor >= 0, "create caller-owned address source fixture");
+    expect(write(descriptor, source.data(), source.size()) == static_cast<ssize_t>(source.size()),
+           "write caller-owned replacement source");
+    close(descriptor);
+    const std::string path_text = path;
+    for (bool from_file : {false, true}) {
+        for (bool anonymous : {false, true}) {
+            NativeHookManagerTest test;
+            scenario.pin_unavailable = !anonymous;
+            scenario.anonymous_mapping = anonymous;
+            const char *entry = from_file ? "install_address_file" : "install_address";
+            const auto source_argument = text_value(from_file ? path_text : source);
+            dejavu_value result{}; std::string error;
+            auto unmapped = address_value(); unmapped.integer_value = 4;
+            expect(test.invoke(entry, {unmapped, source_argument}, &result, &error) != DEJAVU_OK,
+                   "caller-owned path still rejects unmapped addresses");
+            scenario.mapping_protection = PROT_READ;
+            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) != DEJAVU_OK,
+                   "caller-owned path still rejects non-executable addresses");
+            expect(scenario.compiled == 0 && scenario.captures == 0 && scenario.applies == 0 &&
+                       scenario.identified_images == 0 && scenario.pin_attempts == 0,
+                   "invalid mappings must fail before compilation, protection or linker lookups");
+            scenario.mapping_protection = PROT_EXEC;
+            expect(test.invoke(entry, {address_value(), source_argument}, &result, &error) == DEJAVU_OK,
+                   "valid caller-owned target must install without a module reference: " + error);
+            const unsigned long long id = result.integer_value;
+            expect(scenario.identified_images == (anonymous ? 0U : 1U) &&
+                       scenario.pin_attempts == (anonymous ? 0U : 1U),
+                   "namespace fixture must identify the real image but fail RTLD_NOLOAD only");
+            expect(test.list().find(" hits=1 lifetime=caller-owned") != std::string::npos,
+                   "native.list must expose caller-owned lifetime after the existing fields");
+            if (anonymous)
+                expect(test.list().find("<address>#") != std::string::npos,
+                       "anonymous mapping must identify its raw target");
+            else {
+                Dl_info identified{};
+                expect(dladdr(cold_target, &identified) != 0 && identified.dli_fname != nullptr,
+                       "namespace fixture must still have a real linker image");
+                expect(test.list().find(std::string(identified.dli_fname) + "#") != std::string::npos,
+                       "namespace-invisible image must preserve its identified module name");
+            }
+            check_original(scenario.context);
+            NativeHookManager::hit_for_context(scenario.context);
+            dejavu_value hook_id{};
+            hook_id.type = DEJAVU_VALUE_INTEGER;
+            hook_id.integer_value = static_cast<long long>(id);
+            expect(test.invoke("stats", {hook_id}, &result, &error) == DEJAVU_OK && result.integer_value == 2,
+                   "caller-owned replacement must retain callable original and hit accounting");
+            expect(test.uninstall(id, &error), error);
+            expect(!scenario.installed && !scenario.writable && scenario.destroy_calls == 1,
+                   "caller-owned uninstall must restore the entry and saved protection");
+            check_original(scenario.context);
+            test.manager.shutdown();
+            check_original(scenario.context);
+            expect(scenario.destroyed == 0,
+                   "entered caller-owned contexts and replacement code remain retained");
+        }
     }
-    {
-        NativeHookManagerTest test;
-        scenario.anonymous_mapping = true;
-        dejavu_value result{}; std::string error;
-        expect(test.invoke("install_address", {address_value(), text_value(source)}, &result, &error) == DEJAVU_OK,
-               "caller-owned executable mapping does not require a linker image");
-        expect(test.list().find("<address>#") != std::string::npos, "anonymous mapping must identify its raw target");
-        expect(test.uninstall(result.integer_value, &error), error);
-    }
+    unlink(path);
 }
 
 void isolated_address_module_lifetime(void *handle) {
@@ -665,8 +715,8 @@ int main(int argc, char **argv) {
     std::cout << "OK: address registration, strict parsing, alignment and executable mapping validation\n";
     address_hex_file_and_shared_duplicate_guard();
     std::cout << "OK: hexadecimal address, device source and shared duplicate guard\n";
-    address_owner_failures_and_anonymous_mapping();
-    std::cout << "OK: module pin failure is side-effect free; anonymous executable target stays caller-owned\n";
+    caller_owned_address_targets();
+    std::cout << "OK: namespace-invisible and anonymous targets install inline/from-file with explicit caller-owned lifetime\n";
     for (bool use_address : {false, true}) {
         address_mode = use_address;
         for (const auto &test : tests) {
