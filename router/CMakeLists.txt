@@ -30,7 +30,15 @@ else()
         URL_HASH SHA256=92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
-    FetchContent_MakeAvailable(dejavu_libevent)
+    # CMake 4 removed libevent 2.1's pre-3.5 policy compatibility. Scope this
+    # floor to the dependency and preserve any higher policy version supplied
+    # by the caller.
+    block(SCOPE_FOR VARIABLES)
+        if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM OR CMAKE_POLICY_VERSION_MINIMUM VERSION_LESS 3.5)
+            set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        endif()
+        FetchContent_MakeAvailable(dejavu_libevent)
+    endblock()
     set(ROUTER_EVENT_LIBRARIES event_core_static)
 endif()
 
