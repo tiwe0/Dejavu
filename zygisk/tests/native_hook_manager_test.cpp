@@ -1,6 +1,8 @@
 #include "native_hook_manager.h"
 #include "root_helper_client.h"
 #include <dobby.h>
+#include <dobby/dejavu_hook_diagnostics.h>
+#include <dobby/dejavu_hook_mutation.h>
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -56,6 +58,10 @@ struct Scenario {
     int mapping_protection = PROT_EXEC;
     bool anonymous_mapping = false;
     bool pin_unavailable = false;
+    const char *backend_failure_stage = nullptr;
+    bool overwrite_stage_on_restore = false;
+    bool mutation_rejected = false;
+    unsigned int stage_queries = 0;
     unsigned int identified_images = 0;
     unsigned int pin_attempts = 0;
     std::string source;
@@ -66,6 +72,7 @@ std::vector<dejavu_module *> modules;
 std::unordered_map<std::string, const void *> helper_symbols;
 std::unordered_map<std::string, dejavu_host_function> lua_functions;
 bool address_mode = false;
+thread_local const char *last_backend_failure_stage = nullptr;
 
 int register_function(dejavu_control_session *, const char *name_space, const char *name,
                       dejavu_host_function function, void *, char *, size_t) {
@@ -233,7 +240,13 @@ extern "C" int DobbyHook(void *, void *, void **) {
     fail("manager must use pre-publication backend");
 }
 extern "C" int DobbyHookWithPrepare(void *, void *, dobby_hook_prepare_t prepare, void *opaque) {
+    if (scenario.mutation_rejected) {
+        last_backend_failure_stage = "outer-operation-stage";
+        return dejavu_dobby::kHookMutationReentrant;
+    }
+    last_backend_failure_stage = nullptr;
     if (scenario.prepare_failure) {
+        last_backend_failure_stage = scenario.backend_failure_stage;
         if (scenario.foreign_hook_races_prepare)
             scenario.installed = true;
         return -1;
@@ -248,7 +261,13 @@ extern "C" int DobbyHookWithPrepare(void *, void *, dobby_hook_prepare_t prepare
     ++scenario.observations_before_return;
     scenario.installed = true;
     ++scenario.activations;
+    if (scenario.activated_failure)
+        last_backend_failure_stage = scenario.backend_failure_stage;
     return scenario.activated_failure ? -1 : 0;
+}
+const char *dejavu_dobby::LastHookFailureStage() {
+    ++scenario.stage_queries;
+    return last_backend_failure_stage;
 }
 extern "C" int DobbyDestroy(void *) {
     ++scenario.destroy_calls;
@@ -298,6 +317,8 @@ bool root_helper_apply_read_write(const RootHelperProtectionSnapshot &, std::str
 }
 bool root_helper_restore(const RootHelperProtectionSnapshot &, std::string *error) {
     ++scenario.restores;
+    if (scenario.overwrite_stage_on_restore)
+        last_backend_failure_stage = "cleanup-overwrote-stage";
     if (scenario.restore_failure) {
         *error = "injected restore failure";
         return false;
@@ -595,6 +616,42 @@ void activation_error_retains_exposed_code() {
         expect(test.uninstall(test.retained_id(id), &error), error);
     }
 }
+void backend_failure_stage_survives_cleanup() {
+    for (const char *stage : {"near-allocation", "forward-patch", "original-relocation",
+                              "entry-activation"}) {
+        NativeHookManagerTest test;
+        scenario.prepare_failure = std::strcmp(stage, "entry-activation") != 0;
+        scenario.activated_failure = !scenario.prepare_failure;
+        scenario.backend_failure_stage = stage;
+        scenario.overwrite_stage_on_restore = true;
+        unsigned long long id = 0;
+        std::string error;
+        expect(!test.install(&id, &error), "backend failure must fail installation");
+        expect(error.find(std::string("stage=") + stage) != std::string::npos,
+               "control error must preserve the backend failure stage before cleanup: " + error);
+        expect(error.find("cleanup-overwrote-stage") == std::string::npos,
+               "cleanup must not replace the install failure diagnosis");
+        expect(!scenario.writable, "failed installation must restore saved permissions");
+        if (scenario.installed)
+            expect(test.uninstall(test.retained_id(id), &error), error);
+    }
+}
+void rejected_mutation_does_not_borrow_outer_diagnosis() {
+    NativeHookManagerTest test;
+    scenario.mutation_rejected = true;
+    scenario.overwrite_stage_on_restore = true;
+    unsigned long long id = 0;
+    std::string error;
+    expect(!test.install(&id, &error), "nested mutation rejection must fail installation");
+    expect(error.find("reentrant") != std::string::npos && error.find("status -3") != std::string::npos,
+           "control error must explain the distinct mutation rejection: " + error);
+    expect(scenario.stage_queries == 0 && error.find("outer-operation-stage") == std::string::npos &&
+               error.find("cleanup-overwrote-stage") == std::string::npos,
+           "a rejected request must not attribute the enclosing operation's diagnosis to itself");
+    expect(!scenario.installed && !scenario.writable && scenario.destroyed == 1 &&
+               scenario.observations_before_return == 0,
+           "rejected mutation restores permissions and reclaims unexposed code");
+}
 void restoration_error_is_visible_and_retryable() {
     NativeHookManagerTest test;
     scenario.restore_failure = true;
@@ -706,6 +763,8 @@ int main(int argc, char **argv) {
          original_is_ready_before_install_returns},
         {"unpublished prepare failure reclaims code", prepare_failure_cleans_up_unpublished_module},
         {"activation failure retains exposed code", activation_error_retains_exposed_code},
+        {"backend failure stage survives permission cleanup", backend_failure_stage_survives_cleanup},
+        {"rejected mutation preserves the outer diagnosis", rejected_mutation_does_not_borrow_outer_diagnosis},
         {"restoration failure is retryable", restoration_error_is_visible_and_retryable},
         {"uninstall failure is retryable", failed_uninstall_can_be_retried},
         {"in-flight replacement survives uninstall", in_flight_replacement_survives_uninstall},

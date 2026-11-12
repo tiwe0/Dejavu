@@ -20,7 +20,7 @@ DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
     PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
 fi
-PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.2}
+PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.3}
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 source "${ROOT_DIR}/scripts/strip-runtime.sh"
 

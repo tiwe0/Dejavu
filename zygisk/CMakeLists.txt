@@ -107,6 +107,7 @@ target_include_directories(dejavu_agent PRIVATE
     include
     ../include
     third_party/kcp
+    third_party/Dobby/source
     ../router/third_party/cJSON
     ${HOOK_BRIDGE_GENERATED_DIR}
     ${JIT_PRELUDE_GENERATED_DIR}

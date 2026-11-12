@@ -22,6 +22,8 @@
 #include <vector>
 
 #include <dobby.h>
+#include <dobby/dejavu_hook_diagnostics.h>
+#include <dobby/dejavu_hook_mutation.h>
 
 namespace {
 
@@ -511,6 +513,11 @@ bool NativeHookManager::install_resolved(std::unique_ptr<Record> owned, const st
     }
     const int hook_status =
         DobbyHookWithPrepare(record->target, replacement, publish_original, record);
+    // Read the installing thread's diagnosis before protection restoration can
+    // invoke any other backend operation. Dobby owns the static stage strings.
+    const bool mutation_rejected = hook_status == dejavu_dobby::kHookMutationReentrant;
+    const char *hook_failure_stage =
+        hook_status != 0 && !mutation_rejected ? dejavu_dobby::LastHookFailureStage() : nullptr;
     record->active.store(record->exposed.load(std::memory_order_acquire) &&
                              DobbyIsHooked(record->target) != 0,
                          std::memory_order_release);
@@ -521,8 +528,13 @@ bool NativeHookManager::install_resolved(std::unique_ptr<Record> owned, const st
         // target library reference and context until process exit, even on error.
         release_unexposed(record);
         *error = "native hook " + std::to_string(hook_id) + ": ";
-        if (hook_status != 0)
-            *error += "DobbyHook failed with status " + std::to_string(hook_status);
+        if (hook_status != 0) {
+            *error += mutation_rejected ? "reentrant native hook mutation rejected with status "
+                                       : "DobbyHook failed with status ";
+            *error += std::to_string(hook_status);
+            if (hook_failure_stage != nullptr)
+                *error += std::string(" (stage=") + hook_failure_stage + ")";
+        }
         if (!restored)
             *error += (hook_status != 0 ? "; " : "") + std::string("protection restore pending: ") +
                       restore_error;

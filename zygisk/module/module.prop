@@ -1,6 +1,6 @@
 id=dejavu_zygisk
 name=Dejavu Zygisk
-version=v0.9.2
-versionCode=13
+version=v0.9.3
+versionCode=14
 author=Dejavu
 description=Targeted Zygisk bridge for Dejavu and LSPlant dynamic debugging.

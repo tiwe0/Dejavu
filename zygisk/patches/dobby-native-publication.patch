@@ -1,9 +1,39 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,7 +56,8 @@
+ if (DOBBY_DEBUG)
+   set(compile_definitions "${compile_definitions} -DDOBBY_DEBUG")
+ else ()
+-  set(compile_definitions "${compile_definitions} -DDOBBY_LOGGING_DISABLE")
++  # Keep failure diagnostics in release builds; add the value-bearing macro
++  # separately below rather than into the upstream space-joined flag string.
+ endif ()
+
+ set(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")
+@@ -331,6 +332,10 @@
+ target_compile_definitions(dobby_static PRIVATE
+   "COMPILE_DEFINITIONS ${compile_definitions}"
+   )
++if (NOT DOBBY_DEBUG)
++  target_compile_definitions(dobby PRIVATE LOG_LEVEL=LOG_LEVEL_ERROR)
++  target_compile_definitions(dobby_static PRIVATE LOG_LEVEL=LOG_LEVEL_ERROR)
++endif ()
+
+ # ---
+
+@@ -372,4 +377,4 @@
+
+ if (SYSTEM.Darwin AND (NOT DOBBY_BUILD_KERNEL_MODE))
+   include(cmake/platform/platform-darwin.cmake)
+-endif ()
+\ No newline at end of file
++endif ()
 --- a/common/os_arch_features.h
 +++ b/common/os_arch_features.h
 @@ -4,7 +4,12 @@
  #include <stddef.h>
  #include "pac_kit.h"
- 
+
 -#include "PlatformUnifiedInterface/platform.h"
 +#if defined(ANDROID)
 +#include <stdint.h>
@@ -11,7 +41,7 @@
 +#include <unistd.h>
 +#include <sys/mman.h>
 +#endif
- 
+
  #if defined(__arm64e__) && __has_feature(ptrauth_calls)
  #include <ptrauth.h>
 @@ -36,10 +41,29 @@
@@ -46,12 +76,56 @@
  #endif
  }
  } // namespace android
+--- a/external/logging/logging.cc
++++ b/external/logging/logging.cc
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ #include <stdbool.h>
+ #include <time.h>
++#include <sys/time.h>
+
+ #if defined(__linux__) || defined(__APPLE__)
+ #include <unistd.h>
+@@ -74,7 +75,7 @@
+     if (!os_log_with_args)
+       os_log_with_args = (__typeof(os_log_with_args))dlsym((void *)-2, "os_log_with_args");
+     // os_log_with_args(&_os_log_default, 0x10, fmt_buffer, ap, (void *)&os_log_with_args);
+-    syslog(LOG_ALERT, out_buffer);
++    syslog(LOG_ALERT, "%s", out_buffer);
+
+     static int _logDescriptor = 0;
+     if (0 && _logDescriptor == 0) {
+@@ -92,10 +93,10 @@
+       }
+     }
+     if (_logDescriptor > 0) {
+-      dprintf(_logDescriptor, out_buffer);
++      dprintf(_logDescriptor, "%s", out_buffer);
+     }
+ #elif defined(_POSIX_VERSION)
+-    syslog(LOG_ERR, out_buffer);
++    syslog(LOG_ERR, "%s", out_buffer);
+ #endif
+   }
+
+@@ -113,9 +114,9 @@
+
+   if (1 || !enable_syslog_ && log_file_ == nullptr) {
+ #if defined(__ANDROID__)
+-    __android_log_print(ANDROID_LOG_INFO, NULL, out_buffer);
++    __android_log_print(ANDROID_LOG_INFO, NULL, "%s", out_buffer);
+ #else
+-    printf(out_buffer);
++    printf("%s", out_buffer);
+ #endif
+   }
+ }
 --- a/include/dobby.h
 +++ b/include/dobby.h
 @@ -121,6 +121,12 @@
  // function inline hook
  int DobbyHook(void *address, void *fake_func, void **out_origin_func);
- 
+
 +// ARM64 native hooks: publish the original trampoline before an atomic B patch.
 +// The callback must not allocate, log, call Dobby or throw. A failed activation
 +// may already have exposed the replacement; keep callback-owned state alive.
@@ -61,31 +135,32 @@
  // dynamic binary instruction instrument
  // for Arm64, can't access q8 - q31, unless enable full floating-point register pack
  typedef void (*dobby_instrument_callback_t)(void *address, DobbyRegisterContext *ctx);
-@@ -129,6 +135,10 @@
+@@ -128,6 +134,10 @@
+
  // destroy and restore code patch
  int DobbyDestroy(void *address);
- 
++
 +// Returns whether hook bytes may be live, including post-write restoration failures.
 +// Prepared reservations and activation failures before writing return zero.
 +int DobbyIsHooked(void *address);
-+
+
  const char *DobbyGetVersion();
- 
- // symbol resolver
+
 --- a/source/Backend/UserMode/ExecMemory/code-patch-tool-posix.cc
 +++ b/source/Backend/UserMode/ExecMemory/code-patch-tool-posix.cc
-@@ -1,37 +1,94 @@
+@@ -1,37 +1,104 @@
 -
  #include "dobby/dobby_internal.h"
 -#include "core/arch/Cpu.h"
- 
+
  #include <unistd.h>
  #include <sys/mman.h>
 +#include <stdint.h>
 +#include <stdio.h>
  #include <string.h>
 +#include <vector>
- 
++#include <errno.h>
+
  #if !defined(__APPLE__)
 +namespace {
 +struct PatchPage {
@@ -126,6 +201,11 @@
 -  int page_size = (int)sysconf(_SC_PAGESIZE);
 -  uintptr_t patch_page = ALIGN_FLOOR(address, page_size);
 -  uintptr_t patch_end_page = ALIGN_FLOOR((uintptr_t)address + buffer_size, page_size);
+-
+-  // change page permission as rwx
+-  mprotect((void *)patch_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+-  if (patch_page != patch_end_page) {
+-    mprotect((void *)patch_end_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
 +  const long runtime_page_size = sysconf(_SC_PAGESIZE);
 +  if (!address || !buffer || !buffer_size || runtime_page_size <= 0 ||
 +      (uintptr_t)address > UINTPTR_MAX - (buffer_size - 1))
@@ -134,27 +214,11 @@
 +  const uintptr_t first = (uintptr_t)address / page_size * page_size;
 +  const uintptr_t last = ((uintptr_t)address + buffer_size - 1) / page_size * page_size;
 +  std::vector<PatchPage> pages;
-+  if (!CapturePatchPages(first, last, page_size, &pages))
++  if (!CapturePatchPages(first, last, page_size, &pages)) {
++    ERROR_LOG("native hook code-patch capture failed address=%p size=%u", address, buffer_size);
 +    return -1;
- 
--  // change page permission as rwx
--  mprotect((void *)patch_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
--  if (patch_page != patch_end_page) {
--    mprotect((void *)patch_end_page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
-+  size_t writable = 0;
-+  for (; writable < pages.size(); ++writable) {
-+    const auto &page = pages[writable];
-+    const int protection = page.protection | PROT_READ | PROT_WRITE;
-+    if (protection != page.protection &&
-+        mprotect((void *)page.start, page_size, protection) != 0) {
-+      for (size_t index = 0; index < writable; ++index) {
-+        if ((pages[index].protection | PROT_READ | PROT_WRITE) != pages[index].protection)
-+          mprotect((void *)pages[index].start, page_size, pages[index].protection);
-+      }
-+      return -1;
-+    }
    }
- 
+
 -  // patch buffer
 -  memcpy(address, buffer, buffer_size);
 -
@@ -162,22 +226,43 @@
 -  mprotect((void *)patch_page, page_size, PROT_READ | PROT_EXEC);
 -  if (patch_page != patch_end_page) {
 -    mprotect((void *)patch_end_page, page_size, PROT_READ | PROT_EXEC);
++  size_t writable = 0;
++  for (; writable < pages.size(); ++writable) {
++    const auto &page = pages[writable];
++    const int protection = page.protection | PROT_READ | PROT_WRITE;
++    if (protection != page.protection &&
++        mprotect((void *)page.start, page_size, protection) != 0) {
++      const int protection_errno = errno;
++      for (size_t index = 0; index < writable; ++index) {
++        if ((pages[index].protection | PROT_READ | PROT_WRITE) != pages[index].protection)
++          mprotect((void *)pages[index].start, page_size, pages[index].protection);
++      }
++      ERROR_LOG("native hook code-patch writable failed address=%p page=%p size=%zu protection=%d errno=%d",
++                address, (void *)page.start, page_size, protection, protection_errno);
++      return -1;
++    }
+   }
+
+-  addr_t clear_start_ = (addr_t)address;
+-  ClearCache((void *)clear_start_, (void *)(clear_start_ + buffer_size));
 +  if (buffer_size == sizeof(uint32_t) && ((uintptr_t)address % alignof(uint32_t)) == 0) {
 +    uint32_t instruction;
 +    memcpy(&instruction, buffer, sizeof(instruction));
 +    __atomic_store_n((uint32_t *)address, instruction, __ATOMIC_RELEASE);
 +  } else {
 +    memcpy(address, buffer, buffer_size);
-   }
++  }
 +  ClearCache(address, (void *)((uintptr_t)address + buffer_size));
- 
--  addr_t clear_start_ = (addr_t)address;
--  ClearCache((void *)clear_start_, (void *)(clear_start_ + buffer_size));
++
 +  bool restored = true;
 +  for (const auto &page : pages) {
 +    if ((page.protection | PROT_READ | PROT_WRITE) != page.protection &&
-+        mprotect((void *)page.start, page_size, page.protection) != 0)
++        mprotect((void *)page.start, page_size, page.protection) != 0) {
++      const int protection_errno = errno;
++      ERROR_LOG("native hook code-patch restore failed address=%p page=%p size=%zu protection=%d errno=%d",
++                address, (void *)page.start, page_size, page.protection, protection_errno);
 +      restored = false;
++    }
 +  }
 +  // -1 means no bytes were written; -2 means bytes are visible but page
 +  // protection restoration failed. Routing must retain only the latter.
@@ -196,26 +281,26 @@
 @@ -11,10 +11,11 @@
  #include <vector>
  #include <algorithm>
- 
+
 +#undef LINE_MAX
  #define LINE_MAX 2048
- 
+
  static bool memory_region_comparator(MemRange a, MemRange b) {
 -  return (a.start < b.start);
 +  return (a.start() < b.start());
  }
- 
+
  stl::vector<MemRegion> regions;
 @@ -25,12 +26,11 @@
    if (fp == nullptr)
      return regions;
- 
+
 -  while (!feof(fp)) {
 -    char line_buffer[LINE_MAX + 1];
 -    fgets(line_buffer, LINE_MAX, fp);
 +  char line_buffer[LINE_MAX + 1];
 +  while (fgets(line_buffer, sizeof(line_buffer), fp)) {
- 
+
      // ignore the rest of characters
 -    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
 +    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX - 1] != '\n') {
@@ -225,7 +310,7 @@
 @@ -67,8 +67,12 @@
        return regions;
      }
- 
+
 +    if (region_end <= region_start)
 +      continue;
      MemoryPermission permission;
@@ -239,13 +324,13 @@
 @@ -101,12 +105,11 @@
    if (fp == nullptr)
      return *modules;
- 
+
 -  while (!feof(fp)) {
 -    char line_buffer[LINE_MAX + 1];
 -    fgets(line_buffer, LINE_MAX, fp);
 +  char line_buffer[LINE_MAX + 1];
 +  while (fgets(line_buffer, sizeof(line_buffer), fp)) {
- 
+
      // ignore the rest of characters
 -    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
 +    if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX - 1] != '\n') {
@@ -254,24 +339,33 @@
        int c;
 --- a/source/InterceptRouting/InlineHookRouting.h
 +++ b/source/InterceptRouting/InlineHookRouting.h
-@@ -7,7 +7,9 @@
+@@ -1,13 +1,16 @@
+ #pragma once
+
+ #include "dobby/common.h"
++#include "dobby/dejavu_hook_diagnostics.h"
+ #include "InterceptRouting/InterceptRouting.h"
+ #include "TrampolineBridge/ClosureTrampolineBridge/ClosureTrampoline.h"
+
  struct InlineHookRouting : InterceptRouting {
    addr_t fake_func;
- 
+
 -  InlineHookRouting(Interceptor::Entry *entry, addr_t fake_func) : InterceptRouting(entry), fake_func(fake_func) {
 +  InlineHookRouting(Interceptor::Entry *entry, addr_t fake_func, bool atomic_patch = false)
 +      : InterceptRouting(entry), fake_func(fake_func) {
 +    require_atomic_patch = atomic_patch;
    }
- 
+
    ~InlineHookRouting() = default;
-@@ -19,52 +21,71 @@
+@@ -19,52 +22,94 @@
    void BuildRouting() {
      __FUNC_CALL_TRACE__();
- 
+
 -    GenerateTrampoline();
 -
 +    if (!GenerateTrampoline()) {
++      if (!dejavu_dobby::LastHookFailureStage())
++        dejavu_dobby::SetHookFailureStage("entry-trampoline");
 +      error = 1;
 +      return;
 +    }
@@ -282,24 +376,42 @@
      BackupOriginCode();
    }
  };
- 
+
 -PUBLIC inline int DobbyHook(void *address, void *fake_func, void **out_origin_func) {
 -  __FUNC_CALL_TRACE__();
 -  if (!address) {
 -    ERROR_LOG("address is 0x0");
 +static inline int DobbyHookPreparedImpl(void *address, void *fake_func, void **out_origin_func,
 +                                        dobby_hook_prepare_t prepare, void *opaque, bool atomic_patch) {
-+  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
-+  if (!address || !fake_func || (atomic_patch && !prepare))
-     return -1;
--  }
--
-+#if !defined(TARGET_ARCH_ARM64)
-+  if (atomic_patch)
++  dejavu_dobby::HookMutationScope mutation(gInterceptorMutex);
++  if (!mutation.entered())
++    return dejavu_dobby::kHookMutationReentrant;
++  dejavu_dobby::ResetHookFailureStage();
++  if (!address || !fake_func || (atomic_patch && !prepare)) {
++    dejavu_dobby::SetHookFailureStage("invalid-argument");
 +    return -1;
++  }
++#if !defined(TARGET_ARCH_ARM64)
++  if (atomic_patch) {
++    dejavu_dobby::SetHookFailureStage("unsupported-architecture");
++    return -1;
++  }
 +#endif
-   features::apple::arm64e_pac_strip(address);
-   features::apple::arm64e_pac_strip(fake_func);
++  features::apple::arm64e_pac_strip(address);
++  features::apple::arm64e_pac_strip(fake_func);
++  if (atomic_patch && ((addr_t)address % 4 != 0 || (addr_t)fake_func % 4 != 0)) {
++    dejavu_dobby::SetHookFailureStage("unaligned-address");
++    return -1;
++  }
++  if (!atomic_patch)
++    features::android::make_memory_readable(address, 4);
++  if (gInterceptor.find((addr_t)address)) {
++    dejavu_dobby::SetHookFailureStage("duplicate-target");
+     return -1;
+   }
+
+-  features::apple::arm64e_pac_strip(address);
+-  features::apple::arm64e_pac_strip(fake_func);
 -  features::android::make_memory_readable(address, 4);
 -
 -  DEBUG_LOG("----- [DobbyHook: %p] -----", address);
@@ -307,40 +419,42 @@
 -  auto entry = gInterceptor.find((addr_t)address);
 -  if (entry) {
 -    ERROR_LOG("%p already been hooked.", address);
-+  if (atomic_patch && ((addr_t)address % 4 != 0 || (addr_t)fake_func % 4 != 0))
-     return -1;
--  }
-+  if (!atomic_patch)
-+    features::android::make_memory_readable(address, 4);
-+  if (gInterceptor.find((addr_t)address))
-+    return -1;
- 
--  entry = new Interceptor::Entry((addr_t)address);
 +  auto entry = new Interceptor::Entry((addr_t)address);
-   entry->fake_func_addr = (addr_t)fake_func;
--
--  auto routing = new InlineHookRouting(entry, (addr_t)fake_func);
--  routing->BuildRouting();
--  routing->Active();
++  entry->fake_func_addr = (addr_t)fake_func;
 +  auto routing = new InlineHookRouting(entry, (addr_t)fake_func, atomic_patch);
-   entry->routing = routing;
--
--  if (routing->error) {
--    ERROR_LOG("build routing error.");
++  entry->routing = routing;
 +  routing->BuildRouting();
 +  if (routing->error || !entry->relocated.addr() ||
 +      (atomic_patch && (routing->trampoline_size() != 4 || entry->patched.size != 4))) {
++    if (!dejavu_dobby::LastHookFailureStage())
++      dejavu_dobby::SetHookFailureStage("non-atomic-patch");
++    ERROR_LOG("native hook build failed target=%p destination=%p stage=%s", address, fake_func,
++              dejavu_dobby::LastHookFailureStage());
 +    delete routing;
 +    delete entry;
      return -1;
    }
 -
--  if (out_origin_func) {
--    *out_origin_func = (void *)entry->relocated.addr();
+-  entry = new Interceptor::Entry((addr_t)address);
+-  entry->fake_func_addr = (addr_t)fake_func;
+-
+-  auto routing = new InlineHookRouting(entry, (addr_t)fake_func);
+-  routing->BuildRouting();
+-  routing->Active();
+-  entry->routing = routing;
+-
+-  if (routing->error) {
+-    ERROR_LOG("build routing error.");
 +  void *original = (void *)entry->relocated.addr();
 +  features::apple::arm64e_pac_strip_and_sign(original);
 +  // Register before activation: failures after byte publication must remain
 +  // destroyable, and both original pointers and callback state stay valid.
++  if (!routing->PublishPreparedCode()) {
++    dejavu_dobby::SetHookFailureStage("forward-patch");
++    delete routing;
++    delete entry;
+     return -1;
+   }
 +  gInterceptor.add(entry);
 +  if (out_origin_func)
 +    *out_origin_func = original;
@@ -353,16 +467,20 @@
 +      *out_origin_func = nullptr;
 +    // The callback/output may already have exposed the original trampoline.
 +    // Keep its lifetime independent of this failed reservation.
-   }
--  features::apple::arm64e_pac_strip_and_sign(*out_origin_func);
++  }
 +  return routing->error ? -1 : 0;
 +}
- 
--  gInterceptor.add(entry);
+
+-  if (out_origin_func) {
+-    *out_origin_func = (void *)entry->relocated.addr();
+-  }
+-  features::apple::arm64e_pac_strip_and_sign(*out_origin_func);
 +PUBLIC inline int DobbyHook(void *address, void *fake_func, void **out_origin_func) {
 +  return DobbyHookPreparedImpl(address, fake_func, out_origin_func, nullptr, nullptr, false);
 +}
- 
+
+-  gInterceptor.add(entry);
+-
 -  return 0;
 +PUBLIC inline int DobbyHookWithPrepare(void *address, void *fake_func,
 +                                       dobby_hook_prepare_t prepare, void *opaque) {
@@ -370,44 +488,87 @@
  }
 --- a/source/InterceptRouting/InstrumentRouting.h
 +++ b/source/InterceptRouting/InstrumentRouting.h
-@@ -40,6 +40,7 @@
+@@ -40,6 +40,9 @@
  };
- 
+
  PUBLIC inline int DobbyInstrument(void *address, dobby_instrument_callback_t pre_handler) {
-+  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
++  dejavu_dobby::HookMutationScope mutation(gInterceptorMutex);
++  if (!mutation.entered())
++    return dejavu_dobby::kHookMutationReentrant;
    __FUNC_CALL_TRACE__();
    if (!address) {
      ERROR_LOG("address is 0x0.");
+@@ -53,7 +56,7 @@
+
+   auto entry = gInterceptor.find((addr_t)address);
+   if (entry) {
+-    ERROR_LOG("%s already been instrumented.", address);
++    ERROR_LOG("%p already been instrumented.", address);
+     return -1;
+   }
+
 --- a/source/InterceptRouting/InterceptRouting.h
 +++ b/source/InterceptRouting/InterceptRouting.h
-@@ -8,6 +8,7 @@
+@@ -6,8 +6,12 @@
+ #include "TrampolineBridge/Trampoline/Trampoline.h"
+ #include "RoutingPlugin.h"
  #include "NearBranchTrampoline/NearBranchTrampoline.h"
- 
++#include "dobby/dejavu_hook_diagnostics.h"
+
  Trampoline *GenerateNearTrampolineBuffer(addr_t src, addr_t dst);
 +Trampoline *GenerateSafeNearTrampolineBuffer(addr_t src, addr_t dst);
++bool PublishSafeNearTrampoline(Trampoline *trampoline);
++void ReleaseSafeNearTrampoline(Trampoline *trampoline);
  Trampoline *GenerateNormalTrampolineBuffer(addr_t from, addr_t to);
- 
+
  struct InterceptRouting {
-@@ -15,6 +16,7 @@
+@@ -15,6 +19,7 @@
    Trampoline *trampoline = 0;
    Trampoline *near_trampoline = 0;
    int error = 0;
 +  bool require_atomic_patch = false;
- 
+
    explicit InterceptRouting(Interceptor::Entry *entry) : entry(entry) {
    }
-@@ -57,6 +59,7 @@
+@@ -25,9 +30,21 @@
+       delete trampoline;
+     }
+     if (near_trampoline) {
++#if defined(TARGET_ARCH_ARM64)
++      if (require_atomic_patch)
++        ReleaseSafeNearTrampoline(near_trampoline);
++#endif
+       // TODO: free code block
+       delete near_trampoline;
+     }
++  }
++
++  bool PublishPreparedCode() {
++#if defined(TARGET_ARCH_ARM64)
++    if (require_atomic_patch)
++      return PublishSafeNearTrampoline(near_trampoline);
++#endif
++    return true;
+   }
+
+   virtual void Prepare() {
+@@ -57,6 +74,12 @@
    virtual void Active() {
      __FUNC_CALL_TRACE__();
      auto ret = DobbyCodePatch((void *)entry->addr, (uint8_t *)trampoline_addr(), trampoline_size());
++    if (ret != 0) {
++      dejavu_dobby::SetHookFailureStage("entry-activation");
++      ERROR_LOG("native hook entry-activation failed target=%p destination=%p status=%d",
++                (void *)entry->addr, (void *)TrampolineTarget(), ret);
++    }
 +    entry->bytes_published = (ret == 0 || ret == -2);
      error |= (ret != 0);
    }
- 
-@@ -72,6 +75,14 @@
+
+@@ -72,6 +95,14 @@
        plugin->GenerateTrampolineBuffer(this, from, to);
      }
- 
+
 +    if (require_atomic_patch) {
 +#if defined(TARGET_ARCH_ARM64)
 +      near_trampoline = GenerateSafeNearTrampolineBuffer(from, to);
@@ -419,33 +580,57 @@
      if (g_enable_near_trampoline) {
        near_trampoline = GenerateNearTrampolineBuffer(from, to);
      }
-@@ -79,7 +90,7 @@
+@@ -79,7 +110,7 @@
      if (!near_trampoline) {
        trampoline = GenerateNormalTrampolineBuffer(from, to);
      }
 -    return true;
 +    return trampoline != nullptr;
    }
- 
+
    void GenerateRelocatedCode() {
-@@ -87,6 +98,7 @@
+@@ -87,6 +118,7 @@
      if (trampoline_addr() == 0) {
        ERROR_LOG("GenerateTrampoline must be called first");
        error = 1;
 +      return;
      }
- 
+
      auto code_addr = entry->addr;
+@@ -95,7 +127,10 @@
+     auto origin = CodeMemBlock(code_addr, preferred_size);
+     auto relocated = CodeMemBlock(0, 0);
+     GenRelocateCodeAndBranch((void *)code_addr, &origin, &relocated);
+-    if (relocated.size == 0) {
++    if (relocated.size == 0 || !relocated.addr()) {
++      dejavu_dobby::SetHookFailureStage("original-relocation");
++      ERROR_LOG("native hook original-relocation failed target=%p destination=%p",
++                (void *)entry->addr, (void *)TrampolineTarget());
+       error = 1;
+       return;
+     }
 --- a/source/InterceptRouting/NearBranchTrampoline/near_trampoline_arm64.cc
 +++ b/source/InterceptRouting/NearBranchTrampoline/near_trampoline_arm64.cc
-@@ -78,4 +78,85 @@
+@@ -7,6 +7,7 @@
+ #include "core/codegen/codegen-arm64.h"
+
+ #include "MemoryAllocator/NearMemoryAllocator.h"
++#include "dobby/dejavu_hook_diagnostics.h"
+ #include "InstructionRelocation/arm64/InstructionRelocationARM64.h"
+ #include "InterceptRouting/RoutingPlugin.h"
+
+@@ -78,4 +79,149 @@
    return tramp;
  }
- 
+
+-#endif
++#undef _
++
 +#if defined(__ANDROID__) || defined(__linux__)
 +#include <sys/mman.h>
 +#include <unistd.h>
 +#include <stdint.h>
++#include <errno.h>
 +
 +// The native-only path never reads or reuses code caves, and never uses
 +// MAP_FIXED. An allocation hint may be ignored; reject mappings outside B range.
@@ -461,32 +646,58 @@
 +  const addr_t upper = source <= UINTPTR_MAX - ARM64_B_XXX_RANGE
 +                           ? source + ARM64_B_XXX_RANGE : UINTPTR_MAX;
 +  const auto regions = ProcessRuntime::getMemoryLayout();
++  // A hint is advisory and the snapshot can race with other threads. Retry a
++  // few pages in each gap, with a global bound on allocation work.
++  constexpr size_t max_attempts = 64;
++  constexpr size_t max_gap_attempts = 4;
++  size_t attempts = 0;
 +  addr_t cursor = lower;
 +  for (size_t index = 0; index <= regions.size(); ++index) {
-+    const addr_t end = index < regions.size() ? regions[index].addr() : upper;
++    const addr_t end = index < regions.size() ? regions[index].addr() : UINTPTR_MAX;
 +    if (end > cursor && cursor < upper) {
 +      if (cursor > UINTPTR_MAX - (size - 1))
 +        break;
-+      const addr_t candidate = ((cursor + size - 1) / size) * size;
-+      const addr_t gap_end = end < upper ? end : upper;
-+      if (candidate < gap_end && gap_end - candidate >= (addr_t)size) {
++      addr_t candidate = ((cursor + size - 1) / size) * size;
++      size_t gap_attempts = 0;
++      // Only the entry address must be B-reachable; its backing page can
++      // extend past the branch limit as long as it fits the actual gap.
++      while (candidate < end && end - candidate >= (addr_t)size &&
++             SafeBranchReachable(source, candidate) &&
++             gap_attempts < max_gap_attempts && attempts < max_attempts) {
++        ++attempts;
++        ++gap_attempts;
 +        void *page = mmap((void *)candidate, size, PROT_READ | PROT_EXEC,
 +                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++        const int allocation_errno = page == MAP_FAILED ? errno : 0;
 +        if (page != MAP_FAILED) {
 +          if ((addr_t)page % 4 == 0 && SafeBranchReachable(source, (addr_t)page))
 +            return page;
-+          munmap(page, size);
++          const int unmap_status = munmap(page, size);
++          const int unmap_errno = unmap_status != 0 ? errno : 0;
++          ERROR_LOG("native hook near-allocation target=%p candidate=%p actual=%p errno=%d "
++                    "unreachable; munmap_status=%d munmap_errno=%d",
++                    (void *)source, (void *)candidate, page, allocation_errno,
++                    unmap_status, unmap_errno);
++        } else {
++          ERROR_LOG("native hook near-allocation target=%p candidate=%p actual=%p errno=%d",
++                    (void *)source, (void *)candidate, page, allocation_errno);
 +        }
++        candidate += (addr_t)size;
 +      }
 +    }
 +    if (index < regions.size() && regions[index].end() > cursor)
 +      cursor = regions[index].end();
-+    if (cursor >= upper)
++    if (cursor >= upper || attempts >= max_attempts)
 +      break;
 +  }
++  ERROR_LOG("native hook near-allocation target=%p search-exhausted attempts=%zu budget=%zu",
++            (void *)source, attempts, max_attempts);
 +  return nullptr;
 +}
- #endif
++
++#include "safe_near_page_pool.h"
++static SafeNearPagePool gSafeNearPagePool;
++#endif
 +
 +Trampoline *GenerateSafeNearTrampolineBuffer(addr_t src, addr_t dst) {
 +#if defined(__ANDROID__) || defined(__linux__)
@@ -495,27 +706,42 @@
 +  Trampoline *forward = nullptr;
 +  addr_t destination = dst;
 +  if (!SafeBranchReachable(src, dst)) {
-+    void *page = AllocateSafeNearPage(src);
-+    if (!page)
++    const addr_t slot = gSafeNearPagePool.Reserve(src);
++    if (!slot) {
++      dejavu_dobby::SetHookFailureStage("near-allocation");
++      ERROR_LOG("native hook near-allocation failed target=%p destination=%p", (void *)src, (void *)dst);
 +      return nullptr;
++    }
 +    TurboAssembler forward_assembler;
 +    forward_assembler.ldr(TMP_REG_0, 8);
 +    forward_assembler.br(TMP_REG_0);
 +    forward_assembler.EmitInt64((uint64_t)dst);
-+    forward_assembler.fixed_addr = (addr_t)page;
-+    auto block = AssemblerCodeBuilder::FinalizeFromTurboAssembler(&forward_assembler);
-+    if (!block.addr()) {
-+      munmap(page, sysconf(_SC_PAGESIZE));
++    auto buffer = forward_assembler.code_buffer();
++    if (buffer->size() != SafeNearPagePool::slot_size) {
++      dejavu_dobby::SetHookFailureStage("forward-patch");
++      ERROR_LOG("native hook forward-patch invalid size=%zu slot_size=%zu",
++                (size_t)buffer->size(), SafeNearPagePool::slot_size);
++      gSafeNearPagePool.Release(slot);
 +      return nullptr;
 +    }
-+    forward = new Trampoline(FORWARD_TRAMPOLINE_ARM64, block);
-+    destination = block.addr();
++    const int patch_status = DobbyCodePatch((void *)slot, buffer->data(), buffer->size());
++    if (patch_status != 0) {
++      dejavu_dobby::SetHookFailureStage("forward-patch");
++      ERROR_LOG("native hook forward-patch failed target=%p destination=%p forward=%p status=%d",
++                (void *)src, (void *)dst, (void *)slot, patch_status);
++      gSafeNearPagePool.AbortWrite(slot);
++      return nullptr;
++    }
++    forward = new Trampoline(FORWARD_TRAMPOLINE_ARM64, CodeMemBlock(slot, buffer->size()));
++    destination = slot;
 +  }
 +  TurboAssembler entry_assembler(src);
 +  entry_assembler.b(destination - src);
 +  auto buffer = entry_assembler.code_buffer()->dup();
-+  return new Trampoline(forward ? TRAMPOLINE_ARM64_B_XXX_AND_FORWARD_TRAMP
-+                                : TRAMPOLINE_ARM64_B_XXX, buffer, forward);
++  auto result = new Trampoline(forward ? TRAMPOLINE_ARM64_B_XXX_AND_FORWARD_TRAMP
++                                      : TRAMPOLINE_ARM64_B_XXX, buffer, forward);
++  result->strict_near_slot = forward ? destination : 0;
++  return result;
 +#else
 +  // This strict entry-publication API is currently supported by the Linux /
 +  // Android ARM64 backend only; the compatibility API keeps its old routing.
@@ -523,29 +749,155 @@
 +#endif
 +}
 +
++bool PublishSafeNearTrampoline(Trampoline *trampoline) {
++#if defined(__ANDROID__) || defined(__linux__)
++  if (trampoline && trampoline->strict_near_slot)
++    return gSafeNearPagePool.Publish(trampoline->strict_near_slot);
 +#endif
++  return true;
++}
++
++void ReleaseSafeNearTrampoline(Trampoline *trampoline) {
++#if defined(__ANDROID__) || defined(__linux__)
++  if (trampoline && trampoline->strict_near_slot) {
++    const addr_t slot = trampoline->strict_near_slot;
++    trampoline->strict_near_slot = 0;
++    gSafeNearPagePool.Release(slot);
++    delete trampoline->forward_trampoline;
++    trampoline->forward_trampoline = nullptr;
++  }
++#endif
++}
++
++#endif
+--- /dev/null
++++ b/source/InterceptRouting/NearBranchTrampoline/safe_near_page_pool.h
+@@ -0,0 +1,95 @@
++#pragma once
++
++#include <vector>
++
++// Strict native hooks only. All calls are serialized by gInterceptorMutex;
++// reservation identities are addresses, never pointers into this vector.
++struct SafeNearPagePool {
++  static constexpr size_t slot_size = 16;
++  struct Page {
++    addr_t address;
++    size_t size;
++    std::vector<uint8_t> slots; // 0: free, 1: reserved, 2: published forever
++    bool quarantined = false;
++  };
++  std::vector<Page> pages;
++
++  addr_t Reserve(addr_t source) {
++    for (auto &page : pages) {
++      if (page.quarantined)
++        continue;
++      for (size_t index = 0; index < page.slots.size(); ++index) {
++        const addr_t slot = page.address + index * slot_size;
++        if (page.slots[index] == 0 && SafeBranchReachable(source, slot)) {
++          page.slots[index] = 1;
++          return slot;
++        }
++      }
++    }
++    const long size = sysconf(_SC_PAGESIZE);
++    if (size < static_cast<long>(slot_size))
++      return 0;
++    void *mapping = AllocateSafeNearPage(source);
++    if (!mapping)
++      return 0;
++    pages.push_back({(addr_t)mapping, (size_t)size,
++                     std::vector<uint8_t>((size_t)size / slot_size, 0), false});
++    pages.back().slots[0] = 1;
++    return (addr_t)mapping;
++  }
++
++  bool Publish(addr_t slot) {
++    for (auto &page : pages) {
++      if (slot >= page.address && slot - page.address < page.size &&
++          (slot - page.address) % slot_size == 0) {
++        auto &state = page.slots[(slot - page.address) / slot_size];
++        if (page.quarantined || state != 1)
++          return false;
++        state = 2;
++        return true;
++      }
++    }
++    return false;
++  }
++
++  void Release(addr_t slot) {
++    for (size_t index = 0; index < pages.size(); ++index) {
++      auto &page = pages[index];
++      if (slot < page.address || slot - page.address >= page.size ||
++          (slot - page.address) % slot_size != 0)
++        continue;
++      auto &state = page.slots[(slot - page.address) / slot_size];
++      if (state != 1)
++        return;
++      state = 0;
++      for (auto occupied : page.slots) {
++        if (occupied != 0)
++          return;
++      }
++      if (munmap((void *)page.address, page.size) == 0) {
++        pages.erase(pages.begin() + index);
++      } else {
++        page.quarantined = true;
++        ERROR_LOG("native hook near-pool munmap failed page=%p size=%zu errno=%d",
++                  (void *)page.address, page.size, errno);
++      }
++      return;
++    }
++  }
++
++  void AbortWrite(addr_t slot) {
++    for (auto &page : pages) {
++      if (slot >= page.address && slot - page.address < page.size) {
++        // Even a -1 code-patch may have widened permissions before failing.
++        // Confirm RX before allowing another reservation on this owned page.
++        if (mprotect((void *)page.address, page.size, PROT_READ | PROT_EXEC) != 0) {
++          page.quarantined = true;
++          ERROR_LOG("native hook near-pool restore failed page=%p size=%zu errno=%d",
++                    (void *)page.address, page.size, errno);
++        }
++        break;
++      }
++    }
++    Release(slot);
++  }
++};
 --- a/source/Interceptor.h
 +++ b/source/Interceptor.h
 @@ -1,6 +1,7 @@
  #pragma once
- 
+
  #include "dobby/common.h"
-+#include <mutex>
++#include "dobby/dejavu_hook_mutation.h"
  #include "MemoryAllocator/MemoryAllocator.h"
- 
+
  #include "TrampolineBridge/Trampoline/Trampoline.h"
-@@ -28,6 +29,7 @@
+@@ -28,12 +29,15 @@
      InterceptRouting *routing;
- 
+
      uint8_t *origin_code_ = 0;
 +    bool bytes_published = false;
- 
+
      Entry(addr_t addr) {
        this->addr = addr;
-@@ -44,11 +46,13 @@
+     }
+
+     ~Entry() {
++      if (origin_code_)
++        operator delete(origin_code_);
+     }
+
+     void backup_orig_code() {
+@@ -44,11 +48,13 @@
        memcpy(origin_code_, orig, tramp_size);
      }
- 
+
 -    void restore_orig_code() {
 +    bool restore_orig_code() {
        __FUNC_CALL_TRACE__();
@@ -556,39 +908,39 @@
        origin_code_ = nullptr;
 +      return true;
      }
- 
+
      void feature_set_arm_thumb(bool thumb) {
-@@ -93,6 +97,7 @@
+@@ -93,6 +99,7 @@
    }
  };
- 
+
 +inline std::recursive_mutex gInterceptorMutex;
  inline static Interceptor gInterceptor;
- 
+
  inline Interceptor *Interceptor::Shared() {
 --- a/source/MemoryAllocator/AssemblerCodeBuilder.h
 +++ b/source/MemoryAllocator/AssemblerCodeBuilder.h
 @@ -33,7 +33,8 @@
        assembler->set_fixed_addr(fixed_addr);
      }
- 
+
 -    DobbyCodePatch((void *)fixed_addr, code_buffer->data(), code_buffer->size());
 +    if (DobbyCodePatch((void *)fixed_addr, code_buffer->data(), code_buffer->size()) != 0)
 +      return MemBlock{};
- 
+
      return MemBlock(fixed_addr, code_buffer->size());
    }
 --- a/source/PlatformUtil/ProcessRuntime.h
 +++ b/source/PlatformUtil/ProcessRuntime.h
 @@ -4,7 +4,7 @@
  #include "PlatformUnifiedInterface/platform.h"
- 
+
  struct RuntimeModule {
 -  void *base;
 +  union { void *base; void *load_address; };
    char path[1024];
  };
- 
+
 --- a/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
 +++ b/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
 @@ -50,8 +50,13 @@
@@ -603,14 +955,53 @@
 +add TMP_REG_0, TMP_REG_0, :lo12:cdecl(common_closure_bridge_handler)
 +#endif
  blr TMP_REG_0
- 
+
  // restore stack, saved original sp
+--- a/source/TrampolineBridge/Trampoline/Trampoline.h
++++ b/source/TrampolineBridge/Trampoline/Trampoline.h
+@@ -22,6 +22,7 @@
+   CodeMemBlock buffer;
+
+   Trampoline *forward_trampoline;
++  addr_t strict_near_slot = 0; // private, zero for every compatibility trampoline
+
+   Trampoline() : type(0), buffer() {
+   }
 --- a/source/dobby.cpp
 +++ b/source/dobby.cpp
-@@ -15,7 +15,18 @@
+@@ -1,5 +1,6 @@
+ #include "dobby.h"
+ #include "dobby/common.h"
++#include "dobby/dejavu_hook_diagnostics.h"
+ #include "Interceptor.h"
+ #include "InterceptRouting/InlineHookRouting.h"
+ #include "InterceptRouting/InstrumentRouting.h"
+@@ -8,6 +9,21 @@
+ #include "MemoryAllocator/NearMemoryAllocator.h"
+ #include <stdint.h>
+
++namespace dejavu_dobby {
++namespace {
++thread_local const char *last_hook_failure_stage = nullptr;
++}
++void ResetHookFailureStage() {
++  last_hook_failure_stage = nullptr;
++}
++void SetHookFailureStage(const char *stage) {
++  last_hook_failure_stage = stage;
++}
++const char *LastHookFailureStage() {
++  return last_hook_failure_stage;
++}
++} // namespace dejavu_dobby
++
+ __attribute__((constructor)) static void ctor() {
+   DEBUG_LOG("================================");
+   DEBUG_LOG("Dobby");
+@@ -15,7 +31,20 @@
    DEBUG_LOG("================================");
  }
- 
+
 +PUBLIC int DobbyIsHooked(void *address) {
 +  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
 +  if (!address)
@@ -622,12 +1013,14 @@
 +}
 +
  PUBLIC int DobbyDestroy(void *address) {
-+  std::lock_guard<std::recursive_mutex> mutation_lock(gInterceptorMutex);
++  dejavu_dobby::HookMutationScope mutation(gInterceptorMutex);
++  if (!mutation.entered())
++    return dejavu_dobby::kHookMutationReentrant;
    __FUNC_CALL_TRACE__();
    if (!address) {
      ERROR_LOG("address is 0x0");
-@@ -27,8 +38,9 @@
- 
+@@ -27,8 +56,9 @@
+
    auto entry = gInterceptor.find((addr_t)address);
    if (entry) {
 +    if (!entry->restore_orig_code())
@@ -637,7 +1030,7 @@
      // FIXME: delete entry safely
      // delete entry;
      return 0;
-@@ -45,6 +57,8 @@
+@@ -45,6 +75,8 @@
  PUBLIC uintptr_t placeholder() {
    uintptr_t x = 0;
    x += (uintptr_t)&DobbyHook;
@@ -646,3 +1039,48 @@
    x += (uintptr_t)&DobbyInstrument;
    x += (uintptr_t)&dobby_set_near_trampoline;
    x += (uintptr_t)&common_closure_bridge_handler;
+--- /dev/null
++++ b/source/dobby/dejavu_hook_diagnostics.h
+@@ -0,0 +1,9 @@
++#pragma once
++
++// Private, allocation-free diagnostics; not part of Dobby's public C API or
++// Dejavu's native plugin ABI. Every stage points to a static string literal.
++namespace dejavu_dobby {
++void ResetHookFailureStage();
++void SetHookFailureStage(const char *stage);
++const char *LastHookFailureStage();
++} // namespace dejavu_dobby
+--- /dev/null
++++ b/source/dobby/dejavu_hook_mutation.h
+@@ -0,0 +1,30 @@
++#pragma once
++
++#include <mutex>
++
++// Private lifecycle status; not part of the public plugin ABI.
++namespace dejavu_dobby {
++inline constexpr int kHookMutationReentrant = -3;
++
++// Accessed only while holding the interceptor mutex. Other threads wait for
++// the outer mutation; recursive calls on its owning thread fail immediately.
++inline bool hook_mutation_in_progress = false;
++class HookMutationScope {
++ public:
++  explicit HookMutationScope(std::recursive_mutex &mutex) : lock_(mutex) {
++    if (!hook_mutation_in_progress) {
++      hook_mutation_in_progress = true;
++      entered_ = true;
++    }
++  }
++  ~HookMutationScope() {
++    if (entered_)
++      hook_mutation_in_progress = false;
++  }
++  bool entered() const { return entered_; }
++
++ private:
++  std::unique_lock<std::recursive_mutex> lock_;
++  bool entered_ = false;
++};
++} // namespace dejavu_dobby

@@ -6,7 +6,13 @@
 #define PUBLIC
 #define TARGET_ARCH_ARM64 1
 #define __FUNC_CALL_TRACE__()
-#define ERROR_LOG(...)
+inline void TestDobbyErrorLog(const char *, ...) {
+#ifdef DOBBY_TEST_LOG_OBSERVER
+    DOBBY_TEST_LOG_OBSERVER();
+#endif
+}
+#define ERROR_LOG(...) TestDobbyErrorLog(__VA_ARGS__)
+#define DEBUG_LOG(...) TestDobbyErrorLog(__VA_ARGS__)
 namespace stl {
 template <class T> using vector = std::vector<T>;
 }

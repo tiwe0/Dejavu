@@ -295,9 +295,33 @@ of module/symbol names. It sends an exact hexadecimal string to the Lua API.
   entry points. `install_address` can target a known function address without a symbol.
 - **arm64 Android.** The agent/module only supports `arm64-v8a`.
 - **Atomic native entry patches.** Native installs require an aligned four-byte
-  branch and a fresh anonymous near trampoline. If a suitable near mapping cannot
-  be allocated, installation fails before activating the replacement; it does
-  not fall back to a multi-instruction entry patch or overwrite code caves.
+  branch. Far replacements use 16-byte slots in a pool of fresh anonymous near
+  pages owned by the strict hook backend. Each slot is checked against the
+  target's branch range; a reachable page start does not make every slot in
+  that page reachable. A 4 KiB / 16 KiB page has a theoretical capacity of
+  256 / 1024 slots. Pages are acquired lazily, and existing reachable slots are
+  tried before allocating another page.
+  Published slots remain immutable until process exit, including after
+  uninstall. Reservations that fail before original/callback publication can
+  be returned to the pool; an unused page can be unmapped. A failed page write
+  must restore execute/read permission or isolate the page from further
+  allocation, while keeping already-published slots mapped.
+  Fresh-page searches retry up to four candidates per gap with a total limit
+  of 64 allocation attempts. If neither a usable owned slot nor a fresh mapping
+  is available, installation fails before activating the replacement. Search
+  failure does not prove that every reachable page is unavailable. The strict
+  path does not fall back to a multi-instruction entry patch or code caves.
+- **Backend failure stages.** Installation errors include `stage=near-allocation`,
+  `forward-patch`, `original-relocation` or `entry-activation` when that stage
+  fails. The stage describes the failed operation; an undifferentiated Dobby
+  `-1` alone does not establish that libc or a particular function is protected.
+- **Lifecycle reentry.** While a backend hook installation, instrumentation or
+  removal is in progress, another lifecycle mutation on the same thread is
+  rejected with private backend status `-3`. Rejection occurs before changing
+  outputs or the enclosing operation's diagnosis. Read-only `DobbyIsHooked`
+  queries remain allowed; other threads continue to serialize through the
+  backend mutex. Native control errors identify this as a reentrant mutation
+  rejection rather than borrowing the enclosing operation's failure stage.
 - **Executable mappings only.** The target address must be in a mapping with
   the execute permission; page protection is saved/widened to patch and then
   restored.
@@ -329,3 +353,21 @@ The on-device acceptance suite (`./dejavu test -p <process>`) installs a
 `libc.so#read` hook, checks that `native.stats()` observes intercepts, calls
 the original, and then uninstalls it. See
 `zygisk/scripts/device-test.sh`.
+
+`zygisk/tests/device/build-native-near-test.sh` builds an isolated arm64
+executable against the current Dobby static library. Run `native-near-edge`
+on the device to test a range with only its final reachable page available;
+`native-near-edge --exhausted` checks safe failure and the `near-allocation`
+diagnosis when no page is free. `native-near-edge --pool` checks multiple hooks
+sharing the only available near page, unchanged published slots, and saved
+original calls after uninstall. `native-near-edge --pool-full` fills every slot
+in the unique near page and checks that the next hook fails without changing
+existing hooks. It reserves virtual space in its own process
+and does not install hooks in an existing app.
+
+`zygisk/tests/device/build-native-mutation-test.sh` builds a separate arm64
+`native-mutation` executable. It links the actual Dobby lifecycle API and wraps
+OS calls locally to submit nested requests during mapping, protection changes,
+rollback and preparation. It checks rejection, unchanged outputs/diagnosis,
+existing-hook survival, original calls and normal later uninstall in its own
+process. It does not modify another app's hooks.
