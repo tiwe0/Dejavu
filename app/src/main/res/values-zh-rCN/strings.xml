@@ -1,12 +1,12 @@
 <resources>
-    <string name="app_name">Dejavu 管理器</string>
+    <string name="app_name">dejavu</string>
 
     <string name="tab_home">概览</string>
     <string name="tab_targets">作用域</string>
     <string name="tab_plugins">插件</string>
     <string name="tab_logs">日志</string>
 
-    <string name="title_home">Dejavu Manager</string>
+    <string name="title_home">dejavu</string>
     <string name="title_targets">作用域</string>
     <string name="title_plugins">插件</string>
     <string name="title_logs">实时日志</string>
@@ -27,7 +27,7 @@
     <string name="module_subtitle">Zygisk 运行时与模块包</string>
     <string name="module_installed">已安装</string>
     <string name="module_version_format">Dejavu Zygisk · %1$s</string>
-    <string name="module_missing_hint">请安装 v0.7.0+ 模块并软重启。</string>
+    <string name="module_missing_hint">可直接安装应用内置的框架。</string>
     <string name="root_shell_available">su -c 可用</string>
     <string name="refresh_status">刷新状态</string>
 
@@ -122,13 +122,13 @@
     <string name="add_target">添加目标</string>
     <string name="permission_title">权限</string>
     <string name="root_required_title">需要 root 权限</string>
-    <string name="root_required_body">Dejavu 管理器需要 root 才能读取模块、控制目标进程并连接认证 RPC 通道。</string>
+    <string name="root_required_body">dejavu 需要 root 才能安装框架、管理插件并连接认证 RPC 通道。</string>
     <string name="request_root">请求 root 权限</string>
     <string name="request_root_again">再次请求</string>
     <string name="open_manager">打开 KernelSU</string>
     <string name="root_steps_title">如何授权</string>
-    <string name="root_step_1">打开 KernelSU 或 Magisk 管理器。</string>
-    <string name="root_step_2">进入超级用户列表，找到 Dejavu 管理器。</string>
+    <string name="root_step_1">打开 APatch、KernelSU 或 Magisk。</string>
+    <string name="root_step_2">进入超级用户列表，找到 dejavu。</string>
     <string name="root_step_3">选择允许，返回此页再次请求。</string>
     <string name="root_retry_hint">已经授权？返回应用后再次请求即可。</string>
     <string name="choose_app">选择应用</string>

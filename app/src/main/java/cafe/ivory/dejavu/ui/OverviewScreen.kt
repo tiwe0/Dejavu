@@ -24,6 +24,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,12 +38,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.ConsoleUiState
+import cafe.ivory.dejavu.data.ModuleUiState
 
 private const val PROJECT_URL = "https://github.com/tiwe0/Dejavu"
 
 @Composable
 internal fun OverviewScreen(
     state: ConsoleUiState,
+    moduleState: ModuleUiState,
+    onManageModule: () -> Unit,
     onManagePlugins: () -> Unit,
     onLinkUnavailable: (String) -> Unit,
 ) {
@@ -49,7 +55,7 @@ internal fun OverviewScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { ModuleStatus(state) }
+        item { ModuleStatus(state, moduleState, onManageModule) }
         item { OverviewTarget(state, onManagePlugins) }
         item {
             ManagerGroup {
@@ -77,7 +83,7 @@ internal fun OverviewScreen(
 }
 
 @Composable
-private fun ModuleStatus(state: ConsoleUiState) {
+private fun ModuleStatus(state: ConsoleUiState, moduleState: ModuleUiState, onManageModule: () -> Unit) {
     val installed = state.moduleInstalled
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < colors.onBackground.luminance()
@@ -103,7 +109,14 @@ private fun ModuleStatus(state: ConsoleUiState) {
             ManagerMark(Modifier.size(90.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    stringResource(if (installed) R.string.overview_module_detected else R.string.overview_module_missing),
+                    stringResource(when {
+                        moduleState.working -> R.string.module_install_progress
+                        moduleState.snapshot?.removalPending == true -> R.string.module_install_removing
+                        moduleState.snapshot?.rebootPending == true -> R.string.module_install_pending
+                        moduleState.snapshot?.disabled == true -> R.string.module_install_disabled
+                        installed -> R.string.overview_module_detected
+                        else -> R.string.overview_module_missing
+                    }),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -117,6 +130,10 @@ private fun ModuleStatus(state: ConsoleUiState) {
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                TextButton(onClick = onManageModule,
+                    colors = ButtonDefaults.textButtonColors(contentColor = LocalContentColor.current)) {
+                    Text(stringResource(R.string.module_install_open))
+                }
             }
         }
     }

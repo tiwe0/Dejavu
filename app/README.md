@@ -1,8 +1,8 @@
-# Dejavu Manager (Android)
+# dejavu (Android)
 
-Package: `cafe.ivory.dejavu` · version: `0.2.2`
+Package: `cafe.ivory.dejavu` · version follows `zygisk/module/module.prop`.
 
-Kotlin + Jetpack Compose Material 3 control app for Dejavu.
+Kotlin + Jetpack Compose Material 3 app with the matching Dejavu framework included.
 
 ## Build
 
@@ -13,11 +13,17 @@ Requirements:
 - `local.properties` with `sdk.dir=...`
 
 ```sh
+./dejavu package
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 AGP 9.2.1 uses built-in Kotlin; there is no separate Kotlin Android plugin.
+The exact module ZIP must exist before building the app. To use another location,
+pass `-PdejavuModuleZip=/absolute/path/to/dejavu-zygisk-vVERSION-arm64.zip`.
+The build checks module identity, version, archive paths and payload integrity,
+then generates `assets/dejavu/module.zip` and `module.json` under `app/build`.
+The ZIP is never downloaded by the app.
 
 For a project-local toolchain installed under `out/tooling`, use:
 
@@ -26,7 +32,7 @@ source out/tooling/env.sh
 ./gradlew :app:assembleDebug :app:lintDebug -PdejavuSideBySide=true --max-workers=2
 ```
 
-The optional `dejavuSideBySide` profile builds **Dejavu Dev** as
+The optional `dejavuSideBySide` profile builds **dejavu Dev** as
 `cafe.ivory.dejavu.debug`, signed with
 `out/tooling/android-user/debug.keystore`. This keeps an installed release and
 its data available while testing. Keep this signing file for later Dev updates;
@@ -35,14 +41,14 @@ the profile uses the standard Android debug signing credentials.
 ## What it does
 
 - **Overview** – module version, root access, root helper, total injection targets,
-  project source, third-party notices and copyright.
+  installation management, project source, third-party notices and copyright.
 - **Plugins** – import ZIP packages, scan `/data/adb/dejavu/plugins`, configure each
   plugin's multi-process scope, and use its controls or Lua-authored page.
   Within a plugin, select the process to inspect/start/stop; changing that selection
   does not stop plugins already running in other processes. Native folders retain
   load/unload and SKILL.md support.
 - **Configuration** – six saved color palettes, Android 12+ wallpaper colors,
-  system/light/dark appearance, the built-in router, and live framework logs. The mobile Lua console has been removed;
+  system/light/dark appearance, framework installation, the built-in router, and live framework logs. The mobile Lua console has been removed;
   desktop `dejavu`/`dejavuctl` Lua RPC remains available.
 
 Plugin details use **Control**, **Scope** and **Info** tabs. The control panel
@@ -50,6 +56,25 @@ shows the selected process's runtime state and actions, including any declared
 Lua page. **Scope** edits the plugin's target list. **Info** shows the manifest
 metadata and configured targets. Leaving **Control** releases the live viewer
 and clears its message list.
+
+### Framework installation
+
+Open **Overview → Manage installation** or **Configuration → Installation**.
+The app verifies its embedded module, identifies the root provider from the same
+authorized `su` entry, then invokes APatch (`apd module install`), KernelSU
+(`ksud module install`) or Magisk (`magisk --install-module`). ZygiskNext provides
+the Zygisk runtime; these commands only install the same standard module ZIP.
+The module currently supports arm64 and Android API 26–35, even though the app
+targets SDK 36. A compatible Zygisk provider must be enabled separately.
+
+Installation uses a private root staging directory, binary stdin transfer and a
+second size/checksum check. A kernel-owned root lock covers the entire operation
+and prevents duplicate installs across app restarts. Output is bounded and kept
+in memory; temporary payloads are cleaned up on completion and failure.
+The page distinguishes disabled, removal pending, installation running and
+restart pending states. Success means the module is staged, and does not mean
+the new Agent is already loaded. The app never automatically restarts the device.
+Target scopes and plugin configuration are retained by the module upgrade script.
 
 ### Router
 
@@ -88,7 +113,8 @@ are saved in Manager's private preferences across relaunches.
 Android's predictive-back callback animates internal back navigation with a
 read-only preview of the destination. Complete a gesture to return, or cancel it
 to stay on the current page. Plugin details return to the list, Scope returns to
-Control, and logs and Router return to Configuration. The root pages keep system back/home
+Control, and logs and Router return to Configuration. Installation returns to
+the Overview or Configuration page that opened it. The root pages keep system back/home
 behavior. Previewing Control never attaches event streams or changes secure-window
 flags; normal viewer cleanup happens only on a completed navigation.
 
@@ -377,25 +403,32 @@ committed.
 ```sh
 cp app/keystore.properties.example app/keystore.properties
 # create a local keystore:
-keytool -genkeypair -v -keystore out/tooling/dejavu-console.jks \
-  -alias dejavu-console -keyalg RSA -keysize 2048 -validity 10000 \
-  -storepass change-me -keypass change-me \
-  -dname "CN=Dejavu Console, O=Dejavu, C=CN"
+keytool -genkeypair -keystore out/dejavu-release.p12 -storetype PKCS12 \
+  -alias dejavu -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=dejavu"
 # edit app/keystore.properties to match
 ./gradlew :app:assembleRelease
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-Release uses R8 + resource shrinking. `versionName` is `0.2.2` (`versionCode` 4).
-The app is self-signed; for distribution replace the local keystore with a
-stable release key.
+Release uses R8 + resource shrinking. `versionName` and `versionCode` come from
+the module metadata. Every release must use the same private signing key so
+future versions can update the installed app without removing its data.
+
+CI accepts `DEJAVU_SIGNING_KEYSTORE_BASE64`, `DEJAVU_SIGNING_STORE_PASSWORD`,
+`DEJAVU_SIGNING_KEY_ALIAS` and `DEJAVU_SIGNING_KEY_PASSWORD` repository secrets.
+The decoded key exists only in the runner's private temporary directory. A release
+requires a signed release variant; a temporary debug APK is never published as
+the stable app. Local builds can instead use `app/keystore.properties`, or the
+`DEJAVU_SIGNING_KEYSTORE_FILE` environment variable with the three credential
+variables above. Keep signing material outside Git and back it up securely.
 
 
 ## Root permission screen
 
 The dedicated permission screen shows the authorization steps until a root
 manager grants access. It offers a shortcut when Android can resolve a
-launchable KernelSU or Magisk app, preferring KernelSU when both are available.
+launchable APatch, KernelSU or Magisk app.
 The dashboard and bottom navigation appear after authorization.
 
 ![Permission screen](docs/permission.png)

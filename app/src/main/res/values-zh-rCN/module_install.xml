@@ -1,0 +1,35 @@
+<resources>
+    <string name="module_install_title">安装管理</string>
+    <string name="module_install_summary">安装或更新应用内置的框架</string>
+    <string name="module_install_open">管理安装</string>
+    <string name="module_install_action">安装 %1$s</string>
+    <string name="module_install_reinstall">重新安装 %1$s</string>
+    <string name="module_install_progress">正在安装框架…</string>
+    <string name="module_install_progress_hint">安装仍在进行，当前页面会自动刷新状态。</string>
+    <string name="module_install_ready">可以安装</string>
+    <string name="module_install_checking">正在检查安装状态…</string>
+    <string name="module_install_exit_code">安装器退出码为 %1$d，可展开安装输出查看原因。</string>
+    <string name="module_install_current">已安装版本</string>
+    <string name="module_install_bundled">内置版本</string>
+    <string name="module_install_not_installed">尚未安装</string>
+    <string name="module_install_pending">等待重启生效</string>
+    <string name="module_install_pending_detail">安装已暂存。请在方便时重启设备，加载新版框架。</string>
+    <string name="module_install_disabled">模块已停用</string>
+    <string name="module_install_removing">等待卸载</string>
+    <string name="module_install_environment">运行环境</string>
+    <string name="module_install_provider">Root 方案</string>
+    <string name="module_install_unknown_provider">未识别到受支持的安装器</string>
+    <string name="module_install_platform">设备兼容性</string>
+    <string name="module_install_supported">arm64 · Android API 26–35</string>
+    <string name="module_install_unsupported">需要 arm64 和 Android API 26–35</string>
+    <string name="module_install_zygisk">Zygisk 支持</string>
+    <string name="module_install_zygisk_detected">检测到支持模块</string>
+    <string name="module_install_zygisk_missing">需要启用 Zygisk 支持</string>
+    <string name="module_install_zygisk_hint">dejavu 需要 Zygisk。此应用安装 Dejavu 框架，请在 Root 管理器中启用 Zygisk 支持。</string>
+    <string name="module_install_configuration_hint">升级时保留目标作用域和插件配置。</string>
+    <string name="module_install_logs">安装输出</string>
+    <string name="module_install_failed">安装未能完成</string>
+    <string name="module_install_bundle_missing">应用内置模块不可用</string>
+    <string name="module_install_removing_hint">请先在 Root 管理器中取消卸载，再重新安装。</string>
+    <string name="module_install_disabled_hint">请在 Root 管理器中启用模块，重启后生效。</string>
+</resources>

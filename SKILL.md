@@ -85,6 +85,15 @@ hook）+ Dobby（inline hook）。本仓库同时提供统一 CLI `./dejavu`。
 
 ### 1. 构建、打包、安装
 
+手机端统一应用显示名为 `dejavu`，APK 内置与 `module.prop` 相同版本的模块。
+通过**概览 → 管理安装**或**配置 → 安装管理**调用当前 root 方案的安装器，
+支持 APatch（含已验证的 FolkPatch 身份）、KernelSU、Magisk。它们只影响模块
+安装入口；ZygiskNext 提供运行时，Hook 代码和 ABI 共用一套。安装成功显示待重启，
+不自动重启，不把目录已更新误报为新 Agent 已加载。
+构建 App 前先生成模块 ZIP；也可用 `-PdejavuModuleZip=/absolute/path/module.zip`
+指定精确产物。CI 的正式 APK 需要固定的发布签名，不能使用临时 debug 签名升级。
+CLI `./dejavu install` 当前只提供 ksud/Magisk 安装入口；APatch 可使用 App 内安装。
+
 ```sh
 ./dejavu build                    # 构建 out/android-arm64-v8a-api26/libdejavu.so
 ./dejavu package                  # 构建并打包 zygisk/dist/dejavu-zygisk-v*-arm64.zip

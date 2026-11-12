@@ -1,12 +1,12 @@
 <resources>
-    <string name="app_name">Dejavu Manager</string>
+    <string name="app_name">dejavu</string>
 
     <string name="tab_home">Overview</string>
     <string name="tab_targets">Scope</string>
     <string name="tab_plugins">Plugins</string>
     <string name="tab_logs">Logs</string>
 
-    <string name="title_home">Dejavu Manager</string>
+    <string name="title_home">dejavu</string>
     <string name="title_targets">Scope</string>
     <string name="title_plugins">Plugins</string>
     <string name="title_logs">Live logs</string>
@@ -27,7 +27,7 @@
     <string name="module_subtitle">Zygisk runtime and module package</string>
     <string name="module_installed">Installed</string>
     <string name="module_version_format">Dejavu Zygisk · %1$s</string>
-    <string name="module_missing_hint">Install the v0.7.0+ module and soft reboot.</string>
+    <string name="module_missing_hint">Install the framework included with this app.</string>
     <string name="root_shell_available">su -c available</string>
     <string name="refresh_status">Refresh status</string>
 
@@ -122,13 +122,13 @@
     <string name="add_target">Add target</string>
     <string name="permission_title">Permission</string>
     <string name="root_required_title">Root access required</string>
-    <string name="root_required_body">Dejavu Manager needs root to read the module, control targets and open the authenticated RPC channel.</string>
+    <string name="root_required_body">dejavu needs root to install the framework, manage plugins and open the authenticated RPC channel.</string>
     <string name="request_root">Request root access</string>
     <string name="request_root_again">Request again</string>
     <string name="open_manager">Open KernelSU</string>
     <string name="root_steps_title">How to authorize</string>
-    <string name="root_step_1">Open KernelSU or Magisk manager.</string>
-    <string name="root_step_2">Open Superuser and find Dejavu Manager.</string>
+    <string name="root_step_1">Open APatch, KernelSU or Magisk.</string>
+    <string name="root_step_2">Open Superuser and find dejavu.</string>
     <string name="root_step_3">Choose Allow, return here and request again.</string>
     <string name="root_retry_hint">Already granted root? Request again after returning to the app.</string>
     <string name="choose_app">Choose app</string>

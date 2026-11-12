@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="cafe.ivory.dejavu.modulesmoke">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <application android:label="Dejavu Module Smoke" android:debuggable="true" />
+    <instrumentation android:name="dejavu.tests.ModuleAndroidInstrumentation"
+        android:targetPackage="cafe.ivory.dejavu.debug" android:functionalTest="true" />
+</manifest>

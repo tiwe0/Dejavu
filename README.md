@@ -57,14 +57,16 @@ available.
 
 1. **Prepare the device.** Use an authorized rooted Android arm64 device with a
    compatible Zygisk provider. Check the [compatibility notes](#android-compatibility-status).
-2. **Install the framework.** Download the module ZIP from
-   [Releases](https://github.com/tiwe0/Dejavu/releases/latest), install it through
-   your root manager and reboot. Follow the [installation guide](zygisk/docs/user-guide.md).
-3. **Open Manager.** Build it using the [app guide](app/README.md), or download
-   the `dejavu-manager-debug` artifact from a successful
-   [Build Dejavu run](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml).
-   This CI APK uses a debug signature and is separate from the stable module ZIP.
-   Grant Manager root access.
+2. **Install the dejavu app.** Use the APK from
+   [Releases](https://github.com/tiwe0/Dejavu/releases/latest), or build it using
+   the [app guide](app/README.md). The APK includes its matching framework module.
+   Grant the app root access.
+3. **Install the included framework.** Open **Overview → Manage installation**
+   (also under **Configuration → Installation**) and install the included version.
+   The app uses your authorized APatch, KernelSU or Magisk installer. Restart
+   the device when convenient; a staged installation is shown as awaiting restart.
+   Enable a Zygisk provider such as ZygiskNext separately. The standard module ZIP
+   remains available for manual installation through your root manager.
 4. **Add and activate a plugin.** Extract the public examples release bundle
    and ZIP a single plugin folder before selecting it with **+**. You can also
    copy the extracted plugin folders into the device library and refresh the
@@ -328,8 +330,9 @@ Reusable skills for common scenarios live in [SKILLS/](SKILLS/README.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **Zygisk module package version** (currently `0.9.3`). Module packaging,
-  loader/agent behavior and documentation changes bump it independently.
+  **app and Zygisk module package version** (currently `0.9.3`). The app reads
+  its version and version code from the module metadata and embeds that version's ZIP.
+  This version remains independent of the core library ABI.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`
   publishes the stable release, a matching `v*` tag publishes the stable
   release, and a manual `workflow_dispatch` run publishes a prerelease.

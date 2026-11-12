@@ -1,0 +1,35 @@
+<resources>
+    <string name="module_install_title">Installation</string>
+    <string name="module_install_summary">Install or update the built-in framework</string>
+    <string name="module_install_open">Manage installation</string>
+    <string name="module_install_action">Install %1$s</string>
+    <string name="module_install_reinstall">Reinstall %1$s</string>
+    <string name="module_install_progress">Installing framework…</string>
+    <string name="module_install_progress_hint">Installation is still running. This page refreshes the status automatically.</string>
+    <string name="module_install_ready">Ready to install</string>
+    <string name="module_install_checking">Checking installation…</string>
+    <string name="module_install_exit_code">Installer returned exit code %1$d. Expand the installation output for details.</string>
+    <string name="module_install_current">Installed version</string>
+    <string name="module_install_bundled">Included version</string>
+    <string name="module_install_not_installed">Not installed</string>
+    <string name="module_install_pending">Restart required</string>
+    <string name="module_install_pending_detail">Installation is staged. Restart the device when convenient to load the new framework.</string>
+    <string name="module_install_disabled">Module disabled</string>
+    <string name="module_install_removing">Removal pending</string>
+    <string name="module_install_environment">Environment</string>
+    <string name="module_install_provider">Root provider</string>
+    <string name="module_install_unknown_provider">No supported installer detected</string>
+    <string name="module_install_platform">Device compatibility</string>
+    <string name="module_install_supported">arm64 · Android API 26–35</string>
+    <string name="module_install_unsupported">Requires arm64 and Android API 26–35</string>
+    <string name="module_install_zygisk">Zygisk provider</string>
+    <string name="module_install_zygisk_detected">Provider module detected</string>
+    <string name="module_install_zygisk_missing">Requires an enabled Zygisk provider</string>
+    <string name="module_install_zygisk_hint">dejavu requires Zygisk. This app installs the Dejavu framework; enable a Zygisk provider in your root manager.</string>
+    <string name="module_install_configuration_hint">Target scopes and plugin configuration are preserved during upgrades.</string>
+    <string name="module_install_logs">Installation output</string>
+    <string name="module_install_failed">Installation could not be completed</string>
+    <string name="module_install_bundle_missing">The included module is unavailable</string>
+    <string name="module_install_removing_hint">Cancel removal in your root manager before installing again.</string>
+    <string name="module_install_disabled_hint">Enable the module in your root manager and restart to load it.</string>
+</resources>

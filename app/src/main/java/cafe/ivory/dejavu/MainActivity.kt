@@ -73,6 +73,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.ivory.dejavu.data.pluginOperationInProgress
 import cafe.ivory.dejavu.data.RouterViewModel
+import cafe.ivory.dejavu.data.ModuleViewModel
+import cafe.ivory.dejavu.ui.ModuleInstallScreen
 import cafe.ivory.dejavu.ui.RouterScreen
 import cafe.ivory.dejavu.data.ConsoleViewModel
 import cafe.ivory.dejavu.ui.LogsScreen
@@ -94,9 +96,10 @@ private enum class ManagerPage(
     Tools(R.string.tab_configuration, R.string.title_configuration, Icons.Rounded.Settings),
     Logs(R.string.tab_logs, R.string.title_logs, Icons.AutoMirrored.Rounded.Article),
     Router(R.string.router_title, R.string.router_title, Icons.Rounded.Settings),
+    Installer(R.string.module_install_title, R.string.module_install_title, Icons.Rounded.Settings),
     ;
 
-    val isToolDetail get() = this == Logs || this == Router
+    val isToolDetail get() = this == Logs || this == Router || this == Installer
 }
 
 private val tabs = ManagerPage.entries.filterNot { it.isToolDetail }
@@ -147,10 +150,14 @@ private fun ManagerApp(
     onLanguageChange: (String?) -> Unit,
     vm: ConsoleViewModel = viewModel(),
     routerVm: RouterViewModel = viewModel(),
+    moduleVm: ModuleViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val routerState by routerVm.state.collectAsStateWithLifecycle()
+    val moduleState by moduleVm.state.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
+    var installerOrigin by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
+    val parentPage = if (page == ManagerPage.Installer) installerOrigin else ManagerPage.Tools
     var pluginPageId by remember(page) { mutableStateOf<String?>(null) }
     var scopeEditor by remember(pluginPageId) { mutableStateOf(false) }
     val pluginDetail = pluginPageId?.let { id -> state.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } }
@@ -180,6 +187,13 @@ private fun ManagerApp(
         vm.consumeMessage()
     }
 
+    LaunchedEffect(state.rootGranted) {
+        if (state.rootGranted) moduleVm.refresh()
+    }
+    LaunchedEffect(moduleState.installSucceeded) {
+        if (moduleState.installSucceeded) vm.refresh()
+    }
+
     LaunchedEffect(page, state.rootGranted) {
         if (page != ManagerPage.Plugins || !state.rootGranted) vm.closePackageEvents()
         if (!state.rootGranted) {
@@ -201,27 +215,33 @@ private fun ManagerApp(
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, state.rootGranted) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.refresh()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vm.refresh()
+                if (state.rootGranted) moduleVm.refresh()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     DisposableEffect(lifecycleOwner, page, state.rootGranted) {
-        fun updateRouterVisibility() {
+        fun updateDetailVisibility() {
             routerVm.setVisible(page == ManagerPage.Router && state.rootGranted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+            moduleVm.setVisible(page == ManagerPage.Installer && state.rootGranted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
         }
-        updateRouterVisibility()
-        val observer = LifecycleEventObserver { _, _ -> updateRouterVisibility() }
+        updateDetailVisibility()
+        val observer = LifecycleEventObserver { _, _ -> updateDetailVisibility() }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); routerVm.setVisible(false) }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); routerVm.setVisible(false); moduleVm.setVisible(false) }
     }
 
     val renderPage: @Composable (ManagerPage, String?, Boolean, Boolean) -> Unit = { visiblePage, visiblePluginId, visibleScope, preview ->
         when (visiblePage) {
             ManagerPage.Overview -> OverviewScreen(
                 state = state,
+                moduleState = moduleState,
+                onManageModule = { installerOrigin = ManagerPage.Overview; page = ManagerPage.Installer },
                 onManagePlugins = { page = ManagerPage.Plugins },
                 onLinkUnavailable = { vm.message(it, error = true) },
             )
@@ -260,7 +280,9 @@ private fun ManagerApp(
                 onAppearanceChange = onAppearanceChange,
                 onOpenLogs = { page = ManagerPage.Logs },
                 onOpenRouter = { page = ManagerPage.Router },
+                onOpenInstaller = { installerOrigin = ManagerPage.Tools; page = ManagerPage.Installer },
             )
+            ManagerPage.Installer -> ModuleInstallScreen(moduleState, moduleVm::install)
             ManagerPage.Router -> RouterScreen(
                 state = routerState,
                 onSetRunning = routerVm::setRunning,
@@ -305,7 +327,7 @@ private fun ManagerApp(
                     navigationIcon = {
                         if (state.rootGranted && (page.isToolDetail || pluginPageId != null)) {
                             IconButton(enabled = !pluginsBusy, onClick = {
-                                if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools
+                                if (pluginPageId != null) closePluginPage() else page = parentPage
                             }) {
                                 Icon(
                                     Icons.AutoMirrored.Rounded.ArrowBack,
@@ -315,12 +337,21 @@ private fun ManagerApp(
                         }
                     },
                     actions = {
-                        if (state.rootGranted && (!page.isToolDetail || page == ManagerPage.Router)) {
+                        if (state.rootGranted && (!page.isToolDetail || page == ManagerPage.Router || page == ManagerPage.Installer)) {
                             IconButton(
                                 onClick = {
-                                    if (page == ManagerPage.Router) routerVm.refresh() else if (page == ManagerPage.Plugins) refreshPlugins() else vm.refresh()
+                                    when (page) {
+                                        ManagerPage.Installer -> moduleVm.refresh()
+                                        ManagerPage.Router -> routerVm.refresh()
+                                        ManagerPage.Plugins -> refreshPlugins()
+                                        else -> { vm.refresh(); moduleVm.refresh() }
+                                    }
                                 },
-                                enabled = if (page == ManagerPage.Router) !routerState.busy && !routerState.loading else !state.loading && (page != ManagerPage.Plugins || !pluginsBusy),
+                                enabled = when (page) {
+                                    ManagerPage.Installer -> !moduleState.installing && !moduleState.loading
+                                    ManagerPage.Router -> !routerState.busy && !routerState.loading
+                                    else -> !state.loading && (page != ManagerPage.Plugins || !pluginsBusy)
+                                },
                             ) {
                                 Icon(
                                     Icons.Rounded.Refresh,
@@ -375,7 +406,7 @@ private fun ManagerApp(
                     }
                 } else {
                     val context = LocalContext.current
-                    val manager = listOf("me.weishu.kernelsu", "com.topjohnwu.magisk").firstNotNullOfOrNull {
+                    val manager = listOf("me.bmax.apatch", "me.weishu.kernelsu", "com.topjohnwu.magisk").firstNotNullOfOrNull {
                         context.packageManager.getLaunchIntentForPackage(it)
                     }
                     RootRequiredScreen(
@@ -399,11 +430,11 @@ private fun ManagerApp(
                 canNavigate = !pluginsBusy,
                 navigationKey = listOf(page, pluginPageId, scopeEditor),
                 onBack = {
-                    if (pluginPageId != null) closePluginPage() else page = ManagerPage.Tools
+                    if (pluginPageId != null) closePluginPage() else page = parentPage
                 },
                 previousContent = {
                     renderPage(
-                        if (page.isToolDetail) ManagerPage.Tools else ManagerPage.Plugins,
+                        if (page.isToolDetail) parentPage else ManagerPage.Plugins,
                         if (scopeEditor) pluginPageId else null,
                         false,
                         true,

@@ -67,6 +67,7 @@ internal fun ConfigurationScreen(
     onAppearanceChange: (ManagerAppearance) -> Unit,
     onOpenLogs: () -> Unit,
     onOpenRouter: () -> Unit,
+    onOpenInstaller: () -> Unit,
 ) {
     val dark = when (appearance.mode) {
         ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -106,6 +107,14 @@ internal fun ConfigurationScreen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SectionTitle(stringResource(R.string.configuration_diagnostics))
                 ManagerGroup {
+                    ManagerLinkRow(
+                        Icons.Rounded.Settings,
+                        stringResource(R.string.module_install_title),
+                        stringResource(R.string.module_install_summary),
+                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        onOpenInstaller,
+                    )
+                    HorizontalDivider()
                     ManagerLinkRow(
                         Icons.AutoMirrored.Rounded.Article,
                         stringResource(R.string.title_logs),

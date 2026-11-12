@@ -21,6 +21,7 @@
         </activity>
     </application>
     <queries>
+        <package android:name="me.bmax.apatch" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />

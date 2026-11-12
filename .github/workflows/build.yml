@@ -94,8 +94,12 @@ jobs:
           path: out/android-arm64-v8a-api26/
 
   build-manager:
-    name: Build Dejavu Manager
+    name: Build Dejavu app
     runs-on: ubuntu-latest
+    needs: [build-zygisk-module, version-check]
+    outputs:
+      apk_filename: ${{ steps.package-app.outputs.filename }}
+      release_signed: ${{ steps.package-app.outputs.release_signed }}
 
     steps:
       - uses: actions/checkout@v4
@@ -115,14 +119,91 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Build and lint Manager
-        run: ./gradlew :app:assembleDebug :app:lintDebug --no-daemon --max-workers=2 -Pkotlin.incremental=false
+      - name: Download matching module payload
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
+          path: out/app-module
 
-      - name: Upload Manager debug APK
+      - name: Test embedded module packaging
+        run: |
+          python3 tests/module_bundle_test.py
+          python3 tests/signing_config_test.py
+
+      - name: Prepare stable app signing
+        id: app-signing
+        env:
+          DEJAVU_SIGNING_KEYSTORE_BASE64: ${{ secrets.DEJAVU_SIGNING_KEYSTORE_BASE64 }}
+          DEJAVU_SIGNING_STORE_PASSWORD: ${{ secrets.DEJAVU_SIGNING_STORE_PASSWORD }}
+          DEJAVU_SIGNING_KEY_ALIAS: ${{ secrets.DEJAVU_SIGNING_KEY_ALIAS }}
+          DEJAVU_SIGNING_KEY_PASSWORD: ${{ secrets.DEJAVU_SIGNING_KEY_PASSWORD }}
+          REQUIRE_RELEASE_SIGNING: >-
+            ${{ github.event_name == 'workflow_dispatch' ||
+                (github.event_name == 'push' && github.ref_type == 'tag') ||
+                (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+                 needs.version-check.outputs.changed == 'true') }}
+        run: python3 app/scripts/prepare-signing.py
+
+      - name: Build and lint app with embedded module
+        env:
+          MODULE_ZIP: out/app-module/${{ needs.build-zygisk-module.outputs.package_filename }}
+          APP_VARIANT: ${{ steps.app-signing.outputs.variant }}
+          DEJAVU_SIGNING_STORE_PASSWORD: ${{ secrets.DEJAVU_SIGNING_STORE_PASSWORD }}
+          DEJAVU_SIGNING_KEY_ALIAS: ${{ secrets.DEJAVU_SIGNING_KEY_ALIAS }}
+          DEJAVU_SIGNING_KEY_PASSWORD: ${{ secrets.DEJAVU_SIGNING_KEY_PASSWORD }}
+        run: |
+          required=false
+          if [[ "$APP_VARIANT" == Release ]]; then required=true; fi
+          ./gradlew ":app:assemble${APP_VARIANT}" ":app:lint${APP_VARIANT}" \
+            "-PdejavuModuleZip=$MODULE_ZIP" "-PdejavuRequireReleaseSigning=$required" \
+            --no-daemon --max-workers=2 -Pkotlin.incremental=false
+
+      - name: Cache module host-test tools
+        uses: actions/cache@v4
+        with:
+          path: out/tooling/module-host-ci
+          key: module-host-kotlin-2.3.0-json-20250517-${{ runner.os }}
+
+      - name: Test app module installer
+        run: |
+          python3 app/scripts/prepare-module-host-tests.py
+          KOTLINC="$PWD/out/tooling/module-host-ci/kotlinc" \
+            JSON_JAR="$PWD/out/tooling/module-host-ci/json.jar" bash app/tests/module/run-host.sh
+
+      - name: Name app package
+        id: package-app
+        env:
+          PACKAGE_VERSION: ${{ needs.build-zygisk-module.outputs.package_version }}
+          APP_VARIANT: ${{ steps.app-signing.outputs.variant }}
+          SIGNED_RELEASE: ${{ steps.app-signing.outputs.signed }}
+        run: |
+          source=app/build/outputs/apk/release/app-release.apk
+          filename="dejavu-v${PACKAGE_VERSION}-arm64.apk"
+          if [[ "$SIGNED_RELEASE" == true && "$APP_VARIANT" != Release ]]; then
+            echo 'error: stable signing must produce the release variant'
+            exit 1
+          fi
+          if [[ "$SIGNED_RELEASE" != true ]]; then
+            source=app/build/outputs/apk/debug/app-debug.apk
+            filename="dejavu-v${PACKAGE_VERSION}-debug-arm64.apk"
+          fi
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$source"
+          mkdir -p out/app-package
+          cp "$source" "out/app-package/$filename"
+          {
+            echo "filename=$filename"
+            echo "release_signed=$SIGNED_RELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Remove temporary signing key
+        if: always()
+        run: python3 app/scripts/prepare-signing.py --cleanup
+
+      - name: Upload app APK
         uses: actions/upload-artifact@v4
         with:
-          name: dejavu-manager-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: dejavu-app-arm64
+          path: out/app-package/${{ steps.package-app.outputs.filename }}
           if-no-files-found: error
 
   build-android-compat:
@@ -323,7 +404,7 @@ jobs:
           path: ${{ steps.package-meta.outputs.package_glob }}
 
   release-zygisk-module:
-    name: Release Zygisk Module
+    name: Release Dejavu
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||
@@ -338,6 +419,15 @@ jobs:
       contents: write
 
     steps:
+      - name: Require a stable signed app for publication
+        env:
+          RELEASE_SIGNED: ${{ needs.build-manager.outputs.release_signed }}
+        run: |
+          if [[ "$RELEASE_SIGNED" != true ]]; then
+            echo 'error: refusing to publish an app without stable release signing'
+            exit 1
+          fi
+
       - name: Derive release metadata
         id: release-meta
         env:
@@ -375,6 +465,12 @@ jobs:
           name: ${{ needs.build-zygisk-module.outputs.artifact_name }}
           path: release-assets
 
+      - name: Download app with embedded module
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: dejavu-app-arm64
+          path: release-assets
+
       - name: Download example plugins
         uses: actions/download-artifact@v4.1.3
         with:
@@ -385,6 +481,7 @@ jobs:
         run: |
           ls -lh release-assets/ release-assets/plugins/
           unzip -l release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+          unzip -l release-assets/${{ needs.build-manager.outputs.apk_filename }} assets/dejavu/module.zip assets/dejavu/module.json
           unzip -l release-assets/plugins/${{ needs.build-zygisk-module.outputs.plugins_filename }}
 
       - name: Create GitHub Release
@@ -397,6 +494,7 @@ jobs:
           make_latest: ${{ steps.release-meta.outputs.make_latest }}
           files: |
             release-assets/${{ needs.build-zygisk-module.outputs.package_filename }}
+            release-assets/${{ needs.build-manager.outputs.apk_filename }}
             release-assets/plugins/${{ needs.build-zygisk-module.outputs.plugins_filename }}
           fail_on_unmatched_files: true
           generate_release_notes: true

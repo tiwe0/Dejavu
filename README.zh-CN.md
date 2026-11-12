@@ -49,13 +49,13 @@ Console 已移除，CLI 和 MCP 接口继续保留。
 
 1. **准备设备。** 使用本人控制或已获授权的 Android arm64 root 设备，并安装
    兼容的 Zygisk provider。先查看[兼容性说明](#android-兼容性状态)。
-2. **安装框架。** 从 [Releases](https://github.com/tiwe0/Dejavu/releases/latest)
-   下载模块 ZIP，在 root 管理器中安装并重启设备。具体步骤见
-   [安装指南](zygisk/docs/user-guide.md)。
-3. **打开 Manager。** 按 [App 指南](app/README.md)构建，或从成功的
-   [Build Dejavu 工作流](https://github.com/tiwe0/Dejavu/actions/workflows/build.yml)
-   下载 `dejavu-manager-debug` 产物。CI APK 使用调试签名，与正式模块 ZIP 分开提供。
-   为 Manager 授予 root 权限。
+2. **安装 dejavu 应用。** 从 [Releases](https://github.com/tiwe0/Dejavu/releases/latest)
+   下载 APK，或按 [App 指南](app/README.md)构建。APK 已内置对应版本的框架模块，
+   打开后为应用授予 root 权限。
+3. **安装内置框架。** 进入**概览 → 管理安装**，或**配置 → 安装管理**，安装内置版本。
+   应用调用当前已授权的 APatch、KernelSU 或 Magisk 安装器，完成后显示等待重启，
+   由你在方便时重启设备。ZygiskNext 等 Zygisk 支持仍需单独启用。
+   标准模块 ZIP 继续提供，也可通过 root 管理器手动安装。
 4. **添加并启用插件。** 先解压公开示例发布包，再把单个插件目录打成 ZIP，
    点击右下角 **+** 选择该 ZIP。也可以把解出的插件目录复制到设备插件库后刷新。
    在插件内配置**作用域**，重启受影响的应用，再选择进程并在**控制**页操作。
@@ -301,8 +301,9 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
-- `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **Zygisk 模块包
-  版本**（当前 `0.9.3`）；模块打包、loader/agent 行为与文档更新独立递增。
+- `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **应用与 Zygisk 模块包
+  版本**（当前 `0.9.3`）。应用从模块元数据读取版本号和 versionCode，并内置对应
+  版本的 ZIP；该版本与核心库 ABI 独立。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
 
