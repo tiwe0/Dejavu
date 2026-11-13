@@ -91,6 +91,8 @@ bool dejavu_runtime_load(int module_dir_fd, DejavuRuntime *runtime, char *error,
     RESOLVE_DEJAVU(value_release, "dejavu_value_release");
     RESOLVE_DEJAVU(control_run, "dejavu_control_run");
     RESOLVE_DEJAVU(smoke, "dejavu_smoke");
+    RESOLVE_DEJAVU(control_session_retain_function, "dejavu_control_session_retain_function");
+    RESOLVE_DEJAVU(control_session_invoke_cancellable, "dejavu_control_session_invoke_cancellable");
 #undef RESOLVE_DEJAVU
     return true;
 }

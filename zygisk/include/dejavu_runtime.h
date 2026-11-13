@@ -26,6 +26,8 @@ struct DejavuRuntime {
     decltype(&dejavu_value_release) value_release;
     decltype(&dejavu_control_run) control_run;
     decltype(&dejavu_smoke) smoke;
+    decltype(&dejavu_control_session_retain_function) control_session_retain_function;
+    decltype(&dejavu_control_session_invoke_cancellable) control_session_invoke_cancellable;
 };
 
 bool dejavu_runtime_load(int module_dir_fd, DejavuRuntime *runtime, char *error, size_t error_size);

@@ -52,7 +52,8 @@ typedef struct dejavu_value dejavu_value;
  * - Arguments passed to a dejavu_host_function are borrowed for the duration
  *   of the callback only. STRING pointers may point into the live Lua stack
  *   and FUNCTION arguments are released by the engine once the callback
- *   returns, so they must not be stored or released by the host.
+ *   returns, so they must not be stored or released by the host. To keep a function,
+ *   obtain an independent reference with dejavu_control_session_retain_function().
  */
 typedef struct dejavu_value dejavu_value;
 
@@ -83,6 +84,7 @@ enum dejavu_status {
     DEJAVU_ERROR_LUA_LOAD = 11,
     DEJAVU_ERROR_LUA_EXECUTE = 12,
     DEJAVU_ERROR_LUA_RESULT = 13,
+    DEJAVU_ERROR_CANCELLED = 14,
     DEJAVU_ERROR_TCC_CREATE = 20,
     DEJAVU_ERROR_TCC_OUTPUT = 21,
     DEJAVU_ERROR_TCC_COMPILE = 22,
@@ -145,6 +147,17 @@ DEJAVU_API int dejavu_control_session_invoke(dejavu_control_session *session,
                                              unsigned long long function,
                                              const dejavu_value *arguments, size_t argument_count,
                                              dejavu_value *result, char *error, size_t error_size);
+/* Copies a live function reference, including a borrowed host argument. */
+DEJAVU_API int dejavu_control_session_retain_function(dejavu_control_session *session,
+                                                      unsigned long long source,
+                                                      unsigned long long *retained, char *error,
+                                                      size_t error_size);
+/* Cancellation is polled while waiting and immediately before Lua executes.
+ * The callback/context are borrowed; already running code is never interrupted. */
+DEJAVU_API int dejavu_control_session_invoke_cancellable(
+    dejavu_control_session *session, unsigned long long function, const dejavu_value *arguments,
+    size_t argument_count, dejavu_value *result, int (*is_cancelled)(void *), void *cancel_context,
+    char *error, size_t error_size);
 DEJAVU_API void dejavu_control_session_release_function(dejavu_control_session *session,
                                                         unsigned long long function);
 DEJAVU_API void dejavu_value_release(dejavu_value *value);

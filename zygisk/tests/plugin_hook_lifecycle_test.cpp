@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <thread>
 #include <dlfcn.h>
 #include <limits.h>
@@ -24,7 +25,6 @@
 
 #include "root_helper_client.h"
 #include "stream_service.h"
-#include "rpc_service.h"
 #include "dejavu.h"
 #include "dejavu_plugin.h"
 
@@ -304,6 +304,22 @@ int unused_rpc_handler(void *, const DejavuRpcRequest *, DejavuRpcResponse *, ch
     return DEJAVU_RPC_ERROR;
 }
 
+void test_plugin_cannot_replace_lua_rpc_or_json_namespaces() {
+    Fixture fixture;
+    fixture.manager.initialize_plugin_context(fixture.manager.plugins_[0].get());
+    LoadingPluginGuard loading(0);
+    auto callback = +[](dejavu_control_session *, void *, const dejavu_value *, size_t,
+                        dejavu_value *, char *, size_t) -> int { return DEJAVU_OK; };
+    char error[256]{};
+    for (const char *name : {"rpc", "json"}) {
+        assert(PluginManager::host_register_function(
+                   fixture.manager.plugins_[0]->context.get(), name, "register", callback, nullptr,
+                   error, sizeof(error)) == DEJAVU_ERROR_INVALID_ARGUMENT);
+        assert(std::strstr(error, "reserved") != nullptr);
+    }
+    assert(fixture.manager.entries_.empty());
+}
+
 void rpc_plugin(Fixture &fixture, size_t index, uint64_t owner) {
     auto &plugin = fixture.manager.plugins_[index];
     plugin->capabilities = DEJAVU_PLUGIN_CAP_RPC;
@@ -344,6 +360,99 @@ void test_rpc_capability_owner_and_index_shift() {
     assert(PluginManager::host_rpc_update_routes(second, b, nullptr, 0, error, sizeof(error)) == 0);
     assert(PluginManager::host_rpc_register(first, &descriptor, &a, error, sizeof(error)) < 0);
     assert(PluginManager::host_rpc_unregister(second, b, error, sizeof(error)) == 0);
+}
+
+struct JniRpcCallbackState {
+    JavaVM *vm;
+    int calls = 0;
+    int result = DEJAVU_RPC_OK;
+    bool throws = false;
+    bool cancelled = false;
+};
+int jni_rpc_callback(void *opaque, const DejavuRpcRequest *request, DejavuRpcResponse *, char *,
+                     size_t) {
+    auto *state = static_cast<JniRpcCallbackState *>(opaque);
+    JNIEnv *env = nullptr;
+    assert(state->vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) == JNI_OK);
+    assert(env != nullptr);
+    JniThreadScope nested(state->vm);
+    assert(nested.valid() && nested.env() == env);
+    ++state->calls;
+    if (state->cancelled)
+        assert(request->is_cancelled(request->cancellation_context));
+    if (state->throws)
+        throw std::runtime_error("callback failure");
+    return state->result;
+}
+
+void test_lua_rpc_jni_attachment_ownership() {
+    // Invoke the real PluginManager dispatch closure on finite native threads.
+    // Existing transport tests cover the scheduling boundary separately.
+    auto run = [](int get_env, int attach_result, bool null_env, bool throws, int callback_result,
+                  int expected_calls, int expected_attaches, int expected_detaches,
+                  bool missing_vm = false, bool cancelled = false) {
+        Fixture fixture;
+        JavaVM vm;
+        vm.get_env_result = get_env;
+        vm.attach_result = attach_result;
+        vm.null_env = null_env;
+        fixture.manager.vm_ = missing_vm ? nullptr : &vm;
+        JniRpcCallbackState state{&vm, 0, callback_result, throws, cancelled};
+        std::thread dispatcher([&] {
+            const bool borrowed = get_env == JNI_OK && !null_env && !missing_vm;
+            if (borrowed)
+                JavaVM::attached_vm = &vm;
+            for (int iteration = 0; iteration < 3; ++iteration) {
+                DejavuRpcRequest request{};
+                request.is_cancelled = [](void *) { return 1; };
+                DejavuRpcResponse response{};
+                char error[128]{};
+                try {
+                    const int status =
+                        fixture.manager.rpc_->invoke_(kLuaRpcOwnerToken, jni_rpc_callback, &state,
+                                                      &request, &response, error, sizeof(error));
+                    assert(!throws || expected_calls == 0);
+                    assert(status == (expected_calls ? callback_result : DEJAVU_RPC_ERROR));
+                } catch (const std::runtime_error &) {
+                    assert(throws && expected_calls != 0);
+                }
+                assert(JavaVM::attached_vm == (borrowed ? &vm : nullptr));
+            }
+        });
+        dispatcher.join();
+        assert(state.calls == expected_calls * 3);
+        assert(vm.attaches == expected_attaches * 3);
+        assert(vm.detaches == expected_detaches * 3);
+        fixture.manager.vm_ = nullptr;
+    };
+    run(JNI_OK, JNI_OK, false, false, DEJAVU_RPC_OK, 1, 0, 0);
+    run(JNI_OK, JNI_OK, false, true, DEJAVU_RPC_OK, 1, 0, 0);
+    run(JNI_OK, JNI_OK, false, false, DEJAVU_RPC_ERROR, 1, 0, 0);
+    run(JNI_EDETACHED, JNI_OK, false, false, DEJAVU_RPC_OK, 1, 1, 1);
+    run(JNI_EVERSION, JNI_OK, false, false, DEJAVU_RPC_OK, 0, 0, 0);
+    run(JNI_ERR, JNI_OK, false, false, DEJAVU_RPC_OK, 0, 0, 0);
+    run(JNI_OK, JNI_OK, true, false, DEJAVU_RPC_OK, 0, 0, 0);
+    run(JNI_EDETACHED, JNI_ERR, false, false, DEJAVU_RPC_OK, 0, 1, 0);
+    run(JNI_EDETACHED, JNI_OK, false, true, DEJAVU_RPC_OK, 1, 1, 1);
+    run(JNI_EDETACHED, JNI_OK, false, false, DEJAVU_RPC_ERROR, 1, 1, 1);
+    run(JNI_EDETACHED, JNI_OK, false, false, DEJAVU_RPC_ERROR, 1, 1, 1, false, true);
+    run(JNI_EDETACHED, JNI_OK, true, false, DEJAVU_RPC_OK, 0, 1, 1);
+    run(JNI_OK, JNI_OK, false, false, DEJAVU_RPC_OK, 0, 0, 0, true);
+
+    // Native plugin RPC admission keeps its existing JVM-independent contract.
+    Fixture fixture;
+    JavaVM vm;
+    fixture.manager.vm_ = &vm;
+    rpc_plugin(fixture, 0, 317);
+    char error[128]{};
+    auto callback = +[](void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t) {
+        assert(g_current_plugin_context && g_current_plugin_context->owner == 317);
+        return DEJAVU_RPC_OK;
+    };
+    assert(fixture.manager.rpc_->invoke_(317, callback, nullptr, nullptr, nullptr, error,
+                                         sizeof(error)) == DEJAVU_RPC_OK);
+    assert(vm.attaches == 0 && vm.detaches == 0);
+    fixture.manager.vm_ = nullptr;
 }
 
 struct BlockingRpc {
@@ -1178,6 +1287,7 @@ size_t StreamService::retire_owner(uint64_t owner) {
 }
 
 int main() {
+    test_lua_rpc_jni_attachment_ownership();
     test_returned_host_function_is_scoped_and_revoked_on_unload();
     test_returned_functions_are_recursive_and_deduplicated();
     test_already_managed_closures_are_not_rewrapped_or_named();
@@ -1189,6 +1299,7 @@ int main() {
     test_callback_identity_is_stable_across_another_plugins_unload();
     test_reentrant_load_masks_parent_identity_and_unlocks_initializers();
     test_rpc_capability_owner_and_index_shift();
+    test_plugin_cannot_replace_lua_rpc_or_json_namespaces();
     test_rpc_unload_retains_executing_callback_and_prepares_on_retry();
     test_rpc_unload_retains_executing_callback_and_prepares_on_retry(true);
     test_native_initializers_and_v1_callbacks_keep_their_identity();
@@ -1205,6 +1316,6 @@ int main() {
     test_unpatched_permission_cleanup_remains_owned();
     test_failed_initializer_without_unload_safe_retries_host_cleanup();
     test_initialized_unsafe_plugin_keeps_unload_restriction();
-    std::puts("OK: 27 plugin lifecycle groups: native/JIT ownership, callback identity, worker "
+    std::puts("OK: 29 plugin lifecycle groups: native/JIT ownership, callback identity, worker "
               "joins and retryable hook cleanup");
 }

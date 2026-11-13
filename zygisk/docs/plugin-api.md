@@ -30,7 +30,7 @@ plugin.
   during `initialize`. JIT plugins call `dejavu_jit_register` during
   `dejavu_jit_plugin_init`. Namespace and function names must be simple
   identifiers. The host rejects duplicate namespace/function pairs and reserves
-  the `hook`, `fs`, `module`, `native`, `java`, `mem` and `plugin` namespaces.
+  the `hook`, `fs`, `module`, `native`, `java`, `mem`, `plugin`, `rpc` and `json` namespaces.
 - `host->log_message(host->host_context, priority, message)` writes to logcat
   under `DejavuPlugin`.
 - `host->get_app_class_loader(host->host_context)` returns a host-owned global
@@ -47,7 +47,9 @@ The descriptor may append optional `capabilities` bits
 `caps=0x...`. A descriptor without the field defaults to zero capabilities.
 Interface lookup requires the capability matching the requested service. The
 existing `dejavu_jit_*` helpers require their corresponding `MEM`, `MODULE`,
-`HOOK`, `FS` or `STREAM` bit; the business RPC v1 interface is native-plugin-only.
+  `HOOK`, `FS` or `STREAM` bit; `get_interface("rpc", 1)` is for native plugins.
+Lua control scripts and Manager Lua packages use `rpc.register` instead;
+see the [Lua RPC binding](plugin-rpc.md#lua-bindings).
 Declare every service the plugin uses. JavaVM and ClassLoader access are direct host-table members.
 
 `on_control_ready` runs once the Lua control session exists. Use it for work

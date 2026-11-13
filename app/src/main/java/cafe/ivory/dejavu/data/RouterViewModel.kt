@@ -77,11 +77,22 @@ internal class RouterViewModel(
         mutableState.update { it.copy(service = service, snapshot = null) }
         if (service.running) client.request("status") else null
     }
-    fun reconnect() = command("reconnect")
+    fun reconnect(upstreamId: String? = null) = command("reconnect", JSONObject().apply {
+        if (upstreamId != null) put("upstream_id", upstreamId)
+    })
+    fun reloadPlugins() = command("reload_plugins")
+    fun resetUpstream(upstreamId: String) = command("upstream_reset", JSONObject().put("upstream_id", upstreamId))
     fun configure(host: String, port: Int, deviceId: String, token: String?) = command("configure", JSONObject()
         .put("hub_host", host).put("hub_port", port).put("device_id", deviceId).apply {
             if (token != null) put("device_token", token)
         })
+    fun configureUpstream(upstreamId: String, host: String, port: Int, deviceId: String, token: String?) {
+        if (upstreamId == "default") configure(host, port, deviceId, token)
+        else command("upstream_configure", JSONObject().put("upstream_id", upstreamId)
+            .put("hub_host", host).put("hub_port", port).put("device_id", deviceId).apply {
+                if (token != null) put("device_token", token)
+            })
+    }
     fun putRoute(route: RouterRoute) = command("route_put", JSONObject()
         .put("route", route.route).put("user_id", route.userId).put("package", route.packageName)
         .put("activity", route.activity).put("plugin_path", route.pluginPath))

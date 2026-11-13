@@ -66,6 +66,38 @@ fun main() {
     noTransactionDirectories(store)
     println("OK: real example plugin folder imports/scans via opaque SAF IDs and root stdin, without executing entry code")
 
+    val routedManifest = original.copy(id = "routed-lua", router = PLUGIN_ROUTER_FILE, files = original.files + PLUGIN_ROUTER_FILE)
+    val routerSource = """{"schemaVersion":1,"upstreams":[{"id":"main","host":"localhost","port":39010,"device_token":"router-secret-must-not-enter-errors"}],"default_upstream":"main"}"""
+    val routedResources = code + (PLUGIN_ROUTER_FILE to routerSource.toByteArray())
+    val routed = importer.importFolder(provider.tree(providerFiles(routedManifest, routedResources)))
+    check(routed.manifest.router == PLUGIN_ROUTER_FILE)
+    val routedDirectory = File(store, routedManifest.id)
+    val routedBefore = directorySnapshot(routedDirectory)
+    val commandsBeforeRoutedScan = rootCommands()
+    check(importer.list().any { it.manifest == routedManifest }) { importer.lastScanErrors.toString() }
+    check(rootCommands() - commandsBeforeRoutedScan == 2) { "Router metadata must share the batched scan" }
+    for (bad in listOf("{}", routerSource + " trailing", routerSource + " ".repeat(MAX_PLUGIN_ROUTER_BYTES))) {
+        expectImportFailure("invalid router.json") {
+            importer.importFolder(provider.tree(providerFiles(routedManifest, routedResources + (PLUGIN_ROUTER_FILE to bad.toByteArray()))))
+        }
+        check(directorySnapshot(routedDirectory) == routedBefore)
+    }
+    expectImportFailure("missing router.json") {
+        importer.importFolder(provider.tree(providerFiles(routedManifest, code)))
+    }
+    val routerPath = File(routedDirectory, PLUGIN_ROUTER_FILE)
+    routerPath.writeText(routerSource.replace("\"port\":39010", "\"port\":0"))
+    check(importer.list().none { it.manifest.id == routedManifest.id })
+    check(importer.lastScanErrors.any { it.startsWith("routed-lua:") })
+    check(importer.lastScanErrors.none { "router-secret-must-not-enter-errors" in it })
+    routerPath.delete()
+    Files.createSymbolicLink(routerPath.toPath(), File(installed, original.entry).toPath())
+    check(importer.list().none { it.manifest.id == routedManifest.id })
+    check(importer.lastScanErrors.any { "routed-lua:" in it && "symbolic link" in it })
+    routedDirectory.deleteRecursively()
+    noTransactionDirectories(store)
+    println("OK: Lua router.json import/scan validation, bounded reads, symlink rejection and replacement preservation")
+
     val batchFiles = listOf("entry.lua") + (1..31).map { "resources/source-$it.lua" }
     val batchManifest = PluginPackageManifest("many-resources", "Many resources", "1", entry = "entry.lua", files = batchFiles)
     val batchDirectory = File(store, batchManifest.id).apply { mkdirs() }

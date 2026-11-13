@@ -16,6 +16,7 @@ done
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginLibraryScan.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginManifest.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginRouterConfig.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginZipArchive.kt" \
     "${APP_DIR}/tests/native/RootShell.kt" \

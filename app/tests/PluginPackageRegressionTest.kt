@@ -2,6 +2,8 @@ package cafe.ivory.dejavu.data
 
 import java.io.File
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
+import org.json.JSONArray
 
 private inline fun packageRejects(block: () -> Unit) {
     check(runCatching(block).isFailure) { "invalid package was accepted" }
@@ -46,12 +48,81 @@ fun runPluginPackageRegressionTests() {
     println("OK: plugin manifest, declared resources, UTF-8, limits and Lua source quoting")
     val repository = File(System.getenv("DEJAVU_REPO_ROOT") ?: ".")
     runPluginPageRegression(manifest, repository)
+    runPluginRouterRegression(manifest)
     val example = readTestPackage(File(repository, "app/tests/fixtures/example-plugin"))
     check(example.manifest.id == "example-plugin" && example.manifest.entry == "entry.lua")
     check(example.manifest.files.containsAll(listOf("entry.lua", "helper.lua", "hook.c")))
     LuaPackageScripts.start(example, "0123456789abcdef")
     runPackageLifecycleRegression(manifest, example)
     println("OK: self-contained example folder satisfies the app package and RPC limits")
+}
+
+private fun runPluginRouterRegression(legacy: PluginPackageManifest) {
+    val source = """{"schemaVersion":1,"upstreams":[{"id":"main","host":"hub.example.com","port":39010,"device_token":"router-secret-must-not-enter-target"},{"id":"backup","host":"127.0.0.1","port":39011,"device_id":"test-device"}],"default_upstream":"main","routes":{"route-b":"backup"}}"""
+    val manifest = legacy.copy(router = PLUGIN_ROUTER_FILE, files = legacy.files + PLUGIN_ROUTER_FILE)
+    check(PluginPackageManifest.parse(manifest.toJson()) == manifest)
+    check(PluginPackageManifest.parse(manifest.toJson().replace("\"schemaVersion\":1", "\"schemaVersion\":1.0")) == manifest)
+    check(PluginPackageManifest.parse(legacy.toJson()).router == null)
+    for (invalid in listOf(
+        manifest.copy(router = "lib/router.json", files = legacy.files + "lib/router.json"),
+        manifest.copy(files = legacy.files), manifest.copy(entry = PLUGIN_ROUTER_FILE),
+        manifest.copy(ui = PLUGIN_ROUTER_FILE),
+    )) packageRejects { invalid.validate() }
+    packageRejects { PluginPackageManifest.parse(manifest.toJson().replace("\"router\":\"router.json\"", "\"router\":null")) }
+    packageRejects { PluginPackageManifest.parse(manifest.toJson().dropLast(1) + ",\"router\":\"router.json\"}") }
+
+    val pkg = ImportedPluginPackage(manifest, legacy.files.associateWith { "return {}" } + (PLUGIN_ROUTER_FILE to source))
+    pkg.validate()
+    val script = LuaPackageScripts.start(pkg, "0123456789abcdef")
+    check(PLUGIN_ROUTER_FILE !in script && "router-secret-must-not-enter-target" !in script && "hub.example.com" !in script)
+    PluginRouterConfig.validate(source + " ".repeat(MAX_PLUGIN_ROUTER_BYTES - pluginUtf8Bytes(source).size), legacy.id)
+    val explicitServices = JSONObject(source).put("services", JSONArray(listOf("service.A-1", "a".repeat(128)))).toString()
+    PluginRouterConfig.validate(explicitServices, legacy.id)
+    PluginRouterConfig.validate(source.replace("\"schemaVersion\":1", "\"schemaVersion\":1e0").replace("\"port\":39010", "\"port\":39010.0"), legacy.id)
+    val invalidConfigs = listOf(
+        source + "x", source + " {}", source.replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVersion\":1"),
+        source.replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVers\\u0069on\":1"),
+        source.replace("\"port\":39010", "\"port\":39010,\"port\":39011"),
+        source.replace("\"schemaVersion\":1", "\"schemaVersion\":1.25"),
+        source.replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
+        source.replace("\"port\":39010", "\"port\":true"), source.replace("\"port\":39010", "\"port\":39010.5"),
+        source.replace("\"port\":39010", "\"port\":0"), source.replace("\"port\":39010", "\"port\":65536"),
+        source.replace("\"port\":39010", "\"port\":039010"), source.replace("\"port\":39010", "\"port\":+39010"),
+        source.replace("\"main\"", "\"../main\""), source.replace("\"id\":\"backup\"", "\"id\":\"main\""),
+        source.replace("\"default_upstream\":\"main\"", "\"default_upstream\":\"absent\""),
+        source.replace("\"route-b\":\"backup\"", "\"route-b\":\"absent\""),
+        source.replace("\"route-b\"", "\"\""), source.replace("\"route-b\"", "\"route\\nvalue\""),
+        source.replace("\"host\":\"hub.example.com\"", "\"host\":\"\""),
+        source.replace("\"host\":\"hub.example.com\"", "\"host\":\"${"中".repeat(85)}\""),
+        source.replace("\"device_id\":\"test-device\"", "\"device_id\":\"\""),
+        source.replace("router-secret-must-not-enter-target", "x".repeat(4097)),
+        source.replace("router-secret-must-not-enter-target", "\\uD800"),
+        source.replace("\"port\":39010", "\"port\":39010,"),
+        source.replace("\"port\":39010", "\"port\":39010;"),
+        source.replace("\"port\":39010", "\"port\":/*comment*/39010"),
+        source.replace("\"host\":\"hub.example.com\"", "\"host\":'hub.example.com'"),
+        source.replace("\"host\":\"hub.example.com\"", "host:\"hub.example.com\""),
+        JSONObject(source).put("services", JSONArray()).toString(),
+        JSONObject(source).put("services", JSONArray(listOf("same", "same"))).toString(),
+        JSONObject(source).put("services", JSONArray(listOf("bad/name"))).toString(),
+        JSONObject(source).put("services", JSONArray(listOf("a".repeat(129)))).toString(),
+        JSONObject(source).put("services", JSONArray((1..9).map { "service$it" })).toString(),
+        JSONObject(source).put("upstreams", JSONArray()).toString(),
+        JSONObject(source).put("upstreams", JSONArray((1..9).map { JSONObject().put("id", "hub$it").put("host", "localhost").put("port", 39010) })).toString(),
+        JSONObject(source).put("routes", JSONObject().apply { repeat(513) { put("route$it", "main") } }).toString(),
+        JSONObject(source).put("typo", true).toString(),
+        source.replace("\"port\":39010", "\"port\":39010,\"typo\":true"),
+        source + " ".repeat(MAX_PLUGIN_ROUTER_BYTES),
+    )
+    invalidConfigs.forEachIndexed { index, invalid ->
+        check(runCatching { pkg.copy(sources = pkg.sources + (PLUGIN_ROUTER_FILE to invalid)).validate() }.isFailure) {
+            "Accepted invalid Router configuration case $index"
+        }
+    }
+    val malformedShape = JSONObject(source).put("upstreams", JSONObject().put("device_token", "router-secret-must-not-enter-errors")).toString()
+    val failure = runCatching { PluginRouterConfig.validate(malformedShape, legacy.id) }.exceptionOrNull()
+    check(failure != null && "router-secret-must-not-enter-errors" !in failure.toString() && failure.cause == null)
+    println("OK: Router manifest roundtrip, strict schema/JSON/UTF-8/bounds and metadata exclusion from target code")
 }
 
 private fun runPluginPageRegression(legacy: PluginPackageManifest, repository: File) {
@@ -312,13 +383,14 @@ private fun runPackageLifecycleRegression(manifest: PluginPackageManifest, examp
     }
     val session = "0123456789abcdef"
     val otherSession = "fedcba9876543210"
-    val good = ImportedPluginPackage(manifest, mapOf(
+    val good = ImportedPluginPackage(manifest.copy(router = PLUGIN_ROUTER_FILE, files = manifest.files + PLUGIN_ROUTER_FILE), mapOf(
         "entry.lua" to """
             return {
               start = function(ctx)
                 assert(ctx.session == "$session")
                 assert(ctx.read("lib/hook.c") == "中文" .. string.char(0,10,13,34,92) .. "123]===]")
                 assert(not pcall(ctx.read, "../secret"))
+                assert(not pcall(ctx.read, "router.json"), "Router credentials entered the target process")
                 starts = starts + 1
               end,
               stop = function(ctx) assert(ctx.session == "$session"); stops = stops + 1 end,
@@ -326,6 +398,7 @@ private fun runPackageLifecycleRegression(manifest: PluginPackageManifest, examp
             }
         """.trimIndent(),
         "lib/hook.c" to "中文\u0000\n\r\"\\123]===]",
+        PLUGIN_ROUTER_FILE to """{"schemaVersion":1,"upstreams":[{"id":"main","host":"localhost","port":39010}],"default_upstream":"main"}""",
     ))
     val broken = ImportedPluginPackage(manifest.copy(id = "broken"), mapOf(
         "entry.lua" to """

@@ -30,7 +30,7 @@ object LuaPackageScripts {
         validateSession(session)
         val id = quote(pkg.manifest.id)
         val sessionValue = quote(session)
-        val sources = pkg.manifest.files.filterNot { it == pkg.manifest.ui }.joinToString(",\n") { path ->
+        val sources = pkg.manifest.files.filterNot { it == pkg.manifest.ui || it == pkg.manifest.router }.joinToString(",\n") { path ->
             "[${quote(path)}]=${quote(pkg.sources.getValue(path))}"
         }
         return bounded("""

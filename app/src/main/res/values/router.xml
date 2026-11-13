@@ -13,6 +13,18 @@
     <string name="router_start">Start</string>
     <string name="router_stop">Stop</string>
     <string name="router_reconnect">Reconnect Hub</string>
+    <string name="router_reconnect_all">Reconnect all</string>
+    <string name="router_connections">Upstream Hubs</string>
+    <string name="router_upstreams_hint">Plugins declare their connections in router.json. Older plugins use the default Hub.</string>
+    <string name="router_default_hub">Default Hub</string>
+    <string name="router_reload_plugins">Reload plugin configurations</string>
+    <string name="router_source">Source: %1$s</string>
+    <string name="router_local_override">Using this device’s connection override</string>
+    <string name="router_plugin_defaults">Using the plugin configuration</string>
+    <string name="router_route_upstream">Upstream: %1$s</string>
+    <string name="router_reset_override">Restore plugin settings</string>
+    <string name="router_reset_override_hint">Remove this device’s override for %1$s and reconnect using its router.json settings?</string>
+    <string name="router_config_changed">This connection configuration changed. Close and reopen this dialog before making changes.</string>
     <string name="router_error">Router could not be reached or the operation was rejected. Refresh to check its current state.</string>
     <string name="router_connection">Hub connection</string>
     <string name="router_hub_online">Hub connected</string>
@@ -34,6 +46,7 @@
     <string name="router_cancel">Cancel</string>
     <string name="router_save">Save</string>
     <string name="router_connection_hint">An empty host keeps the Hub disconnected. Saving reconnects the Hub; requests in progress may fail.</string>
+    <string name="router_plugin_connection_hint">Changes apply to this device only. Saving reconnects this Hub; requests in progress may fail.</string>
     <string name="router_hub_host">Hub host</string>
     <string name="router_hub_port">Hub port</string>
     <string name="router_device_id">Device ID</string>

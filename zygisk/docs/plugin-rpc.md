@@ -5,8 +5,100 @@ router. Plugins declare their methods and routes; the framework owns connection,
 registration, framing, reconnection, deadlines and response delivery. The router
 runs at `/data/adb/dejavu/bin/dejavuerouter` independently of Manager.
 
-The public definitions are in [`include/dejavu_plugin.h`](../../include/dejavu_plugin.h).
-A complete, buildable implementation is [`examples/rpc_echo`](../../examples/rpc_echo/README.md).
+Native definitions are in [`include/dejavu_plugin.h`](../../include/dejavu_plugin.h).
+Complete examples are [native RPC Echo](../../examples/rpc_echo/README.md) and
+the importable [Lua RPC Echo](../../examples/rpc_lua_echo/README.md).
+
+## Lua bindings
+
+The persistent target-process Lua session exposes `rpc.register`. This API also
+works in Manager's existing Lua package `start`/`stop` lifecycle. It needs the
+rebuilt core and Agent together; no native library or socket worker is needed in
+the Lua package. Keep the returned service object and unregister it when stopping.
+
+```lua
+local service = rpc.register {
+    name = "example",
+    app = "com.example.demo",
+    routes = {"example.account"},
+    methods = {
+        echo = function(params, request)
+            if request.is_cancelled() then
+                rpc.error("example.cancelled", "Request cancelled", false)
+            end
+            return {value = params.value}
+        end,
+        reject = function()
+            rpc.error("example.rejected", "Example business rejection", false)
+        end,
+    },
+}
+service:update_routes({"example.next_account"})
+local stopped, reason = service:unregister()
+-- On false, "busy", keep the object and retry after the callback returns.
+```
+
+`name`, `app`, `routes` and `methods` are required. Routes may be an empty array to
+register an offline service. Names/routes/methods have the same validation as the
+native contract below. The default endpoint is the framework abstract Unix socket;
+the optional `endpoint` is useful for an isolated filesystem Unix socket in host
+tests. The registered method table is copied: mutating the original table does
+not change the service's method whitelist or callbacks.
+
+Handlers receive decoded `params` and a request table with `id`, `route`, `method`,
+`deadline_monotonic_ms` and `is_cancelled()`. Return ordinary JSON-compatible Lua
+values. A nil return becomes JSON null; `rpc.error(code, message, retryable)` throws
+a business rejection consumed by the dispatcher. Unexpected Lua errors produce
+`rpc.handler_failed` with a generic message; handler diagnostics and message
+bodies are not logged or exposed as exception text.
+
+The built-in `json` module provides `encode`, `decode`, `null`, `array` and `object`.
+`rpc.null` and `rpc.array` alias the corresponding JSON helpers. A plain empty
+`{}` encodes as an object; use `rpc.array()` for an empty array. Decoded nulls
+remain `rpc.null`, including array elements. Mixed/sparse keys, cycles, nonfinite
+numbers, invalid UTF-8/NUL, duplicate decoded object keys, more than 64 nesting
+levels, excessive nodes and values over 1 MiB are rejected. Integral values
+outside ±9,007,199,254,740,991 are rejected: use strings for large IDs. The existing
+Router wire path uses double-precision JSON numbers; use strings whenever exact
+large-number representation is required.
+
+Callbacks share the control session's serialization with live Lua evaluation.
+While waiting for that session, cancelled/expired requests are abandoned before
+entering the business handler. Once entered, work cooperatively checks
+`request.is_cancelled()`; blocking JNI/native calls cannot be forcibly interrupted.
+A retained cancellation query safely returns true after its request ends.
+Business callbacks remain synchronous and must not yield for asynchronous completion.
+
+`service:update_routes({})` withdraws routes and cancels the previous connection's
+work. `service:unregister()` returns true after draining, or `false, "busy"` while
+its callback is still running (including self-unregistration). Retain the service
+until a successful retry. Repeated successful unregistration is harmless.
+The adapter retains Lua callbacks independently of temporary host argument refs
+and GC, and releases them only after transport callbacks have drained.
+
+Lua services belong to the persistent control session. Manager Lua packages
+unregister their services in `stop`; dropping the Lua object does not unregister
+the service. Both Lua and native services share the process's 16-service limit.
+Initialization must succeed before startup-registered Lua services go online.
+Stopping Lua services leaves native services running. Lua handlers calling managed
+native/JIT plugin functions retain the existing plugin ownership and unload checks.
+
+Only configuration persists. The binding stores no request/response history.
+
+## Plugin upstream selection
+
+An installed package may declare `"router": "router.json"` in its manifest and
+list that resource in `files`. Router reads it directly from the plugin folder,
+binds its `services` to the RPC service names, and maintains the configured Hub
+connections independently. No Lua/native transport changes are required. A
+plugin with no routing declaration continues using the default Hub.
+
+Each route selects an explicit `routes` assignment or its service's
+`default_upstream`. Declare offline wake routes explicitly because an offline
+service has not yet announced its dynamic routes. Manager can reload plugin
+metadata and save device-local upstream overrides without modifying plugin
+resources. See the [routing schema and lifecycle](../../router/plugin-config.md)
+for an example, validation limits and connection-isolation behavior.
 
 ## Responsibility and versioning
 
@@ -222,6 +314,7 @@ to the business handler's existing storage contract, not to the RPC framework.
 examples/rpc_echo/test-host.sh
 examples/rpc_echo/build.sh
 zygisk/tests/test-rpc-service.sh
+zygisk/tests/test-lua-rpc-bindings.sh
 ```
 
 The example checks the callback contract without an Android account. Framework

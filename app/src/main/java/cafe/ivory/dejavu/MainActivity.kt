@@ -287,7 +287,9 @@ private fun ManagerApp(
                 state = routerState,
                 onSetRunning = routerVm::setRunning,
                 onReconnect = routerVm::reconnect,
-                onConfigure = routerVm::configure,
+                onConfigure = routerVm::configureUpstream,
+                onResetUpstream = routerVm::resetUpstream,
+                onReloadPlugins = routerVm::reloadPlugins,
                 onPutRoute = routerVm::putRoute,
                 onDeleteRoute = routerVm::deleteRoute,
             )

@@ -15,6 +15,7 @@ fi
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginArtifact.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackageUiState.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginRouterConfig.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/LuaPackageScripts.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PackageRuntimeSnapshot.kt" \

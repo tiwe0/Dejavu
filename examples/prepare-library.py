@@ -18,7 +18,7 @@ def copy_resource(source, destination):
 
 def prepare():
     packages = []
-    names = ["hello", "capture", "algorithm", "unpack", "rpc_echo"]
+    names = ["hello", "capture", "algorithm", "unpack", "rpc_echo", "rpc_lua_echo"]
     for name in names:
         source = ROOT / "examples" / name
         destination = OUTPUT / name

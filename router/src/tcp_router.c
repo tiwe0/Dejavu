@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dirent.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/event.h>
@@ -27,6 +28,7 @@
 #include <unistd.h>
 
 #include "cJSON.h"
+#include "dejavu_json.h"
 
 #define MAX_LINE (1024 * 1024)
 #define MAX_PLUGINS 64
@@ -47,7 +49,11 @@ typedef struct job job_t;
 typedef struct wake wake_t;
 typedef struct wake_target wake_target_t;
 typedef struct control_client control_client_t;
+#define MAX_UPSTREAMS 32
+#define MAX_PLUGIN_CONFIGS 64
 #define MAX_DNS_ADDRESSES 8
+typedef struct upstream upstream_t;
+typedef struct plugin_config plugin_config_t;
 struct resolution {
     size_t count;
     socklen_t lengths[MAX_DNS_ADDRESSES];
@@ -65,9 +71,13 @@ struct wake_target {
 
 struct wake {
     router_t *router;
+    upstream_t *hub;
     char *id;
     char *route;
     struct event *timer;
+    bool foreground_requested;
+    char *foreground_package;
+    int foreground_user_id;
     wake_t *next;
 };
 
@@ -75,6 +85,7 @@ struct plugin {
     router_t *router;
     struct bufferevent *bev;
     char *app;
+    char *service;
     char **routes;
     size_t route_count;
     struct event *hello_deadline;
@@ -86,6 +97,7 @@ struct plugin {
 
 struct job {
     router_t *router;
+    upstream_t *hub;
     char wire_id[32];
     char *id;
     char *route;
@@ -96,13 +108,6 @@ struct job {
 
 struct router {
     struct event_base *base;
-    struct event *resolver_event;
-    struct event *resolver_timeout;
-    int resolver_fd;
-    pid_t resolver_pid;
-    struct resolution resolution;
-    size_t resolver_bytes;
-    size_t next_address;
     struct evconnlistener *control_listener;
     control_client_t *control_clients;
     size_t control_count;
@@ -118,15 +123,11 @@ struct router {
     char *wake_targets_path;
     int lock_fd;
     struct evconnlistener *listener;
-    struct bufferevent *hub_bev;
-    struct event *reconnect_timer;
-    bool hub_connected;
     bool stopping;
-    int reconnect_seconds;
-    char *hub_host;
-    int hub_port;
-    char *device_id;
-    char *device_token;
+    upstream_t *upstreams;
+    plugin_config_t *plugin_configs;
+    char *plugins_dir;
+    cJSON *upstream_overrides;
     char *listen_host;
     int listen_port;
     plugin_t *plugins;
@@ -138,6 +139,41 @@ struct router {
     size_t wake_count;
     wake_target_t *wake_targets;
     size_t wake_target_count;
+    /* Online foreground wakes finish before am exits. Bound and serialize
+     * those children independently from offline route-registration waits. */
+    struct { pid_t pid; char route[129]; } wake_launches[MAX_WAKES];
+};
+
+struct upstream {
+    router_t *router;
+    char *id;
+    char *plugin_id;
+    char *source;
+    cJSON *base_config;
+    bool overridden;
+    struct event *resolver_event;
+    struct event *resolver_timeout;
+    int resolver_fd;
+    pid_t resolver_pid;
+    struct resolution resolution;
+    size_t resolver_bytes;
+    size_t next_address;
+    struct bufferevent *hub_bev;
+    struct event *reconnect_timer;
+    bool hub_connected;
+    int reconnect_seconds;
+    char *hub_host;
+    int hub_port;
+    char *device_id;
+    char *device_token;
+    upstream_t *next;
+};
+
+struct plugin_config {
+    char *id;
+    char *default_upstream;
+    cJSON *definition;
+    plugin_config_t *next;
 };
 
 struct control_client {
@@ -180,16 +216,22 @@ static plugin_t *find_plugin(router_t *router, const char *route) {
     return NULL;
 }
 
-static bool pending_id(router_t *router, const char *id) {
-    for (job_t *job = router->jobs; job; job = job->next) if (!strcmp(job->id, id)) return true;
-    for (wake_t *wake = router->wakes; wake; wake = wake->next) if (!strcmp(wake->id, id)) return true;
+static bool route_binding_allowed(plugin_config_t *configs, const char *route, const char *service);
+static upstream_t *find_upstream(router_t *router, const char *id);
+static upstream_t *route_upstream(router_t *router, const char *route, const char *service);
+static upstream_t *online_route_upstream(router_t *router, const char *route);
+
+static bool pending_id(upstream_t *hub, const char *id) {
+    router_t *router = hub->router;
+    for (job_t *job = router->jobs; job; job = job->next) if (job->hub == hub && !strcmp(job->id, id)) return true;
+    for (wake_t *wake = router->wakes; wake; wake = wake->next) if (wake->hub == hub && !strcmp(wake->id, id)) return true;
     return false;
 }
 
 static int plugin_send_json(plugin_t *plugin, cJSON *root) {
     if (!plugin || !plugin->bev || !root ||
         evbuffer_get_length(bufferevent_get_output(plugin->bev)) > MAX_OUTPUT) return -1;
-    char *text = cJSON_PrintUnformatted(root);
+    char *text = dejavu_json_print(root);
     if (!text) return -1;
     int rc = bufferevent_write(plugin->bev, text, strlen(text));
     if (rc == 0) rc = bufferevent_write(plugin->bev, "\n", 1);
@@ -202,6 +244,7 @@ static void free_plugin(plugin_t *plugin) {
     if (plugin->hello_deadline) event_free(plugin->hello_deadline);
     if (plugin->bev) bufferevent_free(plugin->bev);
     free(plugin->app);
+    free(plugin->service);
     for (size_t i = 0; i < plugin->route_count; i++) free(plugin->routes[i]);
     free(plugin->routes);
     free(plugin);
@@ -217,63 +260,64 @@ static void detach_plugin(router_t *router, plugin_t *plugin) {
 /* ------------------------------------------------------------------------- */
 /* Hub TCP connection                                                        */
 
-static void hub_connect(router_t *router);
-static void resolver_cancel(router_t *router);
+static void hub_connect(upstream_t *hub);
+static void resolver_cancel(upstream_t *hub);
 static cJSON *parse_message(const char *text, size_t length);
 static bool text_field(cJSON *item, size_t maximum, bool empty);
-static bool hub_try_next_address(router_t *router);
-static void dispatch_job(router_t *router, cJSON *job_json);
+static bool hub_try_next_address(upstream_t *hub);
+static void dispatch_job(upstream_t *hub, cJSON *job_json);
 
 static void reconnect_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
     (void)events;
-    router_t *router = arg;
-    if (router->reconnect_timer) {
-        event_free(router->reconnect_timer);
-        router->reconnect_timer = NULL;
+    upstream_t *hub = arg;
+    if (hub->reconnect_timer) {
+        event_free(hub->reconnect_timer);
+        hub->reconnect_timer = NULL;
     }
-    hub_connect(router);
+    hub_connect(hub);
 }
 
-static void schedule_hub_reconnect(router_t *router, int seconds) {
-    if (router->stopping || !router->hub_host[0] || router->reconnect_timer) return;
+static void schedule_hub_reconnect(upstream_t *hub, int seconds) {
+    router_t *router = hub->router;
+    if (router->stopping || !hub->hub_host[0] || hub->reconnect_timer) return;
     struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
-    router->reconnect_timer = evtimer_new(router->base, reconnect_cb, router);
-    if (router->reconnect_timer) evtimer_add(router->reconnect_timer, &tv);
+    hub->reconnect_timer = evtimer_new(router->base, reconnect_cb, hub);
+    if (hub->reconnect_timer) evtimer_add(hub->reconnect_timer, &tv);
 }
 
 enum { HUB_SEND_TOO_LARGE = -2 };
 
-static int hub_send_json(router_t *router, cJSON *root) {
-    if (!router->hub_connected || !router->hub_bev || !root ||
-        evbuffer_get_length(bufferevent_get_output(router->hub_bev)) > MAX_OUTPUT) return -1;
-    char *text = cJSON_PrintUnformatted(root);
+static int hub_send_json(upstream_t *hub, cJSON *root) {
+    if (!hub || !hub->hub_connected || !hub->hub_bev || !root ||
+        evbuffer_get_length(bufferevent_get_output(hub->hub_bev)) > MAX_OUTPUT) return -1;
+    char *text = dejavu_json_print(root);
     if (!text) return -1;
     if (strlen(text) > MAX_LINE) {
         free(text);
         return HUB_SEND_TOO_LARGE;
     }
-    int rc = bufferevent_write(router->hub_bev, text, strlen(text));
-    if (rc == 0) rc = bufferevent_write(router->hub_bev, "\n", 1);
+    int rc = bufferevent_write(hub->hub_bev, text, strlen(text));
+    if (rc == 0) rc = bufferevent_write(hub->hub_bev, "\n", 1);
     free(text);
     return rc;
 }
 
-static void hub_route_event(router_t *router, const char *action, const char *route,
+static void hub_route_event(upstream_t *hub, const char *action, const char *route,
                             const char *app) {
-    if (!router->hub_connected || !route) return;
+    if (!hub || !hub->hub_connected || !route) return;
     cJSON *root = cJSON_CreateObject();
     if (!root) return;
     cJSON_AddStringToObject(root, "type", "route");
     cJSON_AddStringToObject(root, "action", action);
     cJSON_AddStringToObject(root, "route", route);
-    cJSON_AddStringToObject(root, "device_id", router->device_id);
+    cJSON_AddStringToObject(root, "device_id", hub->device_id);
     if (app) cJSON_AddStringToObject(root, "app", app);
-    hub_send_json(router, root);
+    hub_send_json(hub, root);
     cJSON_Delete(root);
 }
 
-static void send_hub_response(router_t *router, const char *job_id, const char *route,
+static void send_hub_response(upstream_t *hub, const char *job_id, const char *route,
                               bool ok, cJSON *result_or_error) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "response");
@@ -293,7 +337,7 @@ static void send_hub_response(router_t *router, const char *job_id, const char *
             cJSON_AddItemToObject(root, "error", error);
         }
     }
-    if (hub_send_json(router, root) == HUB_SEND_TOO_LARGE) {
+    if (hub_send_json(hub, root) == HUB_SEND_TOO_LARGE) {
         /* Restoring the external ID can grow an otherwise valid plugin frame.
          * Replace its payload once; the shared sender also bounds the fallback. */
         cJSON_DeleteItemFromObjectCaseSensitive(root, "result");
@@ -303,18 +347,18 @@ static void send_hub_response(router_t *router, const char *job_id, const char *
         if (encoded && error && cJSON_AddStringToObject(error, "code", "response_too_large") &&
             cJSON_AddStringToObject(error, "message", "response exceeds Hub frame limit") &&
             cJSON_AddBoolToObject(error, "retryable", false))
-            hub_send_json(router, root);
+            hub_send_json(hub, root);
     }
     cJSON_Delete(root);
 }
 
-static void send_hub_error(router_t *router, const char *job_id, const char *route,
+static void send_hub_error(upstream_t *hub, const char *job_id, const char *route,
                            const char *code, const char *message) {
     cJSON *error = cJSON_CreateObject();
     cJSON_AddStringToObject(error, "code", code);
     cJSON_AddStringToObject(error, "message", message);
     cJSON_AddBoolToObject(error, "retryable", 1);
-    send_hub_response(router, job_id, route, false, error);
+    send_hub_response(hub, job_id, route, false, error);
     cJSON_Delete(error);
 }
 
@@ -359,21 +403,39 @@ static void child_close_router_fds(router_t *router, int keep) {
     if (router->listener) child_close_fd(evconnlistener_get_fd(router->listener), keep);
     if (router->plugin_unix_listener) child_close_fd(evconnlistener_get_fd(router->plugin_unix_listener), keep);
     if (router->control_listener) child_close_fd(evconnlistener_get_fd(router->control_listener), keep);
-    if (router->hub_bev) child_close_fd(bufferevent_getfd(router->hub_bev), keep);
+    for (upstream_t *hub = router->upstreams; hub; hub = hub->next) {
+        if (hub->hub_bev) child_close_fd(bufferevent_getfd(hub->hub_bev), keep);
+        child_close_fd(hub->resolver_fd, keep);
+    }
     for (plugin_t *p = router->plugins; p; p = p->next) child_close_fd(bufferevent_getfd(p->bev), keep);
     for (control_client_t *p = router->control_clients; p; p = p->next) child_close_fd(bufferevent_getfd(p->bev), keep);
+}
+
+static const char *wake_launch_error(router_t *router, const char *route) {
+    size_t count = 0;
+    for (size_t i = 0; i < MAX_WAKES; i++) {
+        if (!router->wake_launches[i].pid) continue;
+        count++;
+        if (!strcmp(router->wake_launches[i].route, route)) return "wake_in_progress";
+    }
+    return count >= MAX_WAKES ? "router_busy" : NULL;
 }
 
 /* Execute Android launch commands in a child so a slow ActivityManager cannot
  * block routing, deadlines, or the control endpoint. SIGCHLD reaps children. */
 static int launch_wake_target(router_t *router, wake_target_t *target) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(DEJAVU_ROUTER_TEST_WAKE_SUCCESS)
+    if (wake_launch_error(router, target->route)) return -1;
+    size_t slot = 0;
+    while (slot < MAX_WAKES && router->wake_launches[slot].pid) slot++;
+    if (slot == MAX_WAKES) return -1;
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
         child_close_router_fds(router, -1);
         int fd = open("/dev/null", O_RDWR);
         if (fd >= 0) { dup2(fd, 0); dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+#ifdef __ANDROID__
         /* Injection follows the plugin's configured scope. A router wake only
          * launches the explicit component, never changes global hook properties. */
         char user[16], component[544];
@@ -381,7 +443,15 @@ static int launch_wake_target(router_t *router, wake_target_t *target) {
         snprintf(component, sizeof(component), "%s/%s", target->package, target->activity);
         execl("/system/bin/am", "am", "start", "--user", user, "-n", component, (char *)NULL);
         _exit(127);
+#else
+        /* Compile-time host fixture only: the Android branch above always
+         * executes am. No CMake option or runtime switch enables this seam. */
+        usleep(2000000);
+        _exit(0);
+#endif
     }
+    router->wake_launches[slot].pid = pid;
+    snprintf(router->wake_launches[slot].route, sizeof(router->wake_launches[slot].route), "%s", target->route);
     return 0;
 #else
     (void)router; (void)target;
@@ -403,6 +473,7 @@ static void wake_free(wake_t *wake) {
     if (wake->timer) event_free(wake->timer);
     free(wake->id);
     free(wake->route);
+    free(wake->foreground_package);
     free(wake);
 }
 
@@ -415,18 +486,31 @@ static void wake_timeout_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
     (void)events;
     wake_t *wake = arg;
-    send_hub_error(wake->router, wake->id, wake->route, "wake_timeout",
+    send_hub_error(wake->hub, wake->id, wake->route, "wake_timeout",
                    "app did not register the route before the wake deadline");
     wake_drop(wake);
 }
 
 static void wake_finish_ok(router_t *router, wake_t *wake, bool woken) {
+    wake_target_t *target = find_wake_target(router, wake->route);
+    if (wake->foreground_requested) {
+        plugin_t *online = find_plugin(router, wake->route);
+        if (!target || !online || !online->app || !wake->foreground_package ||
+            strcmp(online->app, wake->foreground_package) ||
+            strcmp(target->package, wake->foreground_package) ||
+            target->user_id != wake->foreground_user_id) {
+            send_hub_error(wake->hub, wake->id, wake->route, "wake_target_mismatch",
+                           "registered route does not match launched app");
+            wake_drop(wake);
+            return;
+        }
+    }
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "online", 1);
     cJSON_AddBoolToObject(result, "woken", woken);
-    wake_target_t *target = find_wake_target(router, wake->route);
+    if (wake->foreground_requested) cJSON_AddBoolToObject(result, "foreground_requested", 1);
     if (target) cJSON_AddNumberToObject(result, "user_id", target->user_id);
-    send_hub_response(router, wake->id, wake->route, true, result);
+    send_hub_response(wake->hub, wake->id, wake->route, true, result);
     cJSON_Delete(result);
     wake_drop(wake);
 }
@@ -434,7 +518,7 @@ static void wake_finish_ok(router_t *router, wake_t *wake, bool woken) {
 static void wake_route_online(router_t *router, const char *route) {
     for (wake_t *wake = router->wakes; wake; ) {
         wake_t *next = wake->next;
-        if (wake->route && route && !strcmp(wake->route, route)) {
+        if (wake->route && route && !strcmp(wake->route, route) && online_route_upstream(router, route) == wake->hub) {
             wake_finish_ok(router, wake, true);
         }
         wake = next;
@@ -452,55 +536,102 @@ static void drop_all_wakes(router_t *router) {
     router->wake_count = 0;
 }
 
-static void handle_wake(router_t *router, cJSON *root) {
+static void handle_wake(upstream_t *hub, cJSON *root) {
+    router_t *router = hub->router;
     cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
     cJSON *route = cJSON_GetObjectItemCaseSensitive(root, "route");
     if (!cJSON_IsString(id) || !cJSON_IsString(route) || !id->valuestring[0] || !route->valuestring[0] ||
         strlen(id->valuestring) > 128 || strlen(route->valuestring) > 128) {
-        send_hub_error(router, cJSON_IsString(id) ? id->valuestring : "",
+        send_hub_error(hub, cJSON_IsString(id) ? id->valuestring : "",
                        cJSON_IsString(route) ? route->valuestring : "",
                        "invalid_wake", "wake needs id and route");
         return;
     }
-    if (pending_id(router, id->valuestring)) {
-        send_hub_error(router, id->valuestring, route->valuestring, "duplicate_id", "request id already pending");
+    if (online_route_upstream(router, route->valuestring) != hub) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "route_unavailable", "route belongs to another upstream");
         return;
     }
-    if (find_plugin(router, route->valuestring)) {
+    cJSON *foreground_node = cJSON_GetObjectItemCaseSensitive(root, "foreground");
+    size_t foreground_fields = 0;
+    for (cJSON *item = root->child; item; item = item->next)
+        if (item->string && !strcmp(item->string, "foreground")) foreground_fields++;
+    if ((foreground_node && !cJSON_IsBool(foreground_node)) || foreground_fields > 1) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "invalid_wake",
+                       "foreground must be a single boolean");
+        return;
+    }
+    const bool foreground = cJSON_IsTrue(foreground_node);
+    if (pending_id(hub, id->valuestring)) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "duplicate_id", "request id already pending");
+        return;
+    }
+    plugin_t *online = find_plugin(router, route->valuestring);
+    if (online && !foreground) {
         cJSON *result = cJSON_CreateObject();
         cJSON_AddBoolToObject(result, "online", 1);
         cJSON_AddBoolToObject(result, "woken", 0);
-        send_hub_response(router, id->valuestring, route->valuestring, true, result);
+        send_hub_response(hub, id->valuestring, route->valuestring, true, result);
         cJSON_Delete(result);
         return;
     }
     wake_target_t *target = find_wake_target(router, route->valuestring);
     if (!target) {
-        send_hub_error(router, id->valuestring, route->valuestring, "wake_target_unavailable",
+        send_hub_error(hub, id->valuestring, route->valuestring, "wake_target_unavailable",
                        "no local wake target for route");
+        return;
+    }
+    if (online && foreground && (!online->app || strcmp(online->app, target->package))) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "wake_target_mismatch",
+                       "online route does not match configured app");
+        return;
+    }
+    const char *launch_error = wake_launch_error(router, route->valuestring);
+    if (launch_error) {
+        send_hub_error(hub, id->valuestring, route->valuestring, launch_error,
+                       "a launch is already active or the launch limit was reached");
+        return;
+    }
+    if (online) {
+        if (launch_wake_target(router, target) != 0) {
+            send_hub_error(hub, id->valuestring, route->valuestring, "wake_failed",
+                           "could not launch the target app");
+            return;
+        }
+        cJSON *result = cJSON_CreateObject();
+        cJSON_AddBoolToObject(result, "online", 1);
+        cJSON_AddBoolToObject(result, "woken", 1);
+        cJSON_AddBoolToObject(result, "foreground_requested", 1);
+        cJSON_AddNumberToObject(result, "user_id", target->user_id);
+        send_hub_response(hub, id->valuestring, route->valuestring, true, result);
+        cJSON_Delete(result);
         return;
     }
     for (wake_t *wake = router->wakes; wake; wake = wake->next) {
         if (wake->route && !strcmp(wake->route, route->valuestring)) {
-            send_hub_error(router, id->valuestring, route->valuestring, "wake_in_progress",
+            send_hub_error(hub, id->valuestring, route->valuestring, "wake_in_progress",
                            "a wake is already in progress for this route");
             return;
         }
     }
     if (router->wake_count >= MAX_WAKES) {
-        send_hub_error(router, id->valuestring, route->valuestring, "router_busy",
+        send_hub_error(hub, id->valuestring, route->valuestring, "router_busy",
                        "too many wake operations");
         return;
     }
     wake_t *wake = calloc(1, sizeof(*wake));
     if (!wake) {
-        send_hub_error(router, id->valuestring, route->valuestring, "router_oom", "out of memory");
+        send_hub_error(hub, id->valuestring, route->valuestring, "router_oom", "out of memory");
         return;
     }
     wake->router = router;
+    wake->hub = hub;
     wake->id = strdup(id->valuestring);
     wake->route = strdup(route->valuestring);
-    if (!wake->id || !wake->route) { wake_free(wake); send_hub_error(router, id->valuestring,
+    if (foreground) {
+        wake->foreground_package = strdup(target->package);
+        wake->foreground_user_id = target->user_id;
+    }
+    if (!wake->id || !wake->route || (foreground && !wake->foreground_package)) { wake_free(wake); send_hub_error(hub, id->valuestring,
                                                                      route->valuestring, "router_oom",
                                                                      "out of memory"); return; }
     int timeout_ms = WAKE_DEFAULT_MS;
@@ -509,7 +640,7 @@ static void handle_wake(router_t *router, cJSON *root) {
     if (timeout_ms < 1000) timeout_ms = 1000;
     if (timeout_ms > WAKE_MAX_MS) timeout_ms = WAKE_MAX_MS;
     wake->timer = evtimer_new(router->base, wake_timeout_cb, wake);
-    if (!wake->timer) { wake_free(wake); send_hub_error(router, id->valuestring,
+    if (!wake->timer) { wake_free(wake); send_hub_error(hub, id->valuestring,
                                                         route->valuestring, "router_oom",
                                                         "out of memory"); return; }
     struct timeval tv = { .tv_sec = timeout_ms / 1000,
@@ -521,9 +652,11 @@ static void handle_wake(router_t *router, cJSON *root) {
     logmsg("INFO", "wake route=%s user=%d package=%s", route->valuestring, target->user_id,
            target->package);
     if (launch_wake_target(router, target) != 0) {
-        send_hub_error(router, wake->id, wake->route, "wake_failed",
+        send_hub_error(hub, wake->id, wake->route, "wake_failed",
                        "could not launch the target app");
-            wake_drop(wake);
+        wake_drop(wake);
+    } else {
+        wake->foreground_requested = foreground;
     }
 }
 
@@ -557,7 +690,7 @@ static void job_timeout_cb(evutil_socket_t fd, short events, void *arg) {
     (void)events;
     job_t *job = arg;
     job_cancel_plugin(job);
-    send_hub_error(job->router, job->id, job->route, "plugin_timeout", "plugin response timed out");
+    send_hub_error(job->hub, job->id, job->route, "plugin_timeout", "plugin response timed out");
     job_remove(job->router, job);
     job_free(job);
 }
@@ -565,7 +698,7 @@ static void job_timeout_cb(evutil_socket_t fd, short events, void *arg) {
 static void job_complete(router_t *router, job_t *job, cJSON *response) {
     cJSON *response_route = cJSON_GetObjectItemCaseSensitive(response, "route");
     if (!cJSON_IsString(response_route) || strcmp(response_route->valuestring, job->route)) {
-        send_hub_error(router, job->id, job->route, "route_mismatch",
+        send_hub_error(job->hub, job->id, job->route, "route_mismatch",
                        "plugin response route does not match request route");
         job_remove(router, job);
         job_free(job);
@@ -574,7 +707,7 @@ static void job_complete(router_t *router, job_t *job, cJSON *response) {
     cJSON *ok = cJSON_GetObjectItemCaseSensitive(response, "ok");
     bool success = cJSON_IsTrue(ok);
     if (success) {
-        send_hub_response(router, job->id, job->route, true,
+        send_hub_response(job->hub, job->id, job->route, true,
                           cJSON_GetObjectItemCaseSensitive(response, "result"));
     } else {
         cJSON *error = cJSON_GetObjectItemCaseSensitive(response, "error");
@@ -583,19 +716,20 @@ static void job_complete(router_t *router, job_t *job, cJSON *response) {
             cJSON_AddStringToObject(error, "code", "plugin_error");
             cJSON_AddStringToObject(error, "message", "plugin returned an error");
             cJSON_AddBoolToObject(error, "retryable", 1);
-            send_hub_response(router, job->id, job->route, false, error);
+            send_hub_response(job->hub, job->id, job->route, false, error);
             cJSON_Delete(error);
         } else {
-            send_hub_response(router, job->id, job->route, false, error);
+            send_hub_response(job->hub, job->id, job->route, false, error);
         }
     }
     job_remove(router, job);
     job_free(job);
 }
 
-static job_t *find_hub_job(router_t *router, const char *id) {
+static job_t *find_hub_job(upstream_t *hub, const char *id) {
+    router_t *router = hub->router;
     for (job_t *job = router->jobs; job; job = job->next) {
-        if (job->id && !strcmp(job->id, id)) return job;
+        if (job->hub == hub && job->id && !strcmp(job->id, id)) return job;
     }
     return NULL;
 }
@@ -619,66 +753,77 @@ static void drop_all_jobs(router_t *router) {
     router->job_count = 0;
 }
 
-static void hub_disconnect(router_t *router) {
-    resolver_cancel(router);
-    router->hub_connected = false;
-    if (router->hub_bev) {
-        bufferevent_free(router->hub_bev);
-        router->hub_bev = NULL;
+static void hub_disconnect(upstream_t *hub) {
+    router_t *router = hub->router;
+    resolver_cancel(hub);
+    hub->hub_connected = false;
+    if (hub->hub_bev) {
+        bufferevent_free(hub->hub_bev);
+        hub->hub_bev = NULL;
     }
-    drop_all_jobs(router);
-    drop_all_wakes(router);
+    for (job_t *job = router->jobs; job; ) {
+        job_t *next = job->next;
+        if (job->hub == hub) { job_cancel_plugin(job); job_remove(router, job); job_free(job); }
+        job = next;
+    }
+    for (wake_t *wake = router->wakes; wake; ) {
+        wake_t *next = wake->next;
+        if (wake->hub == hub) wake_drop(wake);
+        wake = next;
+    }
 }
 
 static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
     (void)bev;
-    router_t *router = arg;
+    upstream_t *hub = arg;
+    router_t *router = hub->router;
     if (events & BEV_EVENT_CONNECTED) {
         struct timeval timeout = {60, 0};
         bufferevent_set_timeouts(bev, &timeout, &timeout);
-        router->next_address = router->resolution.count;
-        router->hub_connected = true;
-        router->reconnect_seconds = 1;
+        hub->next_address = hub->resolution.count;
+        hub->hub_connected = true;
+        hub->reconnect_seconds = 1;
         cJSON *hello = cJSON_CreateObject();
         cJSON_AddStringToObject(hello, "type", "hello");
-        cJSON_AddStringToObject(hello, "device_id", router->device_id);
+        cJSON_AddStringToObject(hello, "device_id", hub->device_id);
         cJSON_AddNumberToObject(hello, "version", 1);
-        if (router->device_token && *router->device_token) {
-            cJSON_AddStringToObject(hello, "token", router->device_token);
+        if (hub->device_token && *hub->device_token) {
+            cJSON_AddStringToObject(hello, "token", hub->device_token);
         }
         cJSON *caps = cJSON_AddArrayToObject(hello, "capabilities");
         cJSON_AddItemToArray(caps, cJSON_CreateString("router.plugin"));
-        hub_send_json(router, hello);
+        hub_send_json(hub, hello);
         cJSON_Delete(hello);
-        logmsg("INFO", "hub connected %s:%d", router->hub_host, router->hub_port);
+        logmsg("INFO", "hub connected %s:%d", hub->hub_host, hub->hub_port);
         /* Let the server learn which local routes are currently online. */
         for (plugin_t *p = router->plugins; p; p = p->next) {
             if (!p->registered || p->closing) continue;
             for (size_t i = 0; i < p->route_count; i++) {
-                hub_route_event(router, "register", p->routes[i], p->app);
+                if (route_upstream(router, p->routes[i], p->service) == hub) hub_route_event(hub, "register", p->routes[i], p->app);
             }
         }
         return;
     }
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
         logmsg("WARN", "hub disconnected; reconnecting");
-        hub_disconnect(router);
-        if (!hub_try_next_address(router)) {
-            schedule_hub_reconnect(router, router->reconnect_seconds);
-            if (router->reconnect_seconds < 30) router->reconnect_seconds = router->reconnect_seconds < 15 ? router->reconnect_seconds * 2 : 30;
+        hub_disconnect(hub);
+        if (!hub_try_next_address(hub)) {
+            schedule_hub_reconnect(hub, hub->reconnect_seconds);
+            if (hub->reconnect_seconds < 30) hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
         }
     }
 }
 
-static void dispatch_job(router_t *router, cJSON *job_json);
+static void dispatch_job(upstream_t *hub, cJSON *job_json);
 
 static void hub_read_cb(struct bufferevent *bev, void *arg) {
-    router_t *router = arg;
+    upstream_t *hub = arg;
+    router_t *router = hub->router;
     struct evbuffer *input = bufferevent_get_input(bev);
     if (evbuffer_get_length(input) > MAX_LINE * 2) {
         logmsg("WARN", "hub input exceeds limit; reconnecting");
-        hub_disconnect(router);
-        schedule_hub_reconnect(router, 1);
+        hub_disconnect(hub);
+        schedule_hub_reconnect(hub, 1);
         return;
     }
     while (1) {
@@ -689,139 +834,146 @@ static void hub_read_cb(struct bufferevent *bev, void *arg) {
         cJSON *root = parse_message(line, length);
         free(line);
         if (!root) {
-            send_hub_error(router, "", "", "invalid_job", "invalid Hub message");
+            send_hub_error(hub, "", "", "invalid_job", "invalid Hub message");
             continue;
         }
         cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
         if (cJSON_IsString(type) && !strcmp(type->valuestring, "request")) {
-            dispatch_job(router, root);
+            dispatch_job(hub, root);
         } else if (cJSON_IsString(type) && !strcmp(type->valuestring, "cancel")) {
             cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
             cJSON *route = cJSON_GetObjectItemCaseSensitive(root, "route");
-            job_t *job = cJSON_IsString(id) ? find_hub_job(router, id->valuestring) : NULL;
+            job_t *job = cJSON_IsString(id) ? find_hub_job(hub, id->valuestring) : NULL;
             if (job && cJSON_IsString(route) && !strcmp(job->route, route->valuestring)) {
                 job_cancel_plugin(job);
                 job_remove(router, job);
                 job_free(job);
             }
+            if (cJSON_IsString(id) && cJSON_IsString(route))
+                for (wake_t *wake = router->wakes; wake; wake = wake->next)
+                    if (wake->hub == hub && !strcmp(wake->id, id->valuestring) && !strcmp(wake->route, route->valuestring)) {
+                        wake_drop(wake); break;
+                    }
         } else if (cJSON_IsString(type) && !strcmp(type->valuestring, "wake")) {
-            handle_wake(router, root);
+            handle_wake(hub, root);
         } else if (cJSON_IsString(type) && !strcmp(type->valuestring, "ping")) {
             cJSON *pong = cJSON_CreateObject();
             cJSON_AddStringToObject(pong, "type", "pong");
-            hub_send_json(router, pong);
+            hub_send_json(hub, pong);
             cJSON_Delete(pong);
         }
         cJSON_Delete(root);
     }
 }
 
-static void resolver_cancel(router_t *router) {
-    if (router->resolver_event) { event_free(router->resolver_event); router->resolver_event = NULL; }
-    if (router->resolver_timeout) { event_free(router->resolver_timeout); router->resolver_timeout = NULL; }
-    if (router->resolver_fd >= 0) { close(router->resolver_fd); router->resolver_fd = -1; }
-    if (router->resolver_pid > 0) {
-        kill(router->resolver_pid, SIGKILL);
-        while (waitpid(router->resolver_pid, NULL, 0) < 0 && errno == EINTR) { }
-        router->resolver_pid = 0;
+static void resolver_cancel(upstream_t *hub) {
+    if (hub->resolver_event) { event_free(hub->resolver_event); hub->resolver_event = NULL; }
+    if (hub->resolver_timeout) { event_free(hub->resolver_timeout); hub->resolver_timeout = NULL; }
+    if (hub->resolver_fd >= 0) { close(hub->resolver_fd); hub->resolver_fd = -1; }
+    if (hub->resolver_pid > 0) {
+        kill(hub->resolver_pid, SIGKILL);
+        while (waitpid(hub->resolver_pid, NULL, 0) < 0 && errno == EINTR) { }
+        hub->resolver_pid = 0;
     }
 }
 
-static void hub_connect_address(router_t *router, struct sockaddr *address, socklen_t length) {
+static void hub_connect_address(upstream_t *hub, struct sockaddr *address, socklen_t length) {
+    router_t *router = hub->router;
     struct bufferevent *bev = bufferevent_socket_new(router->base, -1, BEV_OPT_CLOSE_ON_FREE);
-    if (!bev) { schedule_hub_reconnect(router, 2); return; }
-    bufferevent_setcb(bev, hub_read_cb, NULL, hub_event_cb, router);
+    if (!bev) { schedule_hub_reconnect(hub, 2); return; }
+    bufferevent_setcb(bev, hub_read_cb, NULL, hub_event_cb, hub);
     struct timeval timeout = {10, 0};
     bufferevent_set_timeouts(bev, &timeout, &timeout);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
-    router->hub_bev = bev;
+    hub->hub_bev = bev;
     int connected = bufferevent_socket_connect(bev, address, (int)length);
     int socket_fd = bufferevent_getfd(bev);
     if (socket_fd >= 0) evutil_make_socket_closeonexec(socket_fd);
     if (connected != 0) {
-        hub_disconnect(router);
-        if (!hub_try_next_address(router)) schedule_hub_reconnect(router, router->reconnect_seconds);
+        hub_disconnect(hub);
+        if (!hub_try_next_address(hub)) schedule_hub_reconnect(hub, hub->reconnect_seconds);
     }
 }
 
-static bool hub_try_next_address(router_t *router) {
-    if (router->next_address >= router->resolution.count) return false;
-    size_t index = router->next_address++;
-    hub_connect_address(router, (struct sockaddr *)&router->resolution.addresses[index],
-                        router->resolution.lengths[index]);
+static bool hub_try_next_address(upstream_t *hub) {
+    if (hub->next_address >= hub->resolution.count) return false;
+    size_t index = hub->next_address++;
+    hub_connect_address(hub, (struct sockaddr *)&hub->resolution.addresses[index],
+                        hub->resolution.lengths[index]);
     return true;
 }
 
 static void resolver_done_cb(evutil_socket_t fd, short events, void *arg) {
     (void)events;
-    router_t *router = arg;
+    upstream_t *hub = arg;
     ssize_t got;
     do {
-        got = read(fd, (char *)&router->resolution + router->resolver_bytes,
-                   sizeof(router->resolution) - router->resolver_bytes);
+        got = read(fd, (char *)&hub->resolution + hub->resolver_bytes,
+                   sizeof(hub->resolution) - hub->resolver_bytes);
     } while (got < 0 && errno == EINTR);
     if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
-    if (got > 0) router->resolver_bytes += (size_t)got;
-    if (got > 0 && router->resolver_bytes < sizeof(router->resolution)) return;
-    resolver_cancel(router);
-    bool valid = router->resolver_bytes == sizeof(router->resolution) &&
-                 router->resolution.count > 0 && router->resolution.count <= MAX_DNS_ADDRESSES;
-    for (size_t i = 0; valid && i < router->resolution.count; i++) {
-        int family = router->resolution.addresses[i].ss_family;
-        valid = (family == AF_INET && router->resolution.lengths[i] == sizeof(struct sockaddr_in)) ||
-                (family == AF_INET6 && router->resolution.lengths[i] == sizeof(struct sockaddr_in6));
+    if (got > 0) hub->resolver_bytes += (size_t)got;
+    if (got > 0 && hub->resolver_bytes < sizeof(hub->resolution)) return;
+    resolver_cancel(hub);
+    bool valid = hub->resolver_bytes == sizeof(hub->resolution) &&
+                 hub->resolution.count > 0 && hub->resolution.count <= MAX_DNS_ADDRESSES;
+    for (size_t i = 0; valid && i < hub->resolution.count; i++) {
+        int family = hub->resolution.addresses[i].ss_family;
+        valid = (family == AF_INET && hub->resolution.lengths[i] == sizeof(struct sockaddr_in)) ||
+                (family == AF_INET6 && hub->resolution.lengths[i] == sizeof(struct sockaddr_in6));
     }
-    router->next_address = 0;
-    if (!valid) router->resolution.count = 0;
-    if (!hub_try_next_address(router)) {
-        schedule_hub_reconnect(router, router->reconnect_seconds);
-        if (router->reconnect_seconds < 30) router->reconnect_seconds = router->reconnect_seconds < 15 ? router->reconnect_seconds * 2 : 30;
+    hub->next_address = 0;
+    if (!valid) hub->resolution.count = 0;
+    if (!hub_try_next_address(hub)) {
+        schedule_hub_reconnect(hub, hub->reconnect_seconds);
+        if (hub->reconnect_seconds < 30) hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
     }
 }
 
 static void resolver_timeout_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd; (void)events;
-    router_t *router = arg;
-    resolver_cancel(router);
-    schedule_hub_reconnect(router, router->reconnect_seconds);
-    if (router->reconnect_seconds < 30) router->reconnect_seconds = router->reconnect_seconds < 15 ? router->reconnect_seconds * 2 : 30;
+    upstream_t *hub = arg;
+    resolver_cancel(hub);
+    schedule_hub_reconnect(hub, hub->reconnect_seconds);
+    if (hub->reconnect_seconds < 30) hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
 }
 
-static void hub_connect(router_t *router) {
-    if (router->stopping || router->hub_bev || router->resolver_event || !router->hub_host[0]) return;
-    if (router->reconnect_timer) {
-        event_free(router->reconnect_timer);
-        router->reconnect_timer = NULL;
+static void hub_connect(upstream_t *hub) {
+    router_t *router = hub->router;
+    if (router->stopping || hub->hub_bev || hub->resolver_event || !hub->hub_host[0]) return;
+    if (hub->reconnect_timer) {
+        event_free(hub->reconnect_timer);
+        hub->reconnect_timer = NULL;
     }
-    memset(&router->resolution, 0, sizeof(router->resolution));
-    router->next_address = 0; router->resolver_bytes = 0;
+    memset(&hub->resolution, 0, sizeof(hub->resolution));
+    hub->next_address = 0; hub->resolver_bytes = 0;
     /* Numeric endpoints do not need DNS or a child. */
     struct sockaddr_in v4 = {0};
-    v4.sin_family = AF_INET; v4.sin_port = htons((uint16_t)router->hub_port);
-    if (inet_pton(AF_INET, router->hub_host, &v4.sin_addr) == 1) {
-        hub_connect_address(router, (struct sockaddr *)&v4, sizeof(v4)); return;
+    v4.sin_family = AF_INET; v4.sin_port = htons((uint16_t)hub->hub_port);
+    if (inet_pton(AF_INET, hub->hub_host, &v4.sin_addr) == 1) {
+        hub_connect_address(hub, (struct sockaddr *)&v4, sizeof(v4)); return;
     }
     struct sockaddr_in6 v6 = {0};
-    v6.sin6_family = AF_INET6; v6.sin6_port = htons((uint16_t)router->hub_port);
-    if (inet_pton(AF_INET6, router->hub_host, &v6.sin6_addr) == 1) {
-        hub_connect_address(router, (struct sockaddr *)&v6, sizeof(v6)); return;
+    v6.sin6_family = AF_INET6; v6.sin6_port = htons((uint16_t)hub->hub_port);
+    if (inet_pton(AF_INET6, hub->hub_host, &v6.sin6_addr) == 1) {
+        hub_connect_address(hub, (struct sockaddr *)&v6, sizeof(v6)); return;
     }
     /* Use the platform resolver (including Android Private DNS/VPN policies),
      * isolated in one bounded child so DNS can never stall the event loop. */
     int descriptors[2];
-    if (pipe(descriptors) != 0) { schedule_hub_reconnect(router, 2); return; }
+    if (pipe(descriptors) != 0) { schedule_hub_reconnect(hub, 2); return; }
     fcntl(descriptors[0], F_SETFD, FD_CLOEXEC);
     fcntl(descriptors[1], F_SETFD, FD_CLOEXEC);
     pid_t child = fork();
-    if (child < 0) { close(descriptors[0]); close(descriptors[1]); schedule_hub_reconnect(router, 2); return; }
+    if (child < 0) { close(descriptors[0]); close(descriptors[1]); schedule_hub_reconnect(hub, 2); return; }
     if (child == 0) {
         close(descriptors[0]);
         child_close_router_fds(router, descriptors[1]);
         struct addrinfo hints = {0}, *resolved = NULL;
         hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
-        char service[16]; snprintf(service, sizeof(service), "%d", router->hub_port);
+        char service[16]; snprintf(service, sizeof(service), "%d", hub->hub_port);
         struct resolution result = {0};
-        if (getaddrinfo(router->hub_host, service, &hints, &resolved) == 0) {
+        if (getaddrinfo(hub->hub_host, service, &hints, &resolved) == 0) {
             for (struct addrinfo *p = resolved; p && result.count < MAX_DNS_ADDRESSES; p = p->ai_next) {
                 if ((p->ai_family != AF_INET && p->ai_family != AF_INET6) || p->ai_addrlen > sizeof(result.addresses[0])) continue;
                 bool duplicate = false;
@@ -844,14 +996,14 @@ static void hub_connect(router_t *router) {
         _exit(total == sizeof(result) ? 0 : 1);
     }
     close(descriptors[1]);
-    router->resolver_fd = descriptors[0]; router->resolver_pid = child;
+    hub->resolver_fd = descriptors[0]; hub->resolver_pid = child;
     evutil_make_socket_nonblocking(descriptors[0]);
-    router->resolver_event = event_new(router->base, descriptors[0], EV_READ | EV_PERSIST, resolver_done_cb, router);
-    router->resolver_timeout = evtimer_new(router->base, resolver_timeout_cb, router);
-    if (!router->resolver_event || !router->resolver_timeout) { resolver_cancel(router); schedule_hub_reconnect(router, 2); return; }
-    event_add(router->resolver_event, NULL);
+    hub->resolver_event = event_new(router->base, descriptors[0], EV_READ | EV_PERSIST, resolver_done_cb, hub);
+    hub->resolver_timeout = evtimer_new(router->base, resolver_timeout_cb, hub);
+    if (!hub->resolver_event || !hub->resolver_timeout) { resolver_cancel(hub); schedule_hub_reconnect(hub, 2); return; }
+    event_add(hub->resolver_event, NULL);
     struct timeval deadline = {10, 0};
-    evtimer_add(router->resolver_timeout, &deadline);
+    evtimer_add(hub->resolver_timeout, &deadline);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -865,46 +1017,52 @@ static bool method_field(cJSON *item) {
     return true;
 }
 
-static void dispatch_job(router_t *router, cJSON *job_json) {
+static void dispatch_job(upstream_t *hub, cJSON *job_json) {
+    router_t *router = hub->router;
     cJSON *id = cJSON_GetObjectItemCaseSensitive(job_json, "id");
     cJSON *route = cJSON_GetObjectItemCaseSensitive(job_json, "route");
     cJSON *method = cJSON_GetObjectItemCaseSensitive(job_json, "method");
     if (!text_field(id, 128, false) || !text_field(route, 128, false) || !method_field(method)) {
-        send_hub_error(router, cJSON_IsString(id) ? id->valuestring : "",
+        send_hub_error(hub, cJSON_IsString(id) ? id->valuestring : "",
                        cJSON_IsString(route) ? route->valuestring : "", "invalid_job",
                        "job needs valid id, route and method");
         return;
     }
-    if (pending_id(router, id->valuestring)) {
-        send_hub_error(router, id->valuestring, route->valuestring, "duplicate_id", "request id already pending");
+    if (online_route_upstream(router, route->valuestring) != hub) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "route_unavailable", "route belongs to another upstream");
+        return;
+    }
+    if (pending_id(hub, id->valuestring)) {
+        send_hub_error(hub, id->valuestring, route->valuestring, "duplicate_id", "request id already pending");
         return;
     }
     if (router->job_count >= MAX_JOBS) {
-        send_hub_error(router, id->valuestring, route->valuestring, "router_busy",
+        send_hub_error(hub, id->valuestring, route->valuestring, "router_busy",
                        "too many in-flight jobs");
         return;
     }
     plugin_t *plugin = find_plugin(router, route->valuestring);
     if (!plugin || plugin->closing) {
-        send_hub_error(router, id->valuestring, route->valuestring, "route_unavailable",
+        send_hub_error(hub, id->valuestring, route->valuestring, "route_unavailable",
                        "no plugin registered for route");
         return;
     }
     if (router->wire_sequence == UINT64_MAX) {
-        send_hub_error(router, id->valuestring, route->valuestring, "router_busy", "request sequence exhausted");
+        send_hub_error(hub, id->valuestring, route->valuestring, "router_busy", "request sequence exhausted");
         return;
     }
     job_t *job = calloc(1, sizeof(*job));
-    if (!job) { send_hub_error(router, id->valuestring, route->valuestring, "router_oom",
+    if (!job) { send_hub_error(hub, id->valuestring, route->valuestring, "router_oom",
                               "out of memory"); return; }
     job->router = router;
+    job->hub = hub;
     snprintf(job->wire_id, sizeof(job->wire_id), "rpc-%llu", (unsigned long long)++router->wire_sequence);
     job->id = strdup(id->valuestring);
     job->route = strdup(route->valuestring);
     job->plugin = plugin;
     if (!job->id || !job->route) {
         job_free(job);
-        send_hub_error(router, id->valuestring, route->valuestring, "router_oom",
+        send_hub_error(hub, id->valuestring, route->valuestring, "router_oom",
                        "out of memory");
         return;
     }
@@ -914,7 +1072,7 @@ static void dispatch_job(router_t *router, cJSON *job_json) {
         timeout_ms = fmin(deadline->valuedouble, 86400000.0);
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        send_hub_error(router, job->id, job->route, "router_clock", "cannot determine request deadline");
+        send_hub_error(hub, job->id, job->route, "router_clock", "cannot determine request deadline");
         job_free(job); return;
     }
     uint64_t expires_ms = (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u +
@@ -930,13 +1088,13 @@ static void dispatch_job(router_t *router, cJSON *job_json) {
                    (!params || cJSON_AddItemReferenceToObject(request, "params", params));
     if (!encoded) {
         cJSON_Delete(request);
-        send_hub_error(router, job->id, job->route, "router_oom", "cannot encode request");
+        send_hub_error(hub, job->id, job->route, "router_oom", "cannot encode request");
         job_free(job); return;
     }
-    char *wire = cJSON_PrintUnformatted(request);
+    char *wire = dejavu_json_print(request);
     cJSON_Delete(request);
     if (!wire || strlen(wire) > MAX_LINE) {
-        send_hub_error(router, job->id, job->route, wire ? "invalid_job" : "router_oom",
+        send_hub_error(hub, job->id, job->route, wire ? "invalid_job" : "router_oom",
                        "cannot encode request within plugin frame limit");
         free(wire);
         job_free(job); return;
@@ -948,7 +1106,7 @@ static void dispatch_job(router_t *router, cJSON *job_json) {
                           .tv_usec = (suseconds_t)(fmod(timeout_ms, 1000.0) * 1000.0) };
     if (!job->timer || evtimer_add(job->timer, &tv) != 0) {
         free(wire);
-        send_hub_error(router, job->id, job->route, "router_oom", "cannot create deadline");
+        send_hub_error(hub, job->id, job->route, "router_oom", "cannot create deadline");
         job_free(job); return;
     }
     job->next = router->jobs;
@@ -958,7 +1116,7 @@ static void dispatch_job(router_t *router, cJSON *job_json) {
         bufferevent_write(plugin->bev, wire, strlen(wire)) != 0 ||
         bufferevent_write(plugin->bev, "\n", 1) != 0) {
         free(wire);
-        send_hub_error(router, job->id, job->route, "plugin_send_failed",
+        send_hub_error(hub, job->id, job->route, "plugin_send_failed",
                        "could not write to plugin");
         job_remove(router, job);
         job_free(job);
@@ -1006,18 +1164,23 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
             cJSON_Delete(root); return;
         }
         cJSON *app = cJSON_GetObjectItemCaseSensitive(root, "app");
+        cJSON *service = cJSON_GetObjectItemCaseSensitive(root, "plugin");
         cJSON *routes = cJSON_GetObjectItemCaseSensitive(root, "routes");
         size_t count = cJSON_IsArray(routes) ? (size_t)cJSON_GetArraySize(routes) : 0;
         size_t total = 0;
         for (plugin_t *p = plugin->router->plugins; p; p = p->next) total += p->route_count;
         const char *registration_error = NULL;
-        if (!text_field(app, 256, false) || !cJSON_IsArray(routes) || count == 0 || count > 64)
+        if (!text_field(app, 256, false) || (service && !method_field(service)) || !cJSON_IsArray(routes) || count == 0 || count > 64)
             registration_error = "invalid_hello";
         else if (total + count > MAX_ROUTES) registration_error = "router_busy";
         for (size_t i = 0; !registration_error && i < count; ++i) {
             cJSON *item = cJSON_GetArrayItem(routes, (int)i);
             if (!text_field(item, 128, false)) {
                 registration_error = "invalid_hello"; break;
+            }
+            if (!route_binding_allowed(plugin->router->plugin_configs, item->valuestring,
+                                       service ? service->valuestring : "")) {
+                registration_error = "route_config_mismatch"; break;
             }
             if (find_plugin(plugin->router, item->valuestring)) {
                 registration_error = "route_conflict"; break;
@@ -1031,8 +1194,9 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
             cJSON_Delete(root); return;
         }
         plugin->app = strdup(app->valuestring);
+        plugin->service = strdup(service ? service->valuestring : "");
         plugin->routes = calloc(count, sizeof(char *));
-        if (!plugin->app || !plugin->routes) {
+        if (!plugin->app || !plugin->service || !plugin->routes) {
             free(plugin->app); plugin->app = NULL;
             free(plugin->routes); plugin->routes = NULL;
             plugin_reject_hello(plugin, "router_oom", "cannot allocate route registration");
@@ -1063,7 +1227,7 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
         plugin->hello_deadline = NULL;
         bufferevent_set_timeouts(plugin->bev, NULL, NULL);
         for (size_t i = 0; i < plugin->route_count; i++) {
-            hub_route_event(plugin->router, "register", plugin->routes[i], plugin->app);
+            hub_route_event(route_upstream(plugin->router, plugin->routes[i], plugin->service), "register", plugin->routes[i], plugin->app);
             wake_route_online(plugin->router, plugin->routes[i]);
         }
         logmsg("INFO", "plugin connected app=%s routes=%zu", plugin->app, plugin->route_count);
@@ -1112,7 +1276,7 @@ static void plugin_event_cb(struct bufferevent *bev, short events, void *arg) {
         for (job_t *job = router->jobs; job; ) {
             job_t *next = job->next;
             if (job->plugin == plugin) {
-                send_hub_error(router, job->id, job->route, "plugin_disconnected",
+                send_hub_error(job->hub, job->id, job->route, "plugin_disconnected",
                                "plugin disconnected");
                 job_remove(router, job);
                 job_free(job);
@@ -1121,7 +1285,7 @@ static void plugin_event_cb(struct bufferevent *bev, short events, void *arg) {
         }
         if (registered) {
             for (size_t i = 0; i < plugin->route_count; i++)
-                hub_route_event(router, "unregister", plugin->routes[i], plugin->app);
+                hub_route_event(route_upstream(router, plugin->routes[i], plugin->service), "unregister", plugin->routes[i], plugin->app);
         }
         detach_plugin(router, plugin);
         logmsg("INFO", "plugin disconnected app=%s", plugin->app ? plugin->app : "");
@@ -1169,7 +1333,8 @@ static void listener_cb(struct evconnlistener *listener, evutil_socket_t fd,
 
 typedef struct {
     char *hub_host, *device_id, *device_token, *listen_host;
-    char *control_socket, *plugin_socket;
+    char *control_socket, *plugin_socket, *plugins_dir;
+    cJSON *upstream_overrides;
     bool listen_tcp;
     int hub_port, listen_port;
 } config_t;
@@ -1246,7 +1411,7 @@ static cJSON *read_json_file(const char *path, size_t maximum) {
 }
 
 static bool atomic_json_write(const char *path, cJSON *root) {
-    char *text = cJSON_PrintUnformatted(root);
+    char *text = dejavu_json_print(root);
     if (!text) return false;
     char temporary[PATH_MAX];
     static unsigned sequence;
@@ -1279,7 +1444,7 @@ static char *state_path(router_t *router, const char *name) {
 
 static void config_free(config_t *cfg) {
     free(cfg->hub_host); free(cfg->device_id); free(cfg->device_token); free(cfg->listen_host);
-    free(cfg->control_socket); free(cfg->plugin_socket);
+    free(cfg->control_socket); free(cfg->plugin_socket); free(cfg->plugins_dir); cJSON_Delete(cfg->upstream_overrides);
     memset(cfg, 0, sizeof(*cfg));
 }
 
@@ -1294,7 +1459,11 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cJSON *control = cJSON_GetObjectItemCaseSensitive(root, "control_socket");
     cJSON *plugins = cJSON_GetObjectItemCaseSensitive(root, "plugin_socket");
     cJSON *tcp = cJSON_GetObjectItemCaseSensitive(root, "listen_tcp");
-    if ((host && !text_field(host, 253, true)) || (id && !text_field(id, 128, false)) ||
+    cJSON *directory = cJSON_GetObjectItemCaseSensitive(root, "plugins_dir");
+    cJSON *overrides = cJSON_GetObjectItemCaseSensitive(root, "upstream_overrides");
+    if ((directory && (!text_field(directory, 2048, false) || directory->valuestring[0] != '/')) ||
+        (overrides && (!cJSON_IsObject(overrides) || cJSON_GetArraySize(overrides) > 64)) ||
+        (host && !text_field(host, 253, true)) || (id && !text_field(id, 128, false)) ||
         (token && !text_field(token, 4096, true)) ||
         (listen && (!text_field(listen, 15, false) || strcmp(listen->valuestring, "127.0.0.1"))) ||
         (port && !integer_field(port, 1, 65535)) ||
@@ -1317,25 +1486,495 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cfg->control_socket = strdup(control ? control->valuestring : "control.sock");
     cfg->plugin_socket = strdup(plugins ? plugins->valuestring : "plugins.sock");
 #endif
+    cfg->plugins_dir = directory ? strdup(directory->valuestring) : NULL;
+    cfg->upstream_overrides = overrides ? cJSON_Duplicate(overrides, true) : cJSON_CreateObject();
+    if ((directory && !cfg->plugins_dir) || !cfg->upstream_overrides) { config_free(cfg); return false; }
     cfg->listen_tcp = cJSON_IsTrue(tcp);
     if (!cfg->hub_host || !cfg->device_id || !cfg->device_token || !cfg->listen_host ||
         !cfg->control_socket || !cfg->plugin_socket || !strcmp(cfg->control_socket, cfg->plugin_socket)) { config_free(cfg); return false; }
     return true;
 }
 
+/* Each upstream owns its transport and reconnect state; plugin declarations are
+ * read as data only, independently of app injection or RPC execution. */
+static bool only_fields(cJSON *value, const char *const *fields, size_t count) {
+    if (!cJSON_IsObject(value)) return false;
+    for (cJSON *item = value->child; item; item = item->next) {
+        bool found = false;
+        for (size_t i = 0; i < count; i++) if (item->string && !strcmp(item->string, fields[i])) found = true;
+        if (!found) return false;
+    }
+    return true;
+}
+
+static bool unique_members(cJSON *value) {
+    if (cJSON_IsObject(value)) {
+        for (cJSON *item = value->child; item; item = item->next) {
+            if (!item->string) return false;
+            for (cJSON *previous = value->child; previous != item; previous = previous->next)
+                if (!strcmp(previous->string, item->string)) return false;
+        }
+    }
+    if (cJSON_IsObject(value) || cJSON_IsArray(value))
+        for (cJSON *item = value->child; item; item = item->next)
+            if (!unique_members(item)) return false;
+    return true;
+}
+
+static bool plugin_identifier(const char *value) {
+    if (!value || !value[0] || strlen(value) > 64 || value[0] < 'a' || value[0] > 'z') return false;
+    for (const char *p = value; *p; p++)
+        if (!(*p >= 'a' && *p <= 'z') && !(*p >= '0' && *p <= '9') && *p != '_' && *p != '-') return false;
+    return true;
+}
+
+static bool service_identifier(cJSON *value) {
+    if (!text_field(value, 128, false)) return false;
+    for (const unsigned char *p = (const unsigned char *)value->valuestring; *p; p++)
+        if (!isalnum(*p) && *p != '_' && *p != '.' && *p != '-') return false;
+    return true;
+}
+
+static upstream_t *find_upstream(router_t *router, const char *id) {
+    for (upstream_t *hub = router->upstreams; hub; hub = hub->next)
+        if (!strcmp(hub->id, id)) return hub;
+    return NULL;
+}
+
+static cJSON *connection_json(const char *host, int port, const char *id, const char *token) {
+    cJSON *root = cJSON_CreateObject();
+    if (!root || !cJSON_AddStringToObject(root, "hub_host", host) ||
+        !cJSON_AddNumberToObject(root, "hub_port", port) ||
+        !cJSON_AddStringToObject(root, "device_id", id) ||
+        !cJSON_AddStringToObject(root, "device_token", token)) { cJSON_Delete(root); return NULL; }
+    return root;
+}
+
+static bool connection_valid(cJSON *root, bool empty_host) {
+    return cJSON_IsObject(root) && unique_members(root) &&
+        text_field(cJSON_GetObjectItemCaseSensitive(root, "hub_host"), 253, empty_host) &&
+        integer_field(cJSON_GetObjectItemCaseSensitive(root, "hub_port"), 1, 65535) &&
+        text_field(cJSON_GetObjectItemCaseSensitive(root, "device_id"), 128, false) &&
+        text_field(cJSON_GetObjectItemCaseSensitive(root, "device_token"), 4096, true);
+}
+
+static void upstream_free(upstream_t *hub) {
+    if (!hub) return;
+    hub_disconnect(hub);
+    if (hub->reconnect_timer) event_free(hub->reconnect_timer);
+    free(hub->id); free(hub->plugin_id); free(hub->source);
+    free(hub->hub_host); free(hub->device_id); free(hub->device_token);
+    cJSON_Delete(hub->base_config);
+    free(hub);
+}
+
+static upstream_t *upstream_new(router_t *router, const char *id, const char *plugin_id,
+                                const char *source, cJSON *base, cJSON *overrides) {
+    cJSON *override = cJSON_GetObjectItemCaseSensitive(overrides, id);
+    cJSON *effective = override ? override : base;
+    if (!connection_valid(effective, !strcmp(id, "default"))) return NULL;
+    upstream_t *hub = calloc(1, sizeof(*hub));
+    if (!hub) return NULL;
+    hub->router = router; hub->resolver_fd = -1; hub->reconnect_seconds = 1;
+    hub->id = strdup(id); hub->plugin_id = strdup(plugin_id); hub->source = strdup(source);
+    hub->base_config = cJSON_Duplicate(base, true);
+    hub->hub_host = strdup(cJSON_GetObjectItemCaseSensitive(effective, "hub_host")->valuestring);
+    hub->hub_port = cJSON_GetObjectItemCaseSensitive(effective, "hub_port")->valueint;
+    hub->device_id = strdup(cJSON_GetObjectItemCaseSensitive(effective, "device_id")->valuestring);
+    hub->device_token = strdup(cJSON_GetObjectItemCaseSensitive(effective, "device_token")->valuestring);
+    hub->overridden = override != NULL;
+    if (!hub->id || !hub->plugin_id || !hub->source || !hub->base_config || !hub->hub_host ||
+        !hub->device_id || !hub->device_token) { upstream_free(hub); return NULL; }
+    return hub;
+}
+
+static void plugin_configs_free(plugin_config_t *configs) {
+    while (configs) {
+        plugin_config_t *next = configs->next;
+        free(configs->id); free(configs->default_upstream); cJSON_Delete(configs->definition);
+        free(configs); configs = next;
+    }
+}
+
+static void upstreams_free(upstream_t *hubs) {
+    while (hubs) { upstream_t *next = hubs->next; upstream_free(hubs); hubs = next; }
+}
+
+static bool service_matches(plugin_config_t *config, const char *service) {
+    if (!service || !service[0]) return false;
+    cJSON *services = cJSON_GetObjectItemCaseSensitive(config->definition, "services");
+    if (!services) return !strcmp(config->id, service);
+    cJSON *item;
+    cJSON_ArrayForEach(item, services) if (!strcmp(item->valuestring, service)) return true;
+    return false;
+}
+
+static upstream_t *route_upstream(router_t *router, const char *route, const char *service) {
+    for (plugin_config_t *config = router->plugin_configs; config; config = config->next) {
+        cJSON *routes = cJSON_GetObjectItemCaseSensitive(config->definition, "routes");
+        cJSON *selected = cJSON_GetObjectItemCaseSensitive(routes, route);
+        if (selected) {
+            char id[130]; snprintf(id, sizeof(id), "%s/%s", config->id, selected->valuestring);
+            return find_upstream(router, id);
+        }
+    }
+    for (plugin_config_t *config = router->plugin_configs; config; config = config->next)
+        if (service_matches(config, service)) return find_upstream(router, config->default_upstream);
+    return find_upstream(router, "default");
+}
+
+static upstream_t *online_route_upstream(router_t *router, const char *route) {
+    plugin_t *plugin = find_plugin(router, route);
+    return route_upstream(router, route, plugin ? plugin->service : NULL);
+}
+
+static bool valid_utf8(const unsigned char *text, size_t size) {
+    for (size_t i = 0; i < size; ) {
+        unsigned char first = text[i++];
+        if (first < 0x80) continue;
+        size_t remaining;
+        uint32_t code;
+        if (first >= 0xc2 && first <= 0xdf) { remaining = 1; code = first & 0x1f; }
+        else if (first >= 0xe0 && first <= 0xef) { remaining = 2; code = first & 0x0f; }
+        else if (first >= 0xf0 && first <= 0xf4) { remaining = 3; code = first & 0x07; }
+        else return false;
+        if (remaining > size - i) return false;
+        size_t count = remaining;
+        while (remaining--) {
+            unsigned char next = text[i++];
+            if ((next & 0xc0) != 0x80) return false;
+            code = (code << 6) | (next & 0x3f);
+        }
+        if ((count == 1 && code < 0x80) || (count == 2 && code < 0x800) ||
+            (count == 3 && code < 0x10000) || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return false;
+    }
+    return true;
+}
+
+/* cJSON deliberately accepts a few JavaScript-style number/string extensions.
+ * Package metadata uses strict JSON so importer and daemon reject the same
+ * malformed input. The network protocol keeps its existing parser. */
+struct json_cursor { const unsigned char *text; size_t size, offset; };
+static void json_space(struct json_cursor *cursor) {
+    while (cursor->offset < cursor->size && strchr(" \r\n\t", cursor->text[cursor->offset])) cursor->offset++;
+}
+static bool json_string_syntax(struct json_cursor *cursor) {
+    if (cursor->offset >= cursor->size || cursor->text[cursor->offset++] != '"') return false;
+    while (cursor->offset < cursor->size) {
+        unsigned char ch = cursor->text[cursor->offset++];
+        if (ch == '"') return true;
+        if (ch < 32) return false;
+        if (ch != '\\') continue;
+        if (cursor->offset >= cursor->size) return false;
+        ch = cursor->text[cursor->offset++];
+        if (ch == 'u') {
+            if (cursor->size - cursor->offset < 4) return false;
+            for (size_t i = 0; i < 4; i++) if (!isxdigit(cursor->text[cursor->offset++])) return false;
+        } else if (!strchr("\"\\/bfnrt", ch)) return false;
+    }
+    return false;
+}
+static bool json_value_syntax(struct json_cursor *cursor, unsigned depth) {
+    if (depth > 16) return false;
+    json_space(cursor);
+    if (cursor->offset >= cursor->size) return false;
+    unsigned char first = cursor->text[cursor->offset];
+    if (first == '"') return json_string_syntax(cursor);
+    if (first == '{' || first == '[') {
+        const unsigned char end = first == '{' ? '}' : ']';
+        cursor->offset++; json_space(cursor);
+        if (cursor->offset < cursor->size && cursor->text[cursor->offset] == end) { cursor->offset++; return true; }
+        while (cursor->offset < cursor->size) {
+            if (first == '{') {
+                if (!json_string_syntax(cursor)) return false;
+                json_space(cursor);
+                if (cursor->offset >= cursor->size || cursor->text[cursor->offset++] != ':') return false;
+            }
+            if (!json_value_syntax(cursor, depth + 1)) return false;
+            json_space(cursor);
+            if (cursor->offset >= cursor->size) return false;
+            unsigned char separator = cursor->text[cursor->offset++];
+            if (separator == end) return true;
+            if (separator != ',') return false;
+            json_space(cursor);
+        }
+        return false;
+    }
+    const char *literal = first == 't' ? "true" : first == 'f' ? "false" : first == 'n' ? "null" : NULL;
+    if (literal) {
+        size_t length = strlen(literal);
+        if (cursor->size - cursor->offset < length || memcmp(cursor->text + cursor->offset, literal, length)) return false;
+        cursor->offset += length; return true;
+    }
+    size_t index = cursor->offset;
+    if (cursor->text[index] == '-') { if (++index >= cursor->size) return false; }
+    if (cursor->text[index] == '0') index++;
+    else {
+        if (cursor->text[index] < '1' || cursor->text[index] > '9') return false;
+        do { index++; } while (index < cursor->size && isdigit(cursor->text[index]));
+    }
+    if (index < cursor->size && cursor->text[index] == '.') {
+        index++;
+        if (index >= cursor->size || !isdigit(cursor->text[index])) return false;
+        do { index++; } while (index < cursor->size && isdigit(cursor->text[index]));
+    }
+    if (index < cursor->size && (cursor->text[index] == 'e' || cursor->text[index] == 'E')) {
+        index++;
+        if (index < cursor->size && (cursor->text[index] == '+' || cursor->text[index] == '-')) index++;
+        if (index >= cursor->size || !isdigit(cursor->text[index])) return false;
+        do { index++; } while (index < cursor->size && isdigit(cursor->text[index]));
+    }
+    cursor->offset = index;
+    return true;
+}
+static bool metadata_syntax(const char *text, size_t size) {
+    if (!valid_utf8((const unsigned char *)text, size) || memchr(text, 0, size)) return false;
+    struct json_cursor cursor = {(const unsigned char *)text, size, 0};
+    if (!json_value_syntax(&cursor, 0)) return false;
+    json_space(&cursor);
+    return cursor.offset == size;
+}
+
+static bool route_binding_allowed(plugin_config_t *configs, const char *route, const char *service) {
+    for (plugin_config_t *config = configs; config; config = config->next)
+        if (cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(config->definition, "routes"), route))
+            return service_matches(config, service);
+    return true;
+}
+
+/* openat keeps every path component within an already-open, non-linked plugin
+ * directory. FIFOs/devices cannot block the daemon's configuration scanner. */
+static cJSON *read_json_at(int directory, const char *name, size_t maximum) {
+    int fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size <= 0 || (uint64_t)st.st_size > maximum) {
+        close(fd); return NULL;
+    }
+    size_t size = (size_t)st.st_size, got = 0;
+    char *text = calloc(size + 1, 1);
+    if (!text) { close(fd); return NULL; }
+    while (got < size) {
+        ssize_t count = read(fd, text + got, size - got);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+        got += (size_t)count;
+    }
+    close(fd);
+    cJSON *value = got == size && metadata_syntax(text, size) ? parse_message(text, size) : NULL;
+    free(text);
+    if (value && !unique_members(value)) { cJSON_Delete(value); value = NULL; }
+    return value;
+}
+
+static bool plugin_config_parse(router_t *router, const char *plugin_id, const char *source,
+                                 cJSON *definition, plugin_config_t **configs,
+                                 upstream_t **hubs, size_t *hub_count) {
+    static const char *const root_fields[] = {"schemaVersion", "services", "upstreams", "default_upstream", "routes"};
+    static const char *const upstream_fields[] = {"id", "host", "port", "device_id", "device_token"};
+    if (!only_fields(definition, root_fields, sizeof(root_fields) / sizeof(*root_fields))) return false;
+    cJSON *schema = cJSON_GetObjectItemCaseSensitive(definition, "schemaVersion");
+    cJSON *services = cJSON_GetObjectItemCaseSensitive(definition, "services");
+    cJSON *upstreams = cJSON_GetObjectItemCaseSensitive(definition, "upstreams");
+    cJSON *selected = cJSON_GetObjectItemCaseSensitive(definition, "default_upstream");
+    cJSON *routes = cJSON_GetObjectItemCaseSensitive(definition, "routes");
+    if (!integer_field(schema, 1, 1) || !cJSON_IsArray(upstreams) ||
+        cJSON_GetArraySize(upstreams) < 1 || cJSON_GetArraySize(upstreams) > 8 ||
+        !cJSON_IsString(selected) || !plugin_identifier(selected->valuestring) ||
+        (services && (!cJSON_IsArray(services) || cJSON_GetArraySize(services) < 1 || cJSON_GetArraySize(services) > 8)) ||
+        (routes && (!cJSON_IsObject(routes) || cJSON_GetArraySize(routes) > MAX_ROUTES))) return false;
+    if (*hub_count + (size_t)cJSON_GetArraySize(upstreams) > MAX_UPSTREAMS) return false;
+    cJSON *service;
+    cJSON_ArrayForEach(service, services) {
+        if (!service_identifier(service)) return false;
+        for (cJSON *previous = services->child; previous != service; previous = previous->next)
+            if (!strcmp(service->valuestring, previous->valuestring)) return false;
+    }
+    plugin_config_t candidate = {.id = (char *)plugin_id, .definition = definition};
+    for (plugin_config_t *old = *configs; old; old = old->next) {
+        if (!services) { if (service_matches(old, plugin_id)) return false; }
+        cJSON_ArrayForEach(service, services) if (service_matches(old, service->valuestring)) return false;
+        if (service_matches(&candidate, old->id) && !cJSON_GetObjectItemCaseSensitive(old->definition, "services")) return false;
+    }
+    bool found_default = false;
+    cJSON *item;
+    cJSON_ArrayForEach(item, upstreams) {
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
+        cJSON *host = cJSON_GetObjectItemCaseSensitive(item, "host");
+        cJSON *port = cJSON_GetObjectItemCaseSensitive(item, "port");
+        cJSON *device = cJSON_GetObjectItemCaseSensitive(item, "device_id");
+        cJSON *token = cJSON_GetObjectItemCaseSensitive(item, "device_token");
+        if (!only_fields(item, upstream_fields, sizeof(upstream_fields) / sizeof(*upstream_fields)) || !cJSON_IsString(id) || !plugin_identifier(id->valuestring) ||
+            !text_field(host, 253, false) || !integer_field(port, 1, 65535) ||
+            (device && !text_field(device, 128, false)) || (token && !text_field(token, 4096, true))) return false;
+        for (cJSON *previous = upstreams->child; previous != item; previous = previous->next) {
+            cJSON *other_id = cJSON_GetObjectItemCaseSensitive(previous, "id");
+            if (!strcmp(id->valuestring, other_id->valuestring)) return false;
+        }
+        if (!strcmp(id->valuestring, selected->valuestring)) found_default = true;
+        char qualified[130]; snprintf(qualified, sizeof(qualified), "%s/%s", plugin_id, id->valuestring);
+        upstream_t *fallback = find_upstream(router, "default");
+        cJSON *base = connection_json(host->valuestring, port->valueint,
+            device ? device->valuestring : fallback->device_id, token ? token->valuestring : "");
+        upstream_t *hub = base ? upstream_new(router, qualified, plugin_id, source, base, router->upstream_overrides) : NULL;
+        cJSON_Delete(base);
+        if (!hub) return false;
+        hub->next = *hubs; *hubs = hub; (*hub_count)++;
+    }
+    if (!found_default) return false;
+    cJSON_ArrayForEach(item, routes) {
+        cJSON *route = cJSON_CreateString(item->string);
+        bool valid = text_field(route, 128, false) && cJSON_IsString(item) && plugin_identifier(item->valuestring);
+        cJSON_Delete(route);
+        bool found = false;
+        cJSON *upstream;
+        cJSON_ArrayForEach(upstream, upstreams)
+            if (cJSON_IsString(item) && !strcmp(cJSON_GetObjectItemCaseSensitive(upstream, "id")->valuestring, item->valuestring)) found = true;
+        if (!valid || !found) return false;
+        for (plugin_config_t *old = *configs; old; old = old->next)
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(old->definition, "routes"), item->string)) return false;
+    }
+    plugin_config_t *config = calloc(1, sizeof(*config));
+    if (!config) return false;
+    char qualified[130]; snprintf(qualified, sizeof(qualified), "%s/%s", plugin_id, selected->valuestring);
+    config->id = strdup(plugin_id); config->default_upstream = strdup(qualified);
+    config->definition = cJSON_Duplicate(definition, true);
+    if (!config->id || !config->default_upstream || !config->definition) { plugin_configs_free(config); return false; }
+    config->next = *configs; *configs = config;
+    return true;
+}
+
+static bool same_connection(upstream_t *a, upstream_t *b) {
+    return !strcmp(a->hub_host, b->hub_host) && a->hub_port == b->hub_port &&
+        !strcmp(a->device_id, b->device_id) && !strcmp(a->device_token, b->device_token);
+}
+
+static const char *reload_plugins(router_t *router) {
+    plugin_config_t *configs = NULL;
+    upstream_t *hubs = NULL;
+    size_t count = 1, config_count = 0, scanned = 0;
+    const char *error = NULL;
+    int root_fd = open(router->plugins_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root_fd < 0 && errno != ENOENT) return "invalid_plugin_directory";
+    DIR *directory = root_fd < 0 ? NULL : fdopendir(root_fd);
+    if (root_fd >= 0 && !directory) { close(root_fd); return "invalid_plugin_directory"; }
+    struct dirent *entry;
+    while (directory && (entry = readdir(directory))) {
+        if (entry->d_name[0] == '.') continue;
+        if (++scanned > 1024) { error = "too_many_plugin_directories"; break; }
+        /* Non-plugin resources remain irrelevant to discovery. A linked plugin
+         * folder is rejected rather than traversed as root. */
+        struct stat st;
+        if (fstatat(root_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { error = "invalid_plugin_directory"; break; }
+        if (S_ISLNK(st.st_mode)) { error = "linked_plugin_directory"; break; }
+        if (!S_ISDIR(st.st_mode)) continue;
+        int plugin_fd = openat(root_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (plugin_fd < 0) { error = "invalid_plugin_directory"; break; }
+        if (fstatat(plugin_fd, "manifest.json", &st, AT_SYMLINK_NOFOLLOW) && errno == ENOENT) { close(plugin_fd); continue; }
+        cJSON *manifest = read_json_at(plugin_fd, "manifest.json", 16 * 1024);
+        cJSON *reference = cJSON_GetObjectItemCaseSensitive(manifest, "router");
+        if (!manifest) { close(plugin_fd); error = "invalid_plugin_manifest"; break; }
+        if (!reference) { cJSON_Delete(manifest); close(plugin_fd); continue; }
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(manifest, "id");
+        cJSON *files = cJSON_GetObjectItemCaseSensitive(manifest, "files");
+        cJSON *schema = cJSON_GetObjectItemCaseSensitive(manifest, "schemaVersion");
+        cJSON *kind = cJSON_GetObjectItemCaseSensitive(manifest, "kind");
+        cJSON *entrypoint = cJSON_GetObjectItemCaseSensitive(manifest, "entry");
+        cJSON *ui = cJSON_GetObjectItemCaseSensitive(manifest, "ui");
+        cJSON *file;
+        bool declared = false;
+        cJSON_ArrayForEach(file, files) if (cJSON_IsString(file) && !strcmp(file->valuestring, "router.json")) declared = true;
+        bool valid = cJSON_IsString(reference) && !strcmp(reference->valuestring, "router.json") &&
+            cJSON_IsString(id) && plugin_identifier(id->valuestring) && !strcmp(id->valuestring, entry->d_name) &&
+            integer_field(schema, 1, 1) && cJSON_IsArray(files) && declared &&
+            text_field(kind, 16, false) && (!strcmp(kind->valuestring, "lua") || !strcmp(kind->valuestring, "native") || !strcmp(kind->valuestring, "jit")) &&
+            text_field(entrypoint, 240, false) && strcmp(entrypoint->valuestring, "router.json") &&
+            (!ui || (text_field(ui, 240, false) && strcmp(ui->valuestring, "router.json")));
+        cJSON *definition = valid ? read_json_at(plugin_fd, "router.json", 32 * 1024) : NULL;
+        char source[PATH_MAX];
+        int written = snprintf(source, sizeof(source), "%s/%s/router.json", router->plugins_dir, entry->d_name);
+        valid = definition && written >= 0 && (size_t)written < sizeof(source) && ++config_count <= MAX_PLUGIN_CONFIGS &&
+            plugin_config_parse(router, id->valuestring, source, definition, &configs, &hubs, &count);
+        cJSON_Delete(definition); cJSON_Delete(manifest); close(plugin_fd);
+        if (!valid) { error = "invalid_plugin_router"; break; }
+    }
+    if (directory) closedir(directory);
+    for (plugin_t *plugin = router->plugins; !error && plugin; plugin = plugin->next)
+        if (plugin->registered && !plugin->closing)
+            for (size_t i = 0; i < plugin->route_count; i++)
+                if (!route_binding_allowed(configs, plugin->routes[i], plugin->service)) error = "route_config_mismatch";
+    if (error) { plugin_configs_free(configs); upstreams_free(hubs); return error; }
+    /* Unregister using the old selection before atomically swapping bindings. */
+    for (plugin_t *plugin = router->plugins; plugin; plugin = plugin->next)
+        if (plugin->registered && !plugin->closing)
+            for (size_t i = 0; i < plugin->route_count; i++)
+                hub_route_event(route_upstream(router, plugin->routes[i], plugin->service), "unregister", plugin->routes[i], plugin->app);
+    upstream_t *default_hub = find_upstream(router, "default");
+    upstream_t *old_hubs = router->upstreams;
+    upstream_t **slot = &old_hubs;
+    while (*slot && *slot != default_hub) slot = &(*slot)->next;
+    if (*slot) *slot = default_hub->next;
+    default_hub->next = NULL;
+    upstream_t *merged = default_hub;
+    while (hubs) {
+        upstream_t *candidate = hubs; hubs = candidate->next; candidate->next = NULL;
+        slot = &old_hubs;
+        while (*slot && strcmp((*slot)->id, candidate->id)) slot = &(*slot)->next;
+        upstream_t *old = *slot;
+        if (old && same_connection(old, candidate)) {
+            *slot = old->next;
+            free(old->source); old->source = candidate->source; candidate->source = NULL;
+            cJSON_Delete(old->base_config); old->base_config = candidate->base_config; candidate->base_config = NULL;
+            old->overridden = candidate->overridden;
+            upstream_free(candidate); candidate = old;
+        }
+        candidate->next = merged; merged = candidate;
+    }
+    /* Changed/removed upstreams cancel only their requests before destruction. */
+    upstreams_free(old_hubs);
+    plugin_configs_free(router->plugin_configs);
+    router->plugin_configs = configs;
+    router->upstreams = merged;
+    for (job_t *job = router->jobs; job; ) {
+        job_t *next = job->next;
+        if (online_route_upstream(router, job->route) != job->hub) {
+            job_cancel_plugin(job); send_hub_error(job->hub, job->id, job->route, "route_reconfigured", "route upstream changed");
+            job_remove(router, job); job_free(job);
+        }
+        job = next;
+    }
+    for (wake_t *wake = router->wakes; wake; ) {
+        wake_t *next = wake->next;
+        if (online_route_upstream(router, wake->route) != wake->hub) {
+            send_hub_error(wake->hub, wake->id, wake->route, "route_reconfigured", "route upstream changed"); wake_drop(wake);
+        }
+        wake = next;
+    }
+    for (upstream_t *hub = router->upstreams; hub; hub = hub->next) hub_connect(hub);
+    for (plugin_t *plugin = router->plugins; plugin; plugin = plugin->next)
+        if (plugin->registered && !plugin->closing)
+            for (size_t i = 0; i < plugin->route_count; i++)
+                hub_route_event(route_upstream(router, plugin->routes[i], plugin->service), "register", plugin->routes[i], plugin->app);
+    return NULL;
+}
+
 static cJSON *config_json(router_t *router, const char *host, int port, const char *id, const char *token) {
     cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
-    cJSON_AddStringToObject(root, "hub_host", host);
-    cJSON_AddNumberToObject(root, "hub_port", port);
-    cJSON_AddStringToObject(root, "device_id", id);
-    cJSON_AddStringToObject(root, "device_token", token);
-    cJSON_AddStringToObject(root, "listen_host", "127.0.0.1");
-    cJSON_AddNumberToObject(root, "listen_port", router->listen_port);
-    cJSON_AddBoolToObject(root, "listen_tcp", router->listen_tcp);
-    cJSON_AddStringToObject(root, "control_socket", router->control_name);
-    cJSON_AddStringToObject(root, "plugin_socket", router->plugin_name);
-    cJSON_AddStringToObject(root, "wake_targets", router->wake_targets_path);
+    cJSON *overrides = cJSON_Duplicate(router->upstream_overrides, true);
+    if (!root || !overrides || !cJSON_AddStringToObject(root, "hub_host", host) ||
+        !cJSON_AddNumberToObject(root, "hub_port", port) ||
+        !cJSON_AddStringToObject(root, "device_id", id) ||
+        !cJSON_AddStringToObject(root, "device_token", token) ||
+        !cJSON_AddStringToObject(root, "listen_host", "127.0.0.1") ||
+        !cJSON_AddNumberToObject(root, "listen_port", router->listen_port) ||
+        !cJSON_AddBoolToObject(root, "listen_tcp", router->listen_tcp) ||
+        !cJSON_AddStringToObject(root, "control_socket", router->control_name) ||
+        !cJSON_AddStringToObject(root, "plugin_socket", router->plugin_name) ||
+        !cJSON_AddStringToObject(root, "wake_targets", router->wake_targets_path) ||
+        !cJSON_AddStringToObject(root, "plugins_dir", router->plugins_dir) ||
+        !cJSON_AddItemToObject(root, "upstream_overrides", overrides)) {
+        cJSON_Delete(overrides); cJSON_Delete(root); return NULL;
+    }
     return root;
 }
 
@@ -1385,10 +2024,11 @@ static cJSON *targets_json(router_t *router) {
 }
 
 static cJSON *status_json(router_t *router) {
+    upstream_t *fallback = find_upstream(router, "default");
     cJSON *status = cJSON_CreateObject();
     if (!status) return NULL;
     cJSON_AddNumberToObject(status, "pid", getpid());
-    cJSON_AddBoolToObject(status, "hub_connected", router->hub_connected);
+    cJSON_AddBoolToObject(status, "hub_connected", fallback->hub_connected);
     size_t registered = 0;
     for (plugin_t *p = router->plugins; p; p = p->next) if (p->registered) registered++;
     cJSON_AddNumberToObject(status, "plugin_count", (double)registered);
@@ -1396,15 +2036,30 @@ static cJSON *status_json(router_t *router) {
     cJSON_AddNumberToObject(status, "listen_port", router->listen_port);
     cJSON_AddBoolToObject(status, "listen_tcp", router->listen_tcp);
     cJSON_AddStringToObject(status, "plugin_socket", router->plugin_socket);
-    cJSON_AddStringToObject(status, "hub_host", router->hub_host);
-    cJSON_AddNumberToObject(status, "hub_port", router->hub_port);
-    cJSON_AddStringToObject(status, "device_id", router->device_id);
-    cJSON_AddBoolToObject(status, "token_configured", router->device_token && router->device_token[0]);
+    cJSON_AddStringToObject(status, "hub_host", fallback->hub_host);
+    cJSON_AddNumberToObject(status, "hub_port", fallback->hub_port);
+    cJSON_AddStringToObject(status, "device_id", fallback->device_id);
+    cJSON_AddBoolToObject(status, "token_configured", fallback->device_token && fallback->device_token[0]);
+    cJSON *hubs = cJSON_AddArrayToObject(status, "upstreams");
+    for (upstream_t *hub = router->upstreams; hub; hub = hub->next) {
+        cJSON *row = cJSON_CreateObject();
+        cJSON_AddStringToObject(row, "id", hub->id);
+        cJSON_AddStringToObject(row, "plugin_id", hub->plugin_id);
+        cJSON_AddStringToObject(row, "source", hub->source);
+        cJSON_AddBoolToObject(row, "connected", hub->hub_connected);
+        cJSON_AddStringToObject(row, "host", hub->hub_host);
+        cJSON_AddNumberToObject(row, "port", hub->hub_port);
+        cJSON_AddStringToObject(row, "device_id", hub->device_id);
+        cJSON_AddBoolToObject(row, "token_configured", hub->device_token && hub->device_token[0]);
+        cJSON_AddBoolToObject(row, "overridden", hub->overridden);
+        cJSON_AddItemToArray(hubs, row);
+    }
     cJSON *rows = cJSON_AddArrayToObject(status, "routes");
     for (wake_target_t *target = router->wake_targets; target; target = target->next) {
         cJSON *item = target_json(target);
         plugin_t *plugin = find_plugin(router, target->route);
         cJSON_AddStringToObject(item, "route", target->route);
+        cJSON_AddStringToObject(item, "upstream_id", online_route_upstream(router, target->route)->id);
         cJSON_AddStringToObject(item, "app", plugin && plugin->app ? plugin->app : "");
         cJSON_AddBoolToObject(item, "online", plugin != NULL);
         cJSON_AddBoolToObject(item, "configured", true);
@@ -1416,6 +2071,7 @@ static cJSON *status_json(router_t *router) {
             if (find_wake_target(router, p->routes[i])) continue;
             cJSON *item = cJSON_CreateObject();
             cJSON_AddStringToObject(item, "route", p->routes[i]);
+            cJSON_AddStringToObject(item, "upstream_id", route_upstream(router, p->routes[i], p->service)->id);
             cJSON_AddStringToObject(item, "app", p->app ? p->app : "");
             cJSON_AddBoolToObject(item, "online", true);
             cJSON_AddBoolToObject(item, "configured", false);
@@ -1425,28 +2081,99 @@ static cJSON *status_json(router_t *router) {
     return status;
 }
 
+static bool write_config(router_t *router, cJSON *config) {
+    char *encoded = config ? dejavu_json_print(config) : NULL;
+    bool bounded = encoded && strlen(encoded) <= 256 * 1024;
+    free(encoded);
+    return bounded && atomic_json_write(router->config_path, config);
+}
+
 static const char *control_configure(router_t *router, cJSON *request) {
+    upstream_t *hub = find_upstream(router, "default");
     cJSON *host = cJSON_GetObjectItemCaseSensitive(request, "hub_host");
     cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "hub_port");
     cJSON *id = cJSON_GetObjectItemCaseSensitive(request, "device_id");
     cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "device_token");
     if (!text_field(host, 253, true) || !integer_field(port, 1, 65535) ||
         !text_field(id, 128, false) || (token && !text_field(token, 4096, true))) return "invalid_config";
-    char *new_host = strdup(host->valuestring), *new_id = strdup(id->valuestring);
-    char *new_token = strdup(token ? token->valuestring : router->device_token);
-    if (!new_host || !new_id || !new_token) { free(new_host); free(new_id); free(new_token); return "out_of_memory"; }
-    cJSON *config = config_json(router, new_host, port->valueint, new_id, new_token);
-    bool written = config && atomic_json_write(router->config_path, config);
+    cJSON *base = connection_json(host->valuestring, port->valueint, id->valuestring,
+                                  token ? token->valuestring : hub->device_token);
+    upstream_t *replacement = base ? upstream_new(router, "default", "", "config.json", base, NULL) : NULL;
+    cJSON_Delete(base);
+    if (!replacement) return "out_of_memory";
+    cJSON *config = config_json(router, replacement->hub_host, replacement->hub_port,
+                               replacement->device_id, replacement->device_token);
+    bool written = config && write_config(router, config);
     cJSON_Delete(config);
-    if (!written) { free(new_host); free(new_id); free(new_token); return "persist_failed"; }
-    hub_disconnect(router);
-    if (router->reconnect_timer) { event_free(router->reconnect_timer); router->reconnect_timer = NULL; }
-    free(router->hub_host); router->hub_host = new_host;
-    free(router->device_id); router->device_id = new_id;
-    free(router->device_token); router->device_token = new_token;
-    router->hub_port = port->valueint;
-    router->reconnect_seconds = 1;
-    hub_connect(router);
+    if (!written) { upstream_free(replacement); return "persist_failed"; }
+    hub_disconnect(hub);
+    if (hub->reconnect_timer) { event_free(hub->reconnect_timer); hub->reconnect_timer = NULL; }
+    free(hub->hub_host); hub->hub_host = replacement->hub_host; replacement->hub_host = NULL;
+    free(hub->device_id); hub->device_id = replacement->device_id; replacement->device_id = NULL;
+    free(hub->device_token); hub->device_token = replacement->device_token; replacement->device_token = NULL;
+    cJSON_Delete(hub->base_config); hub->base_config = replacement->base_config; replacement->base_config = NULL;
+    hub->hub_port = replacement->hub_port; hub->reconnect_seconds = 1;
+    upstream_free(replacement);
+    hub_connect(hub);
+    return NULL;
+}
+
+static const char *control_upstream(router_t *router, cJSON *request, bool reset) {
+    cJSON *key = cJSON_GetObjectItemCaseSensitive(request, "upstream_id");
+    if (!text_field(key, 129, false)) return "invalid_upstream";
+    upstream_t *hub = find_upstream(router, key->valuestring);
+    if (!hub || !strcmp(key->valuestring, "default")) return "upstream_not_found";
+    cJSON *overrides = cJSON_Duplicate(router->upstream_overrides, true);
+    if (!overrides) return "out_of_memory";
+    cJSON_DeleteItemFromObjectCaseSensitive(overrides, key->valuestring);
+    if (!reset && cJSON_GetArraySize(overrides) >= 64) { cJSON_Delete(overrides); return "too_many_overrides"; }
+    if (!reset) {
+        cJSON *host = cJSON_GetObjectItemCaseSensitive(request, "hub_host");
+        cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "hub_port");
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(request, "device_id");
+        cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "device_token");
+        if (!text_field(host, 253, false) || !integer_field(port, 1, 65535) ||
+            !text_field(id, 128, false) || (token && !text_field(token, 4096, true))) {
+            cJSON_Delete(overrides); return "invalid_config";
+        }
+        cJSON *value = connection_json(host->valuestring, port->valueint, id->valuestring,
+                                      token ? token->valuestring : hub->device_token);
+        if (!value || !cJSON_AddItemToObject(overrides, key->valuestring, value)) {
+            cJSON_Delete(value); cJSON_Delete(overrides); return "out_of_memory";
+        }
+    }
+    upstream_t *replacement = upstream_new(router, hub->id, hub->plugin_id, hub->source, hub->base_config, overrides);
+    if (!replacement) { cJSON_Delete(overrides); return "out_of_memory"; }
+    cJSON *old = router->upstream_overrides;
+    router->upstream_overrides = overrides;
+    upstream_t *fallback = find_upstream(router, "default");
+    cJSON *config = config_json(router, fallback->hub_host, fallback->hub_port, fallback->device_id, fallback->device_token);
+    router->upstream_overrides = old;
+    bool written = config && write_config(router, config);
+    cJSON_Delete(config);
+    if (!written) { upstream_free(replacement); cJSON_Delete(overrides); return "persist_failed"; }
+    cJSON_Delete(old); router->upstream_overrides = overrides;
+    hub_disconnect(hub);
+    if (hub->reconnect_timer) { event_free(hub->reconnect_timer); hub->reconnect_timer = NULL; }
+    free(hub->hub_host); hub->hub_host = replacement->hub_host; replacement->hub_host = NULL;
+    free(hub->device_id); hub->device_id = replacement->device_id; replacement->device_id = NULL;
+    free(hub->device_token); hub->device_token = replacement->device_token; replacement->device_token = NULL;
+    hub->hub_port = replacement->hub_port; hub->overridden = replacement->overridden; hub->reconnect_seconds = 1;
+    upstream_free(replacement);
+    hub_connect(hub);
+    return NULL;
+}
+
+static const char *control_reconnect(router_t *router, cJSON *request) {
+    cJSON *key = cJSON_GetObjectItemCaseSensitive(request, "upstream_id");
+    if (key && (!text_field(key, 129, false) || !find_upstream(router, key->valuestring))) return "upstream_not_found";
+    for (upstream_t *hub = router->upstreams; hub; hub = hub->next) {
+        if (key && strcmp(key->valuestring, hub->id)) continue;
+        hub_disconnect(hub);
+        if (hub->reconnect_timer) { event_free(hub->reconnect_timer); hub->reconnect_timer = NULL; }
+        hub->reconnect_seconds = 1;
+        hub_connect(hub);
+    }
     return NULL;
 }
 
@@ -1520,12 +2247,11 @@ static void control_read_cb(struct bufferevent *bev, void *arg) {
         cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
         if (!text_field(op, 32, false)) error = "invalid_operation";
         else if (!strcmp(op->valuestring, "status")) { }
-        else if (!strcmp(op->valuestring, "reconnect")) {
-            hub_disconnect(router);
-            if (router->reconnect_timer) { event_free(router->reconnect_timer); router->reconnect_timer = NULL; }
-            router->reconnect_seconds = 1;
-            hub_connect(router);
-        } else if (!strcmp(op->valuestring, "configure")) error = control_configure(router, request);
+        else if (!strcmp(op->valuestring, "reconnect")) error = control_reconnect(router, request);
+        else if (!strcmp(op->valuestring, "configure")) error = control_configure(router, request);
+        else if (!strcmp(op->valuestring, "upstream_configure")) error = control_upstream(router, request, false);
+        else if (!strcmp(op->valuestring, "upstream_reset")) error = control_upstream(router, request, true);
+        else if (!strcmp(op->valuestring, "reload_plugins")) error = reload_plugins(router);
         else if (!strcmp(op->valuestring, "route_put")) error = control_route(router, request, false);
         else if (!strcmp(op->valuestring, "route_delete")) error = control_route(router, request, true);
         else error = "invalid_operation";
@@ -1535,7 +2261,7 @@ static void control_read_cb(struct bufferevent *bev, void *arg) {
     cJSON_AddBoolToObject(reply, "ok", !error);
     if (error) cJSON_AddStringToObject(reply, "error", error);
     else cJSON_AddItemToObject(reply, "status", status_json(router));
-    char *encoded = cJSON_PrintUnformatted(reply);
+    char *encoded = dejavu_json_print(reply);
     cJSON_Delete(reply);
     if (!encoded) { control_close(client); return; }
     client->responded = true;
@@ -1581,7 +2307,15 @@ static void child_reap_cb(evutil_socket_t signal, short events, void *arg) {
     router_t *router = arg;
     pid_t child;
     while ((child = waitpid(-1, NULL, WNOHANG)) > 0) {
-        if (child == router->resolver_pid) router->resolver_pid = 0;
+        for (upstream_t *hub = router->upstreams; hub; hub = hub->next)
+            if (child == hub->resolver_pid) hub->resolver_pid = 0;
+        for (size_t i = 0; i < MAX_WAKES; i++) {
+            if (router->wake_launches[i].pid == child) {
+                router->wake_launches[i].pid = 0;
+                router->wake_launches[i].route[0] = 0;
+                break;
+            }
+        }
     }
 }
 
@@ -1650,14 +2384,13 @@ int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: dejavuerouter <config.json>\n"); return 2; }
     signal(SIGPIPE, SIG_IGN);
     int exit_code = 1;
-    bool owns_lock = false, config_bound = false, published = false;
+    bool owns_lock = false, published = false;
     char *metadata = NULL, *lock_path = NULL;
     cJSON *root = NULL;
     config_t cfg = {0};
     struct event *sigint = NULL, *sigterm = NULL, *sigchild = NULL;
     router_t router = {0};
     router.lock_fd = -1;
-    router.resolver_fd = -1;
     router.config_path = strdup(argv[1]);
     router.state_dir = strdup(argv[1]);
     if (!router.config_path || !router.state_dir) goto cleanup;
@@ -1678,17 +2411,36 @@ int main(int argc, char **argv) {
     }
     owns_lock = true;
     unlink(metadata);
-    root = read_json_file(argv[1], 32768);
-    if (!root || !config_parse(root, &cfg)) { logmsg("ERROR", "invalid configuration"); exit_code = 2; goto cleanup; }
+    root = read_json_file(argv[1], 256 * 1024);
+    if (!root || !unique_members(root) || !config_parse(root, &cfg)) { logmsg("ERROR", "invalid configuration"); exit_code = 2; goto cleanup; }
     cJSON_Delete(root); root = NULL;
     router.base = event_base_new();
     if (!router.base) { logmsg("ERROR", "cannot initialize event loop"); goto cleanup; }
-    router.hub_host = cfg.hub_host; router.hub_port = cfg.hub_port;
-    router.device_id = cfg.device_id; router.device_token = cfg.device_token;
+    cJSON *default_config = connection_json(cfg.hub_host, cfg.hub_port, cfg.device_id, cfg.device_token);
+    router.upstreams = default_config ? upstream_new(&router, "default", "", "config.json", default_config, NULL) : NULL;
+    cJSON_Delete(default_config);
+    if (!router.upstreams) goto cleanup;
+#ifdef __ANDROID__
+    router.plugins_dir = strdup(cfg.plugins_dir ? cfg.plugins_dir : "/data/adb/dejavu/plugins");
+#else
+    if (cfg.plugins_dir) router.plugins_dir = strdup(cfg.plugins_dir);
+    else {
+        char *directory_path = realpath(router.state_dir, NULL);
+        if (directory_path) {
+            size_t size = strlen(directory_path) + sizeof("/plugins");
+            router.plugins_dir = malloc(size);
+            if (router.plugins_dir) snprintf(router.plugins_dir, size, "%s/plugins", directory_path);
+            free(directory_path);
+        }
+    }
+#endif
+    router.upstream_overrides = cJSON_Duplicate(cfg.upstream_overrides, true);
+    if (!router.plugins_dir || !router.upstream_overrides || !unique_members(router.upstream_overrides)) goto cleanup;
+    for (cJSON *override = router.upstream_overrides->child; override; override = override->next)
+        if (!override->string || !connection_valid(override, false)) goto cleanup;
     router.listen_host = cfg.listen_host; router.listen_port = cfg.listen_port;
-    router.listen_tcp = cfg.listen_tcp; router.reconnect_seconds = 1;
+    router.listen_tcp = cfg.listen_tcp;
     router.control_name = cfg.control_socket; router.plugin_name = cfg.plugin_socket;
-    config_bound = true;
 #ifdef __ANDROID__
     router.control_socket = cfg.control_socket; router.plugin_socket = cfg.plugin_socket;
 #else
@@ -1728,21 +2480,23 @@ int main(int argc, char **argv) {
         event_add(sigterm, NULL) != 0 || event_add(sigchild, NULL) != 0) {
         logmsg("ERROR", "cannot initialize signal handlers"); goto cleanup;
     }
+    if (reload_plugins(&router)) { logmsg("ERROR", "invalid plugin routing configuration"); exit_code = 2; goto cleanup; }
     if (!publish_control(&router)) { logmsg("ERROR", "cannot publish control metadata"); goto cleanup; }
     published = true;
-    hub_connect(&router);
+    for (upstream_t *hub = router.upstreams; hub; hub = hub->next) hub_connect(hub);
     logmsg("INFO", "router ready");
     exit_code = event_base_dispatch(router.base) < 0 ? 1 : 0;
 cleanup:
     router.stopping = true;
     if (owns_lock && published && metadata) unlink(metadata);
-    resolver_cancel(&router);
+
     cJSON_Delete(root);
     drop_all_jobs(&router); drop_all_wakes(&router); wake_targets_free(&router);
     while (router.control_clients) control_close(router.control_clients);
     while (router.plugins) { plugin_t *plugin = router.plugins; router.plugins = plugin->next; free_plugin(plugin); }
-    if (router.hub_bev) bufferevent_free(router.hub_bev);
-    if (router.reconnect_timer) event_free(router.reconnect_timer);
+    upstreams_free(router.upstreams);
+    plugin_configs_free(router.plugin_configs);
+    free(router.plugins_dir); cJSON_Delete(router.upstream_overrides);
     if (router.listener) evconnlistener_free(router.listener);
 #ifndef __ANDROID__
     if (router.control_listener && router.control_socket) unlink(router.control_socket);
@@ -1755,7 +2509,6 @@ cleanup:
     if (sigterm) event_free(sigterm);
     if (sigchild) event_free(sigchild);
     if (router.base) event_base_free(router.base);
-    if (config_bound) { cfg.hub_host = router.hub_host; cfg.device_id = router.device_id; cfg.device_token = router.device_token; }
     config_free(&cfg);
     free(router.wake_targets_path); free(router.config_path); free(router.state_dir);
     free(metadata); free(lock_path);

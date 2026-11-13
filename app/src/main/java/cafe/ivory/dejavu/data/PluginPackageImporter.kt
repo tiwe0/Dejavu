@@ -31,7 +31,8 @@ class PluginPackageImporter(context: Context) {
                 appendLine("dejavu_remaining=${MAX_PLUGIN_PACKAGE_BYTES - stored.byteSize}")
                 manifest.files.forEach { path ->
                     val resource = q("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/$path")
-                    appendLine("scan_plugin_file $resource \"\${dejavu_remaining}\" || exit 1")
+                    val limit = if (path == manifest.router) MAX_PLUGIN_ROUTER_BYTES.toString() else "\${dejavu_remaining}"
+                    appendLine("scan_plugin_file $resource \"$limit\" || exit 1")
                     appendLine("dejavu_remaining=\$((dejavu_remaining - dejavu_size))")
                     appendLine("base64 $resource || { scan_plugin_error $resource 'cannot read resource'; exit 1; }")
                     appendLine("printf '.\\n'")
@@ -87,7 +88,7 @@ class PluginPackageImporter(context: Context) {
         require(manifest.kind == "lua") { "Import native/JIT packages with the native plugin importer" }
         var remaining = MAX_PLUGIN_PACKAGE_BYTES - manifestBytes.size
         val sources = manifest.files.associateWith { path ->
-            val bytes = readDocument(resolve(uri, root, path), remaining)
+            val bytes = readDocument(resolve(uri, root, path), if (path == manifest.router) minOf(remaining, MAX_PLUGIN_ROUTER_BYTES) else remaining)
             remaining -= bytes.size
             decodePluginUtf8(bytes)
         }

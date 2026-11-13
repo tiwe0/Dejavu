@@ -31,13 +31,15 @@ Manager 分为**概览、插件、配置**三个主页面。外部插件列表�
   注入目标；切换查看进程不会停止其他进程中已运行的插件实例。
 - **ZIP 导入。** 每个 ZIP 只包含一个插件，需提供合法的 `manifest.json` 及声明资源。完整校验后
   才替换现有版本，导入本身不执行代码。
-- **框架统一 RPC。** 原生插件通过 `get_interface("rpc", 1)` 声明路由和业务方法，
+- **框架统一 RPC。** Lua 插件通过 `rpc.register` 声明路由和回调，参数与结果直接使用 table；
+  原生插件使用 `get_interface("rpc", 1)`。
   Agent 负责 Unix 通信、超时取消及卸载保护，详见[对接规范](zygisk/docs/plugin-rpc.md)。
 - **Lua 编写页面，Compose 原生渲染。** 支持默认 `monitor`、`controls` 布局，
   并兼容已有声明式 Lua 页面。
 - **实时反馈。** socket 事件查看器只在内存中保留有界列表，关闭后清空。
   插件自身仍可选择写文件，例如公开的 capture 示例。
-- **内置路由服务。** 配置页提供 daemon 状态、启停、Hub 配置、在线路由与唤醒规则管理。
+- **内置路由服务。** 插件通过 `router.json` 声明独立上游，旧插件继续使用默认 Hub；
+  配置页管理各 Hub 状态、本机覆盖、daemon 启停、在线路由与唤醒规则。
   关闭 Manager 后仍继续转发，详见 [Router 指南](router/README.md)。
 - **外观自动保存。** 提供六套配色、Android 12+ 系统取色，以及跟随系统／浅色／
   深色模式；首页狗头随主题变化。支持设备且开启系统动画时可显示预测式返回预览。
@@ -224,7 +226,7 @@ ART 私有接口和 LSPlant 兼容性，必须作为独立适配目标验证，�
 - 修改 `zygisk/module/module.prop` 的 `version=` 并推送到 `main`：CI 检测到
   版本变化后，在所有检查通过时从该提交创建稳定版 `vX.Y.Z` 并发布（自动创建
   标签）；
-- 推送与模块版本一致的 `v*` 标签（例如 `v0.9.3`）时创建正式版本；
+- 推送与模块版本一致的 `v*` 标签（例如 `v0.9.4`）时创建正式版本；
 - 手动运行 `workflow_dispatch` 时，从所选分支创建
   `v<模块版本>-build.<工作流运行号>` 预发布版本。
 
@@ -302,7 +304,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **应用与 Zygisk 模块包
-  版本**（当前 `0.9.3`）。应用从模块元数据读取版本号和 versionCode，并内置对应
+  版本**（当前 `0.9.4`）。应用从模块元数据读取版本号和 versionCode，并内置对应
   版本的 ZIP；该版本与核心库 ABI 独立。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。

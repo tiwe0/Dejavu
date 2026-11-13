@@ -1,7 +1,7 @@
 # Dejavu Router
 
 The framework's internal routing component runs as a separate root daemon and
-routes opaque JSON Lines requests between a Hub and local plugins. Manager is a control client: closing the app does not stop the daemon.
+routes opaque JSON Lines requests between multiple Hubs and local plugins. Manager is a control client: closing the app does not stop the daemon.
 The router has no app-specific request methods, account rules or plugin defaults.
 Native plugins use the [framework RPC interface](../zygisk/docs/plugin-rpc.md)
 for registration and business callbacks; Agent owns the default Unix connection.
@@ -24,6 +24,13 @@ Install the rebuilt Dejavu module, then open **Configuration → Router** in Man
 Start the daemon, expand Hub configuration, and set the Hub host, port, device ID
 and optional token. An empty token input retains the existing token. Reconnect
 refreshes the Hub connection; it does not replay pending requests.
+
+Plugins may declare a `router.json` resource to select dedicated upstreams.
+Router reads those files directly at startup and when Manager requests a reload;
+old plugins continue using the default Hub. Manager shows each connection and
+configuration source, supports per-upstream reconnect and local overrides, and
+can restore the package settings. See the [plugin routing schema](plugin-config.md)
+for service binding, per-route selection and offline wake declarations.
 
 - **Start** enables supervision and boot startup. A watchdog restarts a crashed daemon.
 - **Stop** disables supervision and boot startup, and stops both processes.
@@ -105,10 +112,37 @@ Plugin connections must finish hello within five seconds of connecting; sending
 partial input does not extend this deadline.
 
 Route announcements use `type: "route"`, `action: "register" | "unregister"`.
-A Hub reconnect announces the current online routes again. In-flight jobs are
-removed on disconnect and are never automatically replayed. A Hub `wake` request
+A Hub reconnect announces its assigned online routes again. In-flight jobs are
+removed only for that Hub on disconnect and are never automatically replayed.
+Caller IDs are scoped to an upstream; matching IDs from different Hubs remain
+independent. Requests, cancellations and wakes cannot select another Hub's routes.
+A Hub `wake` request
 uses a configured rule to launch the explicit Android activity and waits for the
 route to register, subject to its timeout.
+
+The optional Hub `wake` field `foreground` must be one boolean (duplicate fields
+and non-booleans are rejected). Omitted/false retains the existing behavior: an
+already-online route returns `online: true, woken: false` without launching an app.
+With `foreground: true`, the route must have a configured local wake target and
+its online plugin package must match that target. Router queues the existing root
+launch for that exact configured Android user/component even when the plugin is
+already connected. Hub-provided package/user/activity fields never select a target.
+
+```json
+{"type":"wake","id":"foreground-1","route":"account-route","foreground":true,"timeout_ms":20000}
+{"type":"response","id":"foreground-1","route":"account-route","ok":true,"result":{"online":true,"woken":true,"foreground_requested":true,"user_id":0}}
+```
+
+`foreground_requested: true` means the launch child was queued; it does **not**
+prove the UI became foreground or a token refreshed. The plugin/account owner
+must separately observe foreground state and validate expiry growth. An offline
+forced wake waits for route registration and checks the newly registered package
+and unchanged target against the launched target before acknowledging success.
+Foreground launches preserve the existing plugin socket/routes and are serialized
+per route, with at most `MAX_WAKES` outstanding launcher children. The existing
+SIGCHLD handler releases launch slots. The Android executable always runs the
+fixed `/system/bin/am start --user <configured-user> -n <configured-component>`;
+no shell, arbitrary Hub launch command, app restart or global hook policy is added.
 
 `control.json` publishes `transport`, `namespace`, `name` and `token`. Each local
 management request is a single JSON line with `token`, `op` and operation fields:
@@ -116,14 +150,22 @@ management request is a single JSON line with `token`, `op` and operation fields
 | Operation | Fields |
 | --- | --- |
 | `status` | None |
-| `reconnect` | None |
+| `reconnect` | Optional `upstream_id`; omitted reconnects all Hubs |
 | `configure` | `hub_host`, `hub_port`, `device_id`, optional `device_token` |
+| `upstream_configure` | `upstream_id`, `hub_host`, `hub_port`, `device_id`, optional `device_token` |
+| `upstream_reset` | Plugin `upstream_id`; remove its local override |
+| `reload_plugins` | None; validate and apply the plugin-directory snapshot |
 | `route_put` | `route`, `user_id`, `package`, `activity`, optional `plugin_path` |
 | `route_delete` | `route` |
 
 Success returns `{"ok":true,"status":{...}}`; failure returns
 `{"ok":false,"error":"stable_code"}`. Snapshots include Hub state, counts,
-non-secret connection settings and merged online/configured routes. Controls have
+non-secret connection settings and merged online/configured routes. The
+`upstreams` array identifies each Hub by `id` (`default` or `plugin_id/local_id`),
+`plugin_id`, `source`, `connected`, `host`, `port`, `device_id`,
+`token_configured` and `overridden`. Route rows include `upstream_id`.
+The original top-level Hub fields describe the default Hub for older clients.
+Controls have
 bounded connections, input sizes and timeouts. Configurations and rules are
 validated before an atomic replacement; credentials are not returned by the API.
 
@@ -150,6 +192,8 @@ python3 router/scripts/test-lifecycle.py
 # Isolated Android process, ports and socket names; no installed-service or UI changes.
 python3 router/tests/device_smoke.py --adb /path/to/adb --serial SERIAL \
   --binary out/router-android-arm64/dejavuerouter
+python3 router/tests/device_multi_upstream.py --adb /path/to/adb --serial SERIAL \
+  --binary out/router-android-arm64/dejavuerouter
 ```
 
 Lifecycle identity tests require Linux `/proc`; macOS reports that test as skipped.
@@ -170,3 +214,14 @@ discovery separately on a Manager installation that already has root permission.
 
 The Android smoke uses a synthetic Hub/plugin, removes only its own temporary
 files/ADB mappings and leaves the installed router and target apps running.
+
+### Host-only launcher success fixture
+
+The normal host build cannot run Android `am`, so a configured forced launch
+returns `wake_failed`. To exercise successful online/offline acknowledgements
+and launcher-child reaping in real-process tests, a separate **host-only** test
+binary may be compiled with `-DDEJAVU_ROUTER_TEST_WAKE_SUCCESS` in C flags. Run
+that binary's integration suite with `ROUTER_TEST_WAKE_SUCCESS=1`. Its child
+only waits briefly and exits; this is not a CMake option, protocol flag or runtime
+Router configuration. The Android branch always executes real `am`, regardless
+of this test macro. Never deploy the host test fixture as a production executable.

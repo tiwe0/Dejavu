@@ -43,7 +43,7 @@ else()
 endif()
 
 add_executable(dejavu_router src/tcp_router.c third_party/cJSON/cJSON.c)
-target_include_directories(dejavu_router PRIVATE third_party/cJSON)
+target_include_directories(dejavu_router PRIVATE third_party/cJSON ../include)
 target_compile_options(dejavu_router PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dejavu_router PRIVATE ${ROUTER_EVENT_LIBRARIES} m)
 set_target_properties(dejavu_router PROPERTIES

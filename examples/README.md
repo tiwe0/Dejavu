@@ -7,6 +7,8 @@ native autoload and compiles JIT sources through `plugin.load_jit()`.
 - [`rpc_echo/`](rpc_echo/README.md) — framework-owned Unix RPC example with
   echo/status handlers, business errors and cooperative cancellation. See the
   [plugin RPC contract](../zygisk/docs/plugin-rpc.md).
+- [`rpc_lua_echo/`](rpc_lua_echo/README.md) — importable Lua-only RPC plugin with
+  ordinary table parameters/results, cancellation and Manager start/stop support.
 - [`capture/`](capture/) — example SSL plaintext capture plugin using the host
   module+hook interfaces.
 - [`algorithm/`](algorithm/) — algorithm self-disclosure tracer: native libcrypto
@@ -60,7 +62,7 @@ display name, version, description, kind, entry and resource files. The app only
 recognizes manifest folders directly under `/data/adb/dejavu/plugins`; bare
 `.so`/`.c` files and folders without manifests are ignored. Run
 `python3 examples/prepare-library.py` after native builds to assemble the same
-eight plugin directories under `out/plugins` without creating the release ZIP.
+nine plugin directories under `out/plugins` without creating the release ZIP.
 
 Manager's **+** action accepts a ZIP with exactly one `manifest.json`. Extract
 the release bundle, then create a new ZIP containing one plugin folder and all
@@ -69,9 +71,9 @@ folders into `/data/adb/dejavu/plugins` and refresh the list. Use **Load** in
 the plugin's details to deploy and hash-pin the selected native or JIT example
 for the selected target. [Manager import guide](../app/README.md#zip-plugin-import)
 
-CI uploads the zip as the
-`dejavu-example-plugins` artifact and attaches the zip to the GitHub Release as
-a second asset; the module zip remains framework-only.
+CI uploads the zip as the `dejavu-example-plugins` artifact and attaches it to
+the GitHub Release alongside the module ZIP and unified app APK. The module ZIP
+contains the framework; example plugins remain a separate download.
 
 The ABI and host services are documented in
 [`zygisk/docs/plugin-api.md`](../zygisk/docs/plugin-api.md).

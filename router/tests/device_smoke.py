@@ -74,6 +74,7 @@ def main():
             run('push', str(args.binary.resolve()), device_bin)
             config = dict(hub_host='localhost', hub_port=hub_port,
                           device_id='isolated-device-test', device_token='synthetic-test-token',
+                          plugins_dir=device_dir + '/plugins',
                           listen_host='127.0.0.1', listen_port=plugin_port,
                           control_socket=control_socket, plugin_socket=plugin_socket)
             with tempfile.TemporaryDirectory(prefix='dejavu-router-device-') as tmp:

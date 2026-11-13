@@ -40,17 +40,21 @@ import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.RouterRoute
 import cafe.ivory.dejavu.data.RouterUiState
+import cafe.ivory.dejavu.data.RouterUpstream
 
 @Composable
 internal fun RouterScreen(
     state: RouterUiState,
     onSetRunning: (Boolean) -> Unit,
-    onReconnect: () -> Unit,
-    onConfigure: (String, Int, String, String?) -> Unit,
+    onReconnect: (String?) -> Unit,
+    onConfigure: (String, String, Int, String, String?) -> Unit,
+    onResetUpstream: (String) -> Unit,
+    onReloadPlugins: () -> Unit,
     onPutRoute: (RouterRoute) -> Unit,
     onDeleteRoute: (String) -> Unit,
 ) {
-    var connectionEditor by remember { mutableStateOf(false) }
+    var connectionEditor by remember { mutableStateOf<RouterUpstream?>(null) }
+    var resetting by remember { mutableStateOf<RouterUpstream?>(null) }
     var editing by remember { mutableStateOf<RouterRoute?>(null) }
     var deleting by remember { mutableStateOf<RouterRoute?>(null) }
     val snapshot = state.snapshot
@@ -81,7 +85,7 @@ internal fun RouterScreen(
                                 Button(onClick = { onSetRunning(!running) }, enabled = !state.busy && !state.loading && (state.healthKnown || running)) {
                                     Text(stringResource(if (running) R.string.router_stop else R.string.router_start))
                                 }
-                                if (running) OutlinedButton(onClick = onReconnect, enabled = canManage) { Text(stringResource(R.string.router_reconnect)) }
+                                if (running) OutlinedButton(onClick = { onReconnect(null) }, enabled = canManage) { Text(stringResource(R.string.router_reconnect_all)) }
                             }
                         }
                     }
@@ -92,15 +96,35 @@ internal fun RouterScreen(
         if (snapshot != null && running) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SectionTitle(stringResource(R.string.router_connection))
+                    SectionTitle(stringResource(R.string.router_connections), stringResource(R.string.router_upstreams_hint))
                     ManagerGroup {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            StatusPill(stringResource(if (snapshot.hubConnected) R.string.router_hub_online else R.string.router_hub_offline), snapshot.hubConnected)
-                            if (snapshot.hubHost.isNotBlank()) MonoText("${snapshot.hubHost}:${snapshot.hubPort}")
                             Text(stringResource(R.string.router_counters, snapshot.pluginCount, snapshot.pendingJobs), style = MaterialTheme.typography.bodySmall)
                             if (snapshot.pluginSocket.isNotBlank()) Text(stringResource(R.string.router_plugin_socket, snapshot.pluginSocket), style = MaterialTheme.typography.bodySmall)
                             if (snapshot.listenTcp) Text(stringResource(R.string.router_compatibility_port, snapshot.listenPort), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { connectionEditor = true }, enabled = canManage) { Text(stringResource(R.string.router_configure)) }
+                            TextButton(onClick = onReloadPlugins, enabled = canManage) { Text(stringResource(R.string.router_reload_plugins)) }
+                        }
+                    }
+                }
+            }
+            items(snapshot.upstreams, key = { "upstream:${it.id}" }) { upstream ->
+                ManagerGroup {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(if (upstream.isDefault) stringResource(R.string.router_default_hub) else upstream.id,
+                            style = MaterialTheme.typography.titleSmall)
+                        StatusPill(stringResource(if (upstream.connected) R.string.router_hub_online else R.string.router_hub_offline), upstream.connected)
+                        if (upstream.host.isNotBlank()) MonoText("${upstream.host}:${upstream.port}")
+                        if (!upstream.isDefault) {
+                            Text(stringResource(R.string.router_source, upstream.source), style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(if (upstream.overridden) R.string.router_local_override else R.string.router_plugin_defaults),
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { connectionEditor = upstream }, enabled = canManage) { Text(stringResource(R.string.router_configure)) }
+                            TextButton(onClick = { onReconnect(upstream.id) }, enabled = canManage) { Text(stringResource(R.string.router_reconnect)) }
+                        }
+                        if (!upstream.isDefault && upstream.overridden) TextButton(onClick = { resetting = upstream }, enabled = canManage) {
+                            Text(stringResource(R.string.router_reset_override))
                         }
                     }
                 }
@@ -116,7 +140,7 @@ internal fun RouterScreen(
             if (snapshot.routes.isEmpty()) item {
                 EmptyState(stringResource(R.string.router_no_routes), stringResource(R.string.router_no_routes_detail))
             }
-            items(snapshot.routes, key = { it.route }) { route ->
+            items(snapshot.routes, key = { "route:${it.route}" }) { route ->
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth()) {
@@ -133,19 +157,34 @@ internal fun RouterScreen(
                         }
                         val target = route.packageName.ifBlank { route.app }
                         if (target.isNotBlank()) MonoText(target)
+                        Text(stringResource(R.string.router_route_upstream, route.upstreamId), style = MaterialTheme.typography.bodySmall)
                         Text(stringResource(if (route.configured) R.string.router_rule_configured else R.string.router_live_only), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
     }
-    if (connectionEditor && snapshot != null) ConnectionDialog(
-        snapshot.hubHost, snapshot.hubPort, snapshot.deviceId, snapshot.tokenConfigured, enabled = canManage,
-        onDismiss = { connectionEditor = false }, onSave = { host, port, id, token ->
-            connectionEditor = false
-            onConfigure(host, port, id, token)
+    connectionEditor?.let { upstream -> ConnectionDialog(
+        upstream.host, upstream.port, upstream.deviceId, upstream.tokenConfigured,
+        allowEmptyHost = upstream.isDefault,
+        enabled = canManage && upstream.configurationMatches(snapshot?.upstreams?.find { it.id == upstream.id }),
+        configurationChanged = snapshot != null && !upstream.configurationMatches(snapshot.upstreams.find { it.id == upstream.id }),
+        onDismiss = { connectionEditor = null }, onSave = { host, port, id, token ->
+            connectionEditor = null
+            onConfigure(upstream.id, host, port, id, token)
         },
-    )
+    ) }
+    resetting?.let { upstream -> AlertDialog(
+        onDismissRequest = { resetting = null },
+        title = { Text(stringResource(R.string.router_reset_override)) },
+        text = { Text(stringResource(if (snapshot != null && !upstream.configurationMatches(snapshot.upstreams.find { it.id == upstream.id }))
+            R.string.router_config_changed else R.string.router_reset_override_hint, upstream.id)) },
+        confirmButton = { TextButton(enabled = canManage && upstream.configurationMatches(snapshot?.upstreams?.find { it.id == upstream.id }), onClick = {
+            resetting = null
+            onResetUpstream(upstream.id)
+        }) { Text(stringResource(R.string.router_reset_override)) } },
+        dismissButton = { TextButton(onClick = { resetting = null }) { Text(stringResource(R.string.router_cancel)) } },
+    ) }
     editing?.let { route -> RouteDialog(route, enabled = canManage, onDismiss = { editing = null }, onSave = {
         editing = null
         onPutRoute(it)
@@ -162,6 +201,8 @@ internal fun RouterScreen(
 @Composable
 private fun ConnectionDialog(
     initialHost: String, initialPort: Int, initialId: String, tokenConfigured: Boolean, enabled: Boolean,
+    configurationChanged: Boolean,
+    allowEmptyHost: Boolean,
     onDismiss: () -> Unit, onSave: (String, Int, String, String?) -> Unit,
 ) {
     var host by remember { mutableStateOf(initialHost) }
@@ -169,13 +210,18 @@ private fun ConnectionDialog(
     var deviceId by remember { mutableStateOf(initialId) }
     // Deliberately not saveable: credentials never survive this dialog or process recreation.
     var token by remember { mutableStateOf("") }
-    val valid = host.toByteArray().size <= 253 && deviceId.isNotBlank() && deviceId.toByteArray().size <= 128 && port.toIntOrNull() in 1..65535 && token.toByteArray().size <= 4096
+    val valid = (allowEmptyHost || host.isNotBlank()) && host.toByteArray().size <= 253 && deviceId.isNotBlank() && deviceId.toByteArray().size <= 128 && port.toIntOrNull() in 1..65535 && token.toByteArray().size <= 4096
     AlertDialog(
         onDismissRequest = { token = ""; onDismiss() },
         title = { Text(stringResource(R.string.router_connection)) },
         text = {
             FormColumn {
-                Text(stringResource(R.string.router_connection_hint), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(when {
+                    configurationChanged -> R.string.router_config_changed
+                    allowEmptyHost -> R.string.router_connection_hint
+                    else -> R.string.router_plugin_connection_hint
+                }),
+                    style = MaterialTheme.typography.bodySmall)
                 FormField(host, { host = it }, R.string.router_hub_host)
                 FormField(port, { port = it }, R.string.router_hub_port, number = true)
                 FormField(deviceId, { deviceId = it }, R.string.router_device_id)

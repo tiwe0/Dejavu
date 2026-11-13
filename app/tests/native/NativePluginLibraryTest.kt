@@ -54,6 +54,41 @@ fun main() {
         destination.deleteRecursively()
     }
     println("OK: ZIP native/JIT install validation and replacement guards preserve originals on rejection")
+    val routerSource = """{"schemaVersion":1,"upstreams":[{"id":"main","host":"localhost","port":39010,"device_token":"router-secret-must-not-enter-errors"}],"default_upstream":"main"}"""
+    for ((kind, entry, content) in listOf(Triple("native", "plugin.so", elf), Triple("jit", "plugin.c", source))) {
+        val metadata = PluginPackageManifest("routed-$kind", "Routed $kind", "1", entry = entry,
+            files = listOf(entry, PLUGIN_ROUTER_FILE), kind = kind, router = PLUGIN_ROUTER_FILE)
+        val resources = mapOf(entry to content, PLUGIN_ROUTER_FILE to routerSource.toByteArray())
+        val folder = provider.tree(resources + (PLUGIN_MANIFEST_FILE to metadata.toJson().toByteArray()))
+        val routed = library.importFolder(folder).single()
+        val destination = File(root, metadata.id)
+        val routerFile = File(destination, PLUGIN_ROUTER_FILE)
+        check(PluginPackageManifest.parse(File(destination, PLUGIN_MANIFEST_FILE).readText()).router == PLUGIN_ROUTER_FILE)
+        val beforeScan = RootShell.commandCount
+        check(library.list().any { it.id == metadata.id }) { library.lastScanErrors.toString() }
+        check(RootShell.commandCount - beforeScan == 2) { "Native Router metadata must share the batched scan" }
+        for (bad in listOf("{}", routerSource + " trailing", routerSource + " ".repeat(MAX_PLUGIN_ROUTER_BYTES))) {
+            rejected { library.importPackage(metadata, resources + (PLUGIN_ROUTER_FILE to bad.toByteArray())) }
+            rejected { library.importFolder(provider.tree(resources + (PLUGIN_ROUTER_FILE to bad.toByteArray()) +
+                (PLUGIN_MANIFEST_FILE to metadata.toJson().toByteArray()))) }
+            check(routerFile.readText() == routerSource)
+        }
+        rejected { library.importPackage(metadata, resources - PLUGIN_ROUTER_FILE) }
+        routerFile.writeText(routerSource.replace("\"port\":39010", "\"port\":0"))
+        check(library.list().none { it.id == metadata.id })
+        check(library.lastScanErrors.any { it == "${metadata.id}: invalid router.json" })
+        check(library.lastScanErrors.none { "router-secret-must-not-enter-errors" in it })
+        // Deployment revalidates changed source metadata before touching the target or trust table.
+        val propertiesBefore = RootShell.properties.takeIf { it.exists() }?.readText()
+        rejected { library.deploy("com.example.router", routed) }
+        check(RootShell.properties.takeIf { it.exists() }?.readText() == propertiesBefore)
+        routerFile.delete()
+        java.nio.file.Files.createSymbolicLink(routerFile.toPath(), File(destination, entry).toPath())
+        check(library.list().none { it.id == metadata.id })
+        check(library.lastScanErrors.any { it.startsWith("${metadata.id}:") && "symbolic link" in it })
+        destination.deleteRecursively()
+    }
+    println("OK: native/JIT Router metadata folder/import/scan/deployment validation, bounds and symlink rejection")
     val imported = library.importFolder(uri) + library.importFolder(jitUri)
     check(imported.size == 2)
     val commandsBeforeScan = RootShell.commandCount

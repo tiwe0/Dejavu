@@ -50,6 +50,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix='dejavu-router-layout-') as temporary:
             config = Path(temporary) / 'config.json'
             config.write_text(json.dumps(dict(hub_host='', hub_port=39010, device_id='layout-test', listen_tcp=False,
+                                             plugins_dir=shared + '/plugins',
                                              control_socket='dejavu.router.layout.control.' + suffix,
                                              plugin_socket='dejavu.router.layout.plugins.' + suffix)))
             run('push', str(config), module + '/router-config.example.json')

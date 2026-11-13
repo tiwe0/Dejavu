@@ -4,10 +4,14 @@
 
 #include "dejavu.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "dejavu_lua_json.h"
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -109,6 +113,8 @@ static void open_control_libraries(lua_State *state) {
     lua_pop(state, 1);
     luaL_requiref(state, LUA_MATHLIBNAME, luaopen_math, 1);
     lua_pop(state, 1);
+
+    dejavu_lua_json_open(state);
 
     lua_pushnil(state);
     lua_setglobal(state, "dofile");
@@ -268,6 +274,10 @@ static int lua_host_dispatch(lua_State *state) {
     for (index = 0; index < argument_count; ++index) {
         status = copy_lua_value(state, index + 1, 0, &arguments[index], error, sizeof(error));
         if (status != DEJAVU_OK) {
+            for (int previous = 0; previous < index; ++previous) {
+                if (arguments[previous].type == DEJAVU_VALUE_FUNCTION)
+                    luaL_unref(state, LUA_REGISTRYINDEX, (int)arguments[previous].function_value);
+            }
             free(arguments);
             return luaL_error(state, "%s", error[0] != '\0' ? error : "invalid host argument");
         }
@@ -444,54 +454,166 @@ int dejavu_control_session_eval(dejavu_control_session *session, const char *scr
     return status;
 }
 
+struct retain_call {
+    unsigned long long source;
+    unsigned long long retained;
+    int status;
+};
+
+static int lua_retain_function(lua_State *state) {
+    struct retain_call *call = lua_touserdata(state, 1);
+    lua_rawgeti(state, LUA_REGISTRYINDEX, (lua_Integer)call->source);
+    if (!lua_isfunction(state, -1)) {
+        call->status = DEJAVU_ERROR_LUA_RESULT;
+        return 0;
+    }
+    call->retained = (unsigned long long)luaL_ref(state, LUA_REGISTRYINDEX);
+    return 0;
+}
+
+/* Converting a numeric Lua error to a string can itself allocate. */
+static const char *lua_error_message(lua_State *state) {
+    return lua_type(state, -1) == LUA_TSTRING ? lua_tostring(state, -1) : "Lua execution failed";
+}
+
+int dejavu_control_session_retain_function(dejavu_control_session *session,
+                                           unsigned long long source, unsigned long long *retained,
+                                           char *error, size_t error_size) {
+    struct retain_call call = {source, 0, DEJAVU_OK};
+    int status, base;
+    copy_error(error, error_size, NULL);
+    if (retained != NULL)
+        *retained = 0;
+    if (session == NULL || retained == NULL || source == 0 || source > INT_MAX)
+        return DEJAVU_ERROR_INVALID_ARGUMENT;
+    pthread_mutex_lock(&session->mutex);
+    base = lua_gettop(session->state);
+    if (!lua_checkstack(session->state, 2)) {
+        status = DEJAVU_ERROR_OUT_OF_MEMORY;
+        copy_error(error, error_size, "unable to grow Lua stack");
+    } else {
+        /* Light C functions and light userdata do not allocate. All allocating
+         * registry work runs inside pcall so errors cannot skip the unlock. */
+        lua_pushcfunction(session->state, lua_retain_function);
+        lua_pushlightuserdata(session->state, &call);
+        status = lua_pcall(session->state, 1, 0, 0);
+        if (status != LUA_OK) {
+            copy_error(error, error_size, lua_error_message(session->state));
+            status = status == LUA_ERRMEM ? DEJAVU_ERROR_OUT_OF_MEMORY : DEJAVU_ERROR_LUA_EXECUTE;
+        } else {
+            status = call.status;
+            if (status == DEJAVU_OK)
+                *retained = call.retained;
+            else
+                copy_error(error, error_size, "invalid Lua function reference");
+        }
+    }
+    lua_settop(session->state, base);
+    pthread_mutex_unlock(&session->mutex);
+    return status;
+}
+
+struct invoke_call {
+    unsigned long long function;
+    const dejavu_value *arguments;
+    size_t argument_count;
+    dejavu_value *result;
+    int (*is_cancelled)(void *);
+    void *cancel_context;
+    char *error;
+    size_t error_size;
+    int status;
+};
+
+static int lua_invoke_function(lua_State *state) {
+    struct invoke_call *call = lua_touserdata(state, 1);
+    if (!lua_checkstack(state, (int)call->argument_count + 2)) {
+        call->status = DEJAVU_ERROR_OUT_OF_MEMORY;
+        copy_error(call->error, call->error_size, "unable to grow Lua stack");
+        return 0;
+    }
+    lua_rawgeti(state, LUA_REGISTRYINDEX, (lua_Integer)call->function);
+    if (!lua_isfunction(state, -1)) {
+        call->status = DEJAVU_ERROR_LUA_RESULT;
+        copy_error(call->error, call->error_size, "invalid Lua function reference");
+        return 0;
+    }
+    for (size_t index = 0; index < call->argument_count; ++index) {
+        call->status = push_value(state, &call->arguments[index]);
+        if (call->status != DEJAVU_OK) {
+            copy_error(call->error, call->error_size, "invalid Lua callback argument");
+            return 0;
+        }
+    }
+    if (call->is_cancelled != NULL && call->is_cancelled(call->cancel_context)) {
+        call->status = DEJAVU_ERROR_CANCELLED;
+        copy_error(call->error, call->error_size, "Lua invocation cancelled");
+        return 0;
+    }
+    lua_call(state, (int)call->argument_count, 1);
+    call->status = copy_lua_value(state, -1, 1, call->result, call->error, call->error_size);
+    return 0;
+}
+
 int dejavu_control_session_invoke(dejavu_control_session *session, unsigned long long function,
                                   const dejavu_value *arguments, size_t argument_count,
                                   dejavu_value *result, char *error, size_t error_size) {
-    size_t index;
-    int status;
+    return dejavu_control_session_invoke_cancellable(session, function, arguments, argument_count,
+                                                     result, NULL, NULL, error, error_size);
+}
 
+int dejavu_control_session_invoke_cancellable(dejavu_control_session *session,
+                                              unsigned long long function,
+                                              const dejavu_value *arguments, size_t argument_count,
+                                              dejavu_value *result, int (*is_cancelled)(void *),
+                                              void *cancel_context, char *error,
+                                              size_t error_size) {
+    struct invoke_call call = {function,       arguments, argument_count, result,   is_cancelled,
+                               cancel_context, error,     error_size,     DEJAVU_OK};
+    int status, base, lock_status;
+    const struct timespec pause = {0, 1000000};
     copy_error(error, error_size, NULL);
     clear_value(result);
-    if (session == NULL || function == 0 || result == NULL ||
-        (argument_count != 0 && arguments == NULL)) {
+    if (session == NULL || function == 0 || function > INT_MAX || result == NULL ||
+        (argument_count != 0 && arguments == NULL) || argument_count > (size_t)INT_MAX - 2)
         return DEJAVU_ERROR_INVALID_ARGUMENT;
-    }
-    if (argument_count > (size_t)INT_MAX) {
-        copy_error(error, error_size, "too many Lua callback arguments");
-        return DEJAVU_ERROR_INVALID_ARGUMENT;
-    }
-    pthread_mutex_lock(&session->mutex);
-    lua_rawgeti(session->state, LUA_REGISTRYINDEX, (lua_Integer)function);
-    if (!lua_isfunction(session->state, -1)) {
-        lua_pop(session->state, 1);
-        pthread_mutex_unlock(&session->mutex);
-        copy_error(error, error_size, "invalid Lua function reference");
-        return DEJAVU_ERROR_LUA_RESULT;
-    }
-    if (!lua_checkstack(session->state, (int)argument_count + 1)) {
-        lua_pop(session->state, 1);
-        pthread_mutex_unlock(&session->mutex);
-        copy_error(error, error_size, "unable to grow the Lua stack for callback arguments");
-        return DEJAVU_ERROR_OUT_OF_MEMORY;
-    }
-    for (index = 0; index < argument_count; ++index) {
-        status = push_value(session->state, &arguments[index]);
-        if (status != DEJAVU_OK) {
-            lua_settop(session->state, 0);
-            pthread_mutex_unlock(&session->mutex);
-            copy_error(error, error_size, "invalid Lua callback argument");
-            return status;
+    for (;;) {
+        if (is_cancelled != NULL && is_cancelled(cancel_context)) {
+            copy_error(error, error_size, "Lua invocation cancelled");
+            return DEJAVU_ERROR_CANCELLED;
         }
+        lock_status = pthread_mutex_trylock(&session->mutex);
+        if (lock_status == 0)
+            break;
+        if (lock_status != EBUSY) {
+            copy_error(error, error_size, "unable to lock Lua session");
+            return DEJAVU_ERROR_LUA_EXECUTE;
+        }
+        nanosleep(&pause, NULL);
     }
-    status = lua_pcallk(session->state, (int)argument_count, 1, 0, 0, NULL);
+    base = lua_gettop(session->state);
+    if (is_cancelled != NULL && is_cancelled(cancel_context)) {
+        status = DEJAVU_ERROR_CANCELLED;
+        copy_error(error, error_size, "Lua invocation cancelled");
+        goto done;
+    }
+    if (!lua_checkstack(session->state, 2)) {
+        status = DEJAVU_ERROR_OUT_OF_MEMORY;
+        copy_error(error, error_size, "unable to grow Lua stack");
+        goto done;
+    }
+    lua_pushcfunction(session->state, lua_invoke_function);
+    lua_pushlightuserdata(session->state, &call);
+    status = lua_pcall(session->state, 1, 0, 0);
     if (status != LUA_OK) {
-        copy_error(error, error_size, lua_tostring(session->state, -1));
-        lua_pop(session->state, 1);
-        pthread_mutex_unlock(&session->mutex);
-        return DEJAVU_ERROR_LUA_EXECUTE;
+        copy_error(error, error_size, lua_error_message(session->state));
+        dejavu_value_release(result);
+        status = status == LUA_ERRMEM ? DEJAVU_ERROR_OUT_OF_MEMORY : DEJAVU_ERROR_LUA_EXECUTE;
+    } else {
+        status = call.status;
     }
-    status = copy_lua_value(session->state, -1, 1, result, error, error_size);
-    lua_pop(session->state, 1);
+done:
+    lua_settop(session->state, base);
     pthread_mutex_unlock(&session->mutex);
     return status;
 }

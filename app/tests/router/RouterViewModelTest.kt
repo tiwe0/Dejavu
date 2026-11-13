@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.json.JSONObject
 
 private const val RUNNING = "{\"installed\":true,\"running\":true,\"enabled\":true}"
 private const val STOPPED = "{\"installed\":true,\"running\":false,\"enabled\":false}"
@@ -242,6 +243,35 @@ private fun visibilityDoesNotCancelAuthorizedControlMutation() {
     }
 }
 
+private fun upstreamCommandsKeepTheirIdentityAndTokenSemantics() {
+    Fixture().use { fixture ->
+        fun action(operation: String, block: RouterViewModel.() -> Unit): JSONObject {
+            LocalSocket.requests.clear()
+            fixture.main(block)
+            fixture.awaitState("$operation action must finish") { !it.busy && it.snapshot != null }
+            return JSONObject(LocalSocket.requests.single().toString()).also {
+                check(it.getString("op") == operation)
+            }
+        }
+        val plugin = action("upstream_configure") {
+            configureUpstream("example/main", "hub.test", 39011, "example-device", null)
+        }
+        check(plugin.getString("upstream_id") == "example/main" && !plugin.has("device_token"))
+        check(plugin.getString("hub_host") == "hub.test" && plugin.getInt("hub_port") == 39011)
+        val token = action("upstream_configure") {
+            configureUpstream("example/secondary", "other.test", 39012, "other-device", "new-secret")
+        }
+        check(token.getString("upstream_id") == "example/secondary" && token.getString("device_token") == "new-secret")
+        val legacy = action("configure") { configureUpstream("default", "localhost", 39010, "legacy", null) }
+        check(!legacy.has("upstream_id") && !legacy.has("device_token"))
+        val reconnect = action("reconnect") { reconnect("example/main") }
+        check(reconnect.getString("upstream_id") == "example/main")
+        check(!action("reconnect") { reconnect() }.has("upstream_id"))
+        check(action("upstream_reset") { resetUpstream("example/main") }.getString("upstream_id") == "example/main")
+        check(!action("reload_plugins") { reloadPlugins() }.has("upstream_id"))
+    }
+}
+
 fun main() {
     val tests = listOf(
         "rapid visibility cancels root discovery" to ::rapidVisibilityCancelsRootDiscovery,
@@ -252,6 +282,7 @@ fun main() {
         "stop survives visibility changes" to { lifecycleMutationSurvivesVisibilityChanges(false) },
         "offscreen refresh releases queued stop" to ::offscreenRefreshReleasesQueuedStop,
         "visibility preserves authorized control mutation" to ::visibilityDoesNotCancelAuthorizedControlMutation,
+        "upstream commands preserve target identity and token semantics" to ::upstreamCommandsKeepTheirIdentityAndTokenSemantics,
     )
     for ((name, test) in tests) {
         test()

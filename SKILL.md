@@ -109,14 +109,26 @@ Android 管理通道使用带令牌认证的具名 abstract Unix socket，先校
 数据目录为 `/data/adb/dejavu/router`，只保存配置和唤醒规则，不保存转发正文或状态历史。
 插件的在线路由由插件注册，删除唤醒规则不会断开在线插件。唤醒仍遵循已有插件作用域，
 不会改写全局自动加载属性。旧的独立 `dejavurouter` 模块需另行迁移，不自动覆盖。
+插件可在 manifest 中声明 `"router": "router.json"` 并将其列入 `files`，
+由 daemon 从插件目录读取服务名、上游和路由分配；未声明的旧插件继续走默认 Hub。
+`services` 对应 Lua `rpc.register.name`／原生 RPC `service_name`，省略时采用 manifest ID。
+Manager 显示各上游状态，支持本机地址／令牌覆盖、还原与重新加载插件配置。
+导入或修改配置后需在 Router 页重新加载；配置不会注入 Lua 资源包，不记录转发正文。
+自定义上游需要唤醒离线插件时，必须在 `routes` 中预先声明路由归属。
+详见 [插件路由配置](router/plugin-config.md)。
 构建、管理协议和隔离测试见 [Router 指南](router/README.md)。
 
 ### 插件业务 RPC 规范
 
-原生业务插件声明 `DEJAVU_PLUGIN_CAP_RPC`，通过 `get_interface("rpc", 1)`
-注册方法表和路由。框架负责默认 Unix socket `dejavu.router.plugins`、重连、
+Lua 业务插件使用 `rpc.register {name=..., app=..., routes={...}, methods={...}}`，
+回调接收 `(params, request)` 并直接返回 table；`rpc.error` 返回业务错误。
+服务对象支持 `update_routes`、`unregister`，停止插件时应注销服务，遇到 busy 保留对象并重试。
+可导入示例见 [rpc_lua_echo](examples/rpc_lua_echo/README.md)。原生业务插件仍声明
+`DEJAVU_PLUGIN_CAP_RPC`，通过 `get_interface("rpc", 1)` 注册方法表和路由。
+框架负责默认 Unix socket `dejavu.router.plugins`、重连、
 握手、请求信封、超时取消和卸载排空；插件只保留业务参数校验与应用 API 调用。
-回调请求只在调用期间有效，结果 JSON 必须使用 host 分配器；业务错误返回
+Lua 回调与控制脚本共享串行会话，等待锁期间取消不会迟到执行业务。`request.is_cancelled()`
+支持主动检查，不能强制终止已进入的 JNI/native 调用。原生回调请求只在调用期间有效，结果 JSON 必须使用 host 分配器；业务错误返回
 `ok=0` 和领域错误码，`rpc.*` 前缀由框架保留。超时不代表业务回滚，不自动重放请求。
 完整约定见 [plugin-rpc.md](zygisk/docs/plugin-rpc.md)，最小示例见
 [RPC Echo](examples/rpc_echo/README.md)。
@@ -151,8 +163,8 @@ Loader 在进程启动时读取目标配置。保存后重启受影响的 App。
 - 控制结果上限 1 MiB；超过会返回明确的执行错误（不会断链）。
 - `dejavuctl` 的主机锁按本机用户共享。该用户的 CLI 会话会串行执行，REPL 和
   watch 在整个会话期间持锁。
-- 核心 Lua 会话加载 base、table、string 和 math 标准库。Agent 额外注册
-  `hook`、`native`、`java`、`fs`、`module`、`mem` 和插件接口。
+- 核心 Lua 会话加载 base、table、string 和 math 标准库，并提供 `json` 编解码。
+  Agent 额外注册 `hook`、`native`、`java`、`fs`、`module`、`mem`、`rpc` 和插件接口。
   `fs.*` 以目标进程身份访问文件。
 - `./dejavu exec --timeout SECONDS` 设置 RPC 交换期限，默认 40 秒。超时可能
   发生在 Lua 已开始执行之后，先核对目标状态再决定是否重试。

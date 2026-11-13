@@ -4,6 +4,7 @@
 #include "hook_api_runtime.h"
 #include "agent_helpers.h"
 #include "plugin_manager.h"
+#include "lua_rpc_bindings.h"
 #include "java_invoker.h"
 #include "native_hook_manager.h"
 
@@ -70,6 +71,7 @@ struct HookManager::Impl {
     std::unique_ptr<JavaInvoker> java_invoker;
     std::unique_ptr<AgentHelpers> helpers;
     std::unique_ptr<PluginManager> plugins;
+    std::unique_ptr<LuaRpcBindings> lua_rpc;
     jobject app_class_loader = nullptr;
     jobject bridge_class_loader = nullptr;
     jclass bridge_class = nullptr;

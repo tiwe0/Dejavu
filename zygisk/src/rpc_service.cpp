@@ -3,6 +3,7 @@
 #endif
 #include "rpc_service.h"
 #include "cJSON.h"
+#include "dejavu_json.h"
 
 #include <algorithm>
 #include <atomic>
@@ -81,7 +82,7 @@ cJSON *parse_json(const std::string &text) {
     return cJSON_ParseWithLengthOpts(text.c_str(), text.size() + 1, nullptr, true);
 }
 std::string encode(cJSON *json) {
-    char *raw = cJSON_PrintUnformatted(json);
+    char *raw = dejavu_json_print(json);
     if (!raw)
         return {};
     std::string result(raw);
@@ -658,7 +659,8 @@ int RpcService::register_service(uint64_t owner, const DejavuRpcServiceDescripto
             return DEJAVU_RPC_ERROR;
         }
     std::lock_guard<std::mutex> lock(mutex_);
-    if (shutting_down_ || retired_owners_.count(owner) || services_.size() >= kMaxServices) {
+    if (shutting_down_ || retired_owners_.count(owner) || services_.size() >= kMaxServices ||
+        next_handle_ == 0) {
         set_error(error, "RPC owner retired or service limit reached");
         return DEJAVU_RPC_ERROR;
     }
@@ -669,14 +671,18 @@ int RpcService::register_service(uint64_t owner, const DejavuRpcServiceDescripto
         }
     auto service = std::make_shared<Service>(owner, *descriptor, invoke_, std::move(routes));
     service->active = active_owners_.count(owner) != 0;
+    // Allocate registry ownership before starting workers. No allocation after
+    // publication may destroy a context while a worker is already using it.
+    const uint64_t token = next_handle_;
+    auto registered = services_.emplace(token, service).first;
     try {
         service->start();
     } catch (...) {
+        services_.erase(registered);
         set_error(error, "Unable to start RPC worker");
         return DEJAVU_RPC_ERROR;
     }
-    const uint64_t token = next_handle_++;
-    services_.emplace(token, std::move(service));
+    ++next_handle_;
     *handle = token;
     return DEJAVU_RPC_OK;
 }

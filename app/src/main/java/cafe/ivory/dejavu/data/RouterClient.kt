@@ -12,12 +12,25 @@ internal data class RouterRoute(
     val route: String, val app: String = "", val online: Boolean = false,
     val configured: Boolean = false, val userId: Int = 0, val packageName: String = "",
     val activity: String = "", val pluginPath: String = "",
+    val upstreamId: String = "default",
 )
+internal data class RouterUpstream(
+    val id: String, val pluginId: String, val source: String, val connected: Boolean,
+    val host: String, val port: Int, val deviceId: String, val tokenConfigured: Boolean,
+    val overridden: Boolean = false,
+) {
+    val isDefault get() = id == "default"
+    // Connection health may change while a form is open; settings must still
+    // refer to the configuration that the user opened before applying edits.
+    fun configurationMatches(other: RouterUpstream?) = other != null &&
+        copy(connected = false) == other.copy(connected = false)
+}
 internal data class RouterSnapshot(
     val pid: Int, val hubConnected: Boolean, val pluginCount: Int, val pendingJobs: Int,
     val listenPort: Int, val hubHost: String, val hubPort: Int, val deviceId: String,
     val tokenConfigured: Boolean, val routes: List<RouterRoute>,
     val pluginSocket: String = "", val listenTcp: Boolean = false,
+    val upstreams: List<RouterUpstream> = emptyList(),
 )
 internal data class RouterService(val installed: Boolean = false, val running: Boolean = false, val enabled: Boolean = false)
 internal class RouterEndpoint(val name: String, val token: String) {
@@ -41,6 +54,22 @@ internal object RouterProtocol {
         val status = response.getJSONObject("status")
         val routes = status.getJSONArray("routes")
         require(routes.length() <= 1024)
+        val upstreams = if (status.has("upstreams")) {
+            val rows = status.getJSONArray("upstreams")
+            require(rows.length() in 1..32)
+            List(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                val id = row.getString("id")
+                require(id == "default" || id.matches(Regex("[a-z][a-z0-9_-]{0,63}/[a-z][a-z0-9_-]{0,63}")))
+                RouterUpstream(id, row.getString("plugin_id"), row.getString("source"),
+                    row.getBoolean("connected"), row.getString("host"), row.getInt("port"),
+                    row.getString("device_id"), row.getBoolean("token_configured"), row.getBoolean("overridden"))
+            }.also { rows ->
+                require(rows.map { it.id }.distinct().size == rows.size && rows.any { it.isDefault })
+            }
+        } else listOf(RouterUpstream("default", "", "", status.getBoolean("hub_connected"),
+            status.getString("hub_host"), status.getInt("hub_port"), status.getString("device_id"),
+            status.getBoolean("token_configured")))
         return RouterSnapshot(
             status.getInt("pid"), status.getBoolean("hub_connected"), status.getInt("plugin_count"),
             status.getInt("pending_jobs"), status.getInt("listen_port"), status.getString("hub_host"),
@@ -49,9 +78,10 @@ internal object RouterProtocol {
                 val row = routes.getJSONObject(index)
                 RouterRoute(row.getString("route"), row.optString("app"), row.optBoolean("online"),
                     row.optBoolean("configured"), row.optInt("user_id"), row.optString("package"),
-                    row.optString("activity"), row.optString("plugin_path"))
+                    row.optString("activity"), row.optString("plugin_path"), row.optString("upstream_id", "default"))
             },
             status.optString("plugin_socket"), status.optBoolean("listen_tcp"),
+            upstreams,
         )
     }
 }

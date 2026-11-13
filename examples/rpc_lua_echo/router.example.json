@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "services": ["rpc_lua_echo"],
+  "upstreams": [
+    {"id": "main", "host": "127.0.0.1", "port": 39010}
+  ],
+  "default_upstream": "main",
+  "routes": {"example.lua.echo": "main"}
+}

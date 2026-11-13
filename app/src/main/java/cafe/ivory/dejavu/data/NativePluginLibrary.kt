@@ -40,7 +40,7 @@ class NativePluginLibrary(context: Context) {
                 appendLine("dejavu_total=0")
                 manifest.files.forEach { path ->
                     val resource = q("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/$path")
-                    appendLine("scan_plugin_file $resource ${limit(path)} || exit 1")
+                    appendLine("scan_plugin_file $resource ${if (path == manifest.router) MAX_PLUGIN_ROUTER_BYTES else limit(path)} || exit 1")
                     appendLine("dejavu_total=\$((dejavu_total + dejavu_size))")
                     appendLine("[ \"\${dejavu_total}\" -le 67108864 ] || { scan_plugin_error $resource 'package resources exceed 64 MiB'; exit 1; }")
                 }
@@ -48,6 +48,10 @@ class NativePluginLibrary(context: Context) {
                 appendLine("[ \"\${dejavu_size}\" -gt 0 ] || { scan_plugin_error ${q(entry.path)} 'empty plugin entry'; exit 1; }")
                 appendLine(if (entry.jit) "grep -q 'dejavu_jit_plugin_init' ${q(entry.path)} || { scan_plugin_error ${q(entry.path)} 'missing dejavu_jit_plugin_init'; exit 1; }" else
                     "[ \"\$(od -An -tx1 -N4 ${q(entry.path)} | tr -d ' \\n')\" = 7f454c46 ] || { scan_plugin_error ${q(entry.path)} 'invalid ELF header'; exit 1; }")
+                manifest.router?.let { path ->
+                    val resource = q("$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}/$path")
+                    appendLine("base64 $resource || { scan_plugin_error $resource 'cannot read Router configuration'; exit 1; }")
+                }
             }
         }
         val results = try {
@@ -58,7 +62,17 @@ class NativePluginLibrary(context: Context) {
         }
         val artifacts = candidates.mapNotNull { (stored, artifact) ->
             results.getValue(stored.manifest.id).fold(
-                onSuccess = { artifact },
+                onSuccess = { encoded ->
+                    try {
+                        stored.manifest.router?.let {
+                            validatePluginRouterResource(stored.manifest, decodePluginScanBytes(encoded))
+                        }
+                        artifact
+                    } catch (_: Exception) {
+                        errors += "${stored.manifest.id}: invalid router.json"
+                        null
+                    }
+                },
                 onFailure = {
                     errors += "${stored.manifest.id}: ${it.message}"
                     null
@@ -246,7 +260,7 @@ class NativePluginLibrary(context: Context) {
         for (path in manifest.files) {
             path.split('/').forEach(::validateName)
             require(remaining > 0) { "Native plugin folder exceeds 64 MiB" }
-            val bytes = readDocument(resolveDocument(uri, path), minOf(limit(path), remaining))
+            val bytes = readDocument(resolveDocument(uri, path), minOf(if (path == manifest.router) MAX_PLUGIN_ROUTER_BYTES else limit(path), remaining))
             remaining -= bytes.size
             resources[path] = bytes
         }
@@ -267,10 +281,11 @@ class NativePluginLibrary(context: Context) {
         for (path in manifest.files) {
             path.split('/').forEach(::validateName)
             val bytes = resources.getValue(path)
-            require(bytes.size <= limit(path)) { "Plugin resource exceeds its size limit: $path" }
+            require(bytes.size <= if (path == manifest.router) MAX_PLUGIN_ROUTER_BYTES else limit(path)) { "Plugin resource exceeds its size limit: $path" }
             total += bytes.size
             require(total <= 64 * 1024 * 1024) { "Native plugin package exceeds 64 MiB" }
             if (path == manifest.entry) validateBytes(path, bytes)
+            if (path == manifest.router) validatePluginRouterResource(manifest, bytes)
             files[path] = bytes
         }
         val destination = "$DEFAULT_PLUGIN_DIRECTORY/${manifest.id}"
@@ -397,12 +412,16 @@ class NativePluginLibrary(context: Context) {
                 ${directoryGuard(resource.substringBeforeLast('/'))}
                 [ ! -L ${q(resource)} ] && [ -f ${q(resource)} ]
                 dejavu_size=${'$'}(wc -c < ${q(resource)})
-                [ "${'$'}dejavu_size" -le ${limit(path)} ]
+                [ "${'$'}dejavu_size" -le ${if (path == manifest.router) MAX_PLUGIN_ROUTER_BYTES else limit(path)} ]
                 dejavu_total=${'$'}((dejavu_total + dejavu_size))
                 [ "${'$'}dejavu_total" -le 67108864 ]
             """.trimIndent()
         }
-        root("set -e\ndejavu_total=0\n$checks")
+        val routerRead = manifest.router?.let { path ->
+            "\ndejavu_router_encoded=\$(base64 ${q("$directory/$path")}) || exit 1\nprintf '%s' \"\${dejavu_router_encoded}\""
+        }.orEmpty()
+        val encoded = root("set -e\ndejavu_total=0\n$checks$routerRead")
+        manifest.router?.let { validatePluginRouterResource(manifest, decodePluginScanBytes(encoded)) }
         val entry = artifact("$directory/${manifest.entry}")
         return entry.copy(name = manifest.name, id = manifest.id, version = manifest.version, description = manifest.description)
     }

@@ -13,6 +13,7 @@
 #include "hook_bridge_dex.h"
 #include "hook_api_runtime.h"
 #include "lua_stream_wait.h"
+#include "lua_rpc_bootstrap_generated.h"
 
 namespace {
 
@@ -353,9 +354,16 @@ HookManager::HookManager() : impl_(new(std::nothrow) Impl()) {
 }
 
 HookManager::~HookManager() {
+    if (impl_ != nullptr && impl_->lua_rpc != nullptr)
+        impl_->lua_rpc->shutdown();
     if (impl_ != nullptr && impl_->plugins != nullptr) {
         impl_->plugins->stream_close_owner(dejavu_hook_manager_internal::kLuaStreamOwnerToken);
+        // Native cleanup can reenter Lua. Keep its RPC host closures attached
+        // to a live (stopped) adapter until native work has drained.
+        impl_->plugins.reset();
     }
+    if (impl_ != nullptr)
+        impl_->lua_rpc.reset();
     delete impl_;
 }
 
@@ -507,15 +515,25 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
                                         error)) {
         return false;
     }
+    impl_->lua_rpc = std::make_unique<LuaRpcBindings>(impl_->runtime, impl_->session,
+                                                      impl_->plugins->control_rpc_service());
+    if (!impl_->lua_rpc->initialize(kLuaRpcBootstrap, error)) {
+        // Registered host closures may still refer to this adapter. Retain the
+        // stopped instance for the remaining control-session lifetime.
+        impl_->lua_rpc->shutdown();
+        return false;
+    }
     LuaStreamWaitScope wait_scope;
     dejavu_value result = {};
     status = impl_->runtime->control_session_eval(impl_->session, script.c_str(), &result,
                                                   runtime_error, sizeof(runtime_error));
     impl_->runtime->value_release(&result);
     if (status != DEJAVU_OK) {
+        impl_->lua_rpc->shutdown();
         set_error(error, runtime_error);
         return false;
     }
+    impl_->lua_rpc->activate();
     return true;
 }
 

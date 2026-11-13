@@ -45,6 +45,17 @@ add_custom_command(
 add_custom_target(jit_prelude_generated
     DEPENDS ${JIT_PRELUDE_GENERATED_DIR}/jit_prelude_generated.h)
 
+set(LUA_RPC_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/lua-rpc)
+add_custom_command(
+    OUTPUT ${LUA_RPC_GENERATED_DIR}/lua_rpc_bootstrap_generated.h
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/config/rpc.lua
+        -DOUTPUT=${LUA_RPC_GENERATED_DIR}/lua_rpc_bootstrap_generated.h
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-lua-rpc.cmake
+    DEPENDS config/rpc.lua scripts/generate-lua-rpc.cmake
+    VERBATIM
+)
+
 set(HOOK_BRIDGE_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/hook-bridge)
 add_custom_command(
     OUTPUT ${HOOK_BRIDGE_GENERATED_DIR}/hook_bridge_dex.h
@@ -61,6 +72,7 @@ add_custom_command(
 )
 
 add_library(dejavu_agent SHARED
+    ${LUA_RPC_GENERATED_DIR}/lua_rpc_bootstrap_generated.h
     ${HOOK_BRIDGE_GENERATED_DIR}/hook_bridge_dex.h
     src/aarch64_adrp_add.cpp
     src/art_elf_resolver.cpp
@@ -86,6 +98,7 @@ add_library(dejavu_agent SHARED
     src/java_invoker.cpp
     src/plugin_manager.cpp
     src/rpc_service.cpp
+    src/lua_rpc_bindings.cpp
     ../router/third_party/cJSON/cJSON.c
     src/sha256.cpp
     src/stream_service.cpp
@@ -111,6 +124,7 @@ target_include_directories(dejavu_agent PRIVATE
     ../router/third_party/cJSON
     ${HOOK_BRIDGE_GENERATED_DIR}
     ${JIT_PRELUDE_GENERATED_DIR}
+    ${LUA_RPC_GENERATED_DIR}
 )
 add_dependencies(dejavu_agent jit_prelude_generated)
 target_link_libraries(dejavu_agent PRIVATE kcp_static)

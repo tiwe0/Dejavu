@@ -41,6 +41,7 @@ data class PluginZipArchive(val manifest: PluginPackageManifest, val files: Map<
                     val limit = when {
                         record.name == manifestEntry.name -> MAX_PLUGIN_MANIFEST_BYTES
                         path == null -> MAX_EXPANDED_BYTES
+                        path == manifest.router -> MAX_PLUGIN_ROUTER_BYTES
                         manifest.kind == "lua" -> MAX_PLUGIN_PACKAGE_BYTES
                         path.endsWith(".c") -> 512 * 1024
                         else -> 32 * 1024 * 1024
@@ -69,6 +70,8 @@ data class PluginZipArchive(val manifest: PluginPackageManifest, val files: Map<
             }
             if (manifest.kind == "lua") {
                 ImportedPluginPackage(manifest, files.mapValues { decodePluginUtf8(it.value) }).validate()
+            } else {
+                manifest.router?.let { path -> validatePluginRouterResource(manifest, files.getValue(path)) }
             }
             return PluginZipArchive(manifest, files)
         }

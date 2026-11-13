@@ -13,6 +13,18 @@
     <string name="router_start">启动</string>
     <string name="router_stop">停止</string>
     <string name="router_reconnect">重连 Hub</string>
+    <string name="router_reconnect_all">全部重连</string>
+    <string name="router_connections">上游 Hub</string>
+    <string name="router_upstreams_hint">插件通过 router.json 声明连接，旧插件继续使用默认 Hub。</string>
+    <string name="router_default_hub">默认 Hub</string>
+    <string name="router_reload_plugins">重新加载插件配置</string>
+    <string name="router_source">配置来源：%1$s</string>
+    <string name="router_local_override">已使用本机连接配置覆盖</string>
+    <string name="router_plugin_defaults">使用插件配置</string>
+    <string name="router_route_upstream">上游：%1$s</string>
+    <string name="router_reset_override">恢复插件配置</string>
+    <string name="router_reset_override_hint">移除 %1$s 的本机覆盖配置，并按 router.json 中的设置重新连接？</string>
+    <string name="router_config_changed">此连接的配置已变更，请关闭后重新打开对话框再操作。</string>
     <string name="router_error">无法连接路由服务，或操作被拒绝。请刷新确认当前状态。</string>
     <string name="router_connection">Hub 连接</string>
     <string name="router_hub_online">Hub 已连接</string>
@@ -34,6 +46,7 @@
     <string name="router_cancel">取消</string>
     <string name="router_save">保存</string>
     <string name="router_connection_hint">主机留空时不连接 Hub。保存后会重连 Hub，进行中的请求可能失败。</string>
+    <string name="router_plugin_connection_hint">修改仅覆盖本机配置。保存后会重连此 Hub，进行中的请求可能失败。</string>
     <string name="router_hub_host">Hub 主机</string>
     <string name="router_hub_port">Hub 端口</string>
     <string name="router_device_id">设备 ID</string>

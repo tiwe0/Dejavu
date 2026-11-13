@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "rpc_lua_echo",
+  "name": "Lua RPC Echo",
+  "version": "1.0.0",
+  "description": "Lua business RPC example using the framework Unix socket transport.",
+  "kind": "lua",
+  "entry": "main.lua",
+  "files": ["main.lua"]
+}

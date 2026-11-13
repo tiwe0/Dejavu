@@ -78,6 +78,14 @@ Target scopes and plugin configuration are retained by the module upgrade script
 
 ### Router
 
+The Router page lists independent upstreams from installed plugins' declared
+`router.json` resources, their connection status and configuration source. It
+supports per-upstream reconnect, local endpoint/credential overrides, restoring
+package defaults, and reloading plugin configurations after import or removal.
+Packages without a routing declaration retain the default Hub. Discovery is
+performed by the daemon and does not query running plugin processes. See the
+[plugin routing schema](../router/plugin-config.md).
+
 Open **Configuration → Router** for daemon status, Hub connection state, plugin
 and pending-job counts, online routes, and configured wake rules. The internal executable is `/data/adb/dejavu/bin/dejavuerouter`. Start/stop
 controls manage a root daemon supervised by the module; leaving this page or

@@ -77,6 +77,10 @@ class PluginManager {
     int stream_write(int handle, const void *data, size_t size, uint64_t owner_token);
     int stream_close(int handle, uint64_t owner_token);
     size_t stream_close_owner(uint64_t owner_token);
+    // The persistent Lua control session shares native RPC transport limits.
+    RpcService *control_rpc_service() {
+        return rpc_.get();
+    }
     std::string status() const;
     jobject app_class_loader() const {
         return app_class_loader_;

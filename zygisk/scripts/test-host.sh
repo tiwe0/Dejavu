@@ -77,6 +77,7 @@ fi
     "${PLUGIN_TEST_LINK_FLAGS[@]}" -o "${OUT_DIR}/plugin_hook_lifecycle_test"
 "${OUT_DIR}/plugin_hook_lifecycle_test"
 bash "${ROOT_DIR}/tests/test-rpc-service.sh"
+bash "${ROOT_DIR}/tests/test-lua-rpc-bindings.sh"
 
 "${CC}" -std=c11 -O2 \
     -I"${ROOT_DIR}/third_party/kcp" \

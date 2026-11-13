@@ -99,6 +99,7 @@ data class PluginPackageManifest(
     val schemaVersion: Int = 1,
     val kind: String = "lua",
     val ui: String? = null,
+    val router: String? = null,
 ) {
     fun validate() {
         require(schemaVersion == 1) { "Unsupported plugin manifest version: $schemaVersion" }
@@ -123,6 +124,11 @@ data class PluginPackageManifest(
                 "Plugin ui must be a declared JSON resource distinct from the entry"
             }
         }
+        router?.let { path ->
+            require(path == PLUGIN_ROUTER_FILE && path in files && path != entry && path != ui) {
+                "Plugin router must be the declared router.json resource, distinct from entry and ui"
+            }
+        }
         // A file cannot also be the parent directory of another declared file.
         require(files.none { file -> files.any { other -> other.startsWith("$file/") } }) {
             "Plugin resource paths conflict as files and directories"
@@ -142,6 +148,7 @@ data class PluginPackageManifest(
             put("entry", entry)
             put("files", JSONArray(files))
             ui?.let { put("ui", it) }
+            router?.let { put("router", it) }
             events?.let { spec ->
                 put("events", JSONObject().apply {
                     put("format", spec.format)
@@ -165,11 +172,11 @@ data class PluginPackageManifest(
     companion object {
         fun parse(text: String): PluginPackageManifest {
             require(pluginUtf8Bytes(text).size <= MAX_PLUGIN_MANIFEST_BYTES) { "Plugin manifest is too large" }
-            val json = JSONObject(text)
+            val json = strictPluginJsonObject(text)
             fun string(key: String): String = (json.get(key) as? String)
                 ?: throw IllegalArgumentException("Manifest $key must be a string")
             val schema = json.get("schemaVersion")
-            require((schema is Int || schema is Long) && (schema as Number).toLong() == 1L) {
+            require(schema is Number && schema.toDouble() == 1.0) {
                 "Unsupported plugin manifest version"
             }
             val files = json.getJSONArray("files")
@@ -210,6 +217,7 @@ data class PluginPackageManifest(
                 },
                 events = events, schemaVersion = 1, kind = string("kind"),
                 ui = if (json.has("ui")) string("ui") else null,
+                router = if (json.has("router")) string("router") else null,
             ).also { it.validate() }
         }
     }
@@ -233,5 +241,6 @@ data class ImportedPluginPackage(
         sources.values.forEach { total += pluginUtf8Bytes(it).size }
         require(total <= MAX_PLUGIN_PACKAGE_BYTES) { "Plugin package exceeds $MAX_PLUGIN_PACKAGE_BYTES bytes" }
         if (manifest.ui != null) requireNotNull(page)
+        manifest.router?.let { path -> PluginRouterConfig.validate(sources.getValue(path), manifest.id) }
     }
 }

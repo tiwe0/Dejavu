@@ -127,6 +127,10 @@ echo "[3/6] Dejavu Lua control"
     -I"${ROOT_DIR}/extern/lua" \
     -c "${ROOT_DIR}/src/dejavu_lua.c" -o "${OBJ_DIR}/dejavu_lua.o"
 
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/extern/lua" -c "${ROOT_DIR}/src/dejavu_lua_json.c" -o "${OBJ_DIR}/dejavu_lua_json.o"
+"${CC}" "${COMMON_FLAGS[@]}" -c "${ROOT_DIR}/router/third_party/cJSON/cJSON.c" -o "${OBJ_DIR}/cJSON.o"
+
 echo "[4/6] Lua 5.4"
 "${CC}" "${COMMON_FLAGS[@]}" \
     -DMAKE_LIB -DLUA_USE_LINUX \
@@ -150,6 +154,8 @@ echo "[6/6] libdejavu.so"
     "${OBJ_DIR}/dejavu.o" \
     "${OBJ_DIR}/dejavu_engine.o" \
     "${OBJ_DIR}/dejavu_lua.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" \
+    "${OBJ_DIR}/cJSON.o" \
     "${OBJ_DIR}/lua.o" \
     "${OBJ_DIR}/tinycc.o" \
     -ldl -lm -pthread \
@@ -187,6 +193,8 @@ expected_exports=$(printf '%s\n' \
     dejavu_control_session_register \
     dejavu_control_session_eval \
     dejavu_control_session_invoke \
+    dejavu_control_session_invoke_cancellable \
+    dejavu_control_session_retain_function \
     dejavu_control_session_release_function \
     dejavu_value_release \
     dejavu_control_run \

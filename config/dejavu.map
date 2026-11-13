@@ -16,6 +16,8 @@ DEJAVU_0.1 {
         dejavu_control_session_register;
         dejavu_control_session_eval;
         dejavu_control_session_invoke;
+        dejavu_control_session_invoke_cancellable;
+        dejavu_control_session_retain_function;
         dejavu_control_session_release_function;
         dejavu_value_release;
         dejavu_control_run;

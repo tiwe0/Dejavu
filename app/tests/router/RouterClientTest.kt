@@ -17,6 +17,44 @@ fun main() {
     val state = RouterProtocol.snapshot(snapshot())
     check(state.routes.single().route == "opaque" && state.routes.single().online)
     check(!state.routes.single().configured && state.tokenConfigured)
+    check(state.upstreams.single().isDefault && state.upstreams.single().connected) {
+        "Old daemon snapshots must expose their legacy Hub as the default upstream"
+    }
+    check(state.routes.single().upstreamId == "default")
+    val multiple = snapshot().apply {
+        val status = getJSONObject("status")
+        status.put("upstreams", org.json.JSONArray("""[
+            {"id":"default","plugin_id":"","source":"config.json","connected":true,"host":"localhost","port":39010,"device_id":"test","token_configured":true,"overridden":false},
+            {"id":"example/main","plugin_id":"example","source":"/plugins/example/router.json","connected":false,"host":"hub.example.test","port":39011,"device_id":"example-device","token_configured":true,"overridden":true}
+        ]"""))
+        status.getJSONArray("routes").getJSONObject(0).put("upstream_id", "example/main")
+    }
+    val multiState = RouterProtocol.snapshot(multiple)
+    check(multiState.upstreams.size == 2 && multiState.upstreams[0].connected && !multiState.upstreams[1].connected)
+    check(multiState.upstreams[1].pluginId == "example" && multiState.upstreams[1].overridden)
+    check(multiState.upstreams[1].tokenConfigured && multiState.routes.single().upstreamId == "example/main")
+    val opened = multiState.upstreams[1]
+    check(opened.configurationMatches(opened.copy(connected = !opened.connected)))
+    check(!opened.configurationMatches(null))
+    check(!opened.configurationMatches(opened.copy(host = "changed.example.test")))
+    check(!opened.configurationMatches(opened.copy(overridden = false)))
+    check(!multiState.toString().contains("device_token"))
+    rejected {
+        val invalid = JSONObject(multiple.toString())
+        invalid.getJSONObject("status").getJSONArray("upstreams").getJSONObject(1).put("id", "default")
+        RouterProtocol.snapshot(invalid)
+    }
+    rejected {
+        val invalid = JSONObject(multiple.toString())
+        invalid.getJSONObject("status").put("upstreams", org.json.JSONArray())
+        RouterProtocol.snapshot(invalid)
+    }
+    rejected {
+        val invalid = JSONObject(multiple.toString())
+        val rows = invalid.getJSONObject("status").getJSONArray("upstreams")
+        repeat(31) { rows.put(JSONObject(rows.getJSONObject(1).toString()).put("id", "example/extra$it")) }
+        RouterProtocol.snapshot(invalid)
+    }
     val service = RouterService(installed = true, running = true, enabled = true)
     val healthy = RouterUiState().readSucceeded(service, state)
     check(healthy.healthKnown && healthy.snapshot?.hubConnected == true)

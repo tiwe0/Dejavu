@@ -1,4 +1,6 @@
 #include "plugin_manager.h"
+#include "lua_rpc_bindings.h"
+#include "jni_thread_scope.h"
 #include "root_helper_client.h"
 
 #include <android/dlext.h>
@@ -670,6 +672,15 @@ PluginManager::PluginManager()
                                                void *context, const DejavuRpcRequest *request,
                                                DejavuRpcResponse *response, char *error,
                                                size_t error_size) {
+          if (owner == kLuaRpcOwnerToken) {
+              JniThreadScope attachment(vm_);
+              if (!attachment.valid()) {
+                  if (error != nullptr && error_size != 0)
+                      std::snprintf(error, error_size, "Lua RPC callback cannot attach to JVM");
+                  return DEJAVU_RPC_ERROR;
+              }
+              return callback(context, request, response, error, error_size);
+          }
           size_t index = kPluginIndexNone;
           std::shared_ptr<PluginHostContext> identity;
           {
@@ -1231,7 +1242,7 @@ bool PluginManager::valid_identifier(const std::string &value) {
 
 bool PluginManager::valid_namespace(const std::string &value) {
     static const std::set<std::string> reserved = {
-        "hook", "fs", "module", "native", "java", "mem", "plugin",
+        "hook", "fs", "module", "native", "java", "mem", "plugin", "rpc", "json",
     };
     return valid_identifier(value) && reserved.find(value) == reserved.end();
 }

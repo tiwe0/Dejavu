@@ -30,8 +30,8 @@ private fun read(bytes: ByteArray) = PluginZipArchive.read(ByteArrayInputStream(
 private fun reject(name: String, bytes: ByteArray) {
     check(runCatching { read(bytes) }.isFailure) { "Accepted invalid ZIP: $name" }
 }
-private fun manifest(kind: String = "lua", entry: String = "app.lua", files: List<String> = listOf(entry), ui: String? = null) =
-    text(PluginPackageManifest("example", "Example", "1", entry = entry, files = files, kind = kind, ui = ui).toJson())
+private fun manifest(kind: String = "lua", entry: String = "app.lua", files: List<String> = listOf(entry), ui: String? = null, router: String? = null) =
+    text(PluginPackageManifest("example", "Example", "1", entry = entry, files = files, kind = kind, ui = ui, router = router).toJson())
 private fun packageFiles() = listOf("manifest.json" to manifest(), "app.lua" to text("return {}"))
 private fun positions(bytes: ByteArray, signature: Long): List<Int> =
     (0..bytes.size - 4).filter { u32(bytes, it) == signature }
@@ -64,6 +64,21 @@ fun main() {
     check(read(zip(native)).manifest.kind == "native")
     check(read(zip(listOf("manifest.json" to manifest("jit", "plugin.c"),
         "plugin.c" to text("void dejavu_jit_plugin_init(void) {}")))).manifest.kind == "jit")
+    val router = text("""{"schemaVersion":1,"upstreams":[{"id":"main","host":"127.0.0.1","port":39010}],"default_upstream":"main"}""")
+    for ((kind, entry, content) in listOf(
+        Triple("lua", "app.lua", text("return {}")), Triple("native", "plugin.so", byteArrayOf(0x7f, 0x45, 0x4c, 0x46)),
+        Triple("jit", "plugin.c", text("void dejavu_jit_plugin_init(void) {}")),
+    )) {
+        val metadata = manifest(kind, entry, listOf(entry, PLUGIN_ROUTER_FILE), router = PLUGIN_ROUTER_FILE)
+        val resources = listOf("manifest.json" to metadata, entry to content)
+        val routed = read(zip(resources + (PLUGIN_ROUTER_FILE to router)))
+        check(routed.manifest.router == PLUGIN_ROUTER_FILE && routed.files.getValue(PLUGIN_ROUTER_FILE).contentEquals(router))
+        reject("$kind missing Router metadata", zip(resources))
+        reject("$kind invalid Router metadata", zip(resources + (PLUGIN_ROUTER_FILE to text("{}"))))
+        reject("$kind Router UTF-8", zip(resources + (PLUGIN_ROUTER_FILE to byteArrayOf(0xc3.toByte()))))
+        reject("$kind Router size", zip(resources + (PLUGIN_ROUTER_FILE to ByteArray(MAX_PLUGIN_ROUTER_BYTES + 1))))
+        reject("$kind Router duplicate field", zip(resources + (PLUGIN_ROUTER_FILE to text(decodePluginUtf8(router).replace("\"port\":39010", "\"port\":39010,\"port\":39011")))))
+    }
     reject("not zip", text("plugin"))
     reject("missing manifest", zip(listOf("app.lua" to text("return {}"))))
     reject("invalid manifest", zip(listOf("manifest.json" to text("{}"), "app.lua" to text("return {}"))))

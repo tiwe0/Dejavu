@@ -27,6 +27,7 @@ done
 
 "${KOTLINC:-kotlinc}" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginRouterConfig.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginZipArchive.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/LuaPackageScripts.kt" \

@@ -42,12 +42,14 @@ PROJECT_INCLUDES=(
     -I"${TINYCC_SRC}"
 )
 
-for source in dejavu dejavu_engine dejavu_lua; do
+for source in dejavu dejavu_engine dejavu_lua dejavu_lua_json; do
     "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
         -DDEJAVU_TCC_VERSION='"0.9.27-frida"' \
         "${PROJECT_INCLUDES[@]}" \
         -c "${ROOT_DIR}/src/${source}.c" -o "${OBJ_DIR}/${source}.o"
 done
+
+"${CC}" "${COMMON_FLAGS[@]}" -c "${ROOT_DIR}/router/third_party/cJSON/cJSON.c" -o "${OBJ_DIR}/cJSON.o"
 
 "${CC}" "${COMMON_FLAGS[@]}" -DMAKE_LIB -DLUA_USE_LINUX \
     -I"${ROOT_DIR}/extern/lua" \
@@ -66,6 +68,8 @@ done
     "${OBJ_DIR}/dejavu.o" \
     "${OBJ_DIR}/dejavu_engine.o" \
     "${OBJ_DIR}/dejavu_lua.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" \
+    "${OBJ_DIR}/cJSON.o" \
     "${OBJ_DIR}/lua.o" \
     "${OBJ_DIR}/tinycc.o" \
     "${OBJ_DIR}/smoke.o" \
@@ -73,6 +77,22 @@ done
     -o "${OUT_DIR}/smoke"
 
 "${OUT_DIR}/smoke"
+
+echo "== Lua RPC core"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/tests/lua_rpc_core.c" \
+    "${OBJ_DIR}/dejavu.o" "${OBJ_DIR}/dejavu_engine.o" "${OBJ_DIR}/dejavu_lua.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
+    -ldl -lm -pthread -o "${OUT_DIR}/lua_rpc_core"
+"${OUT_DIR}/lua_rpc_core"
+
+echo "== Lua RPC allocation failures"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror "${PROJECT_INCLUDES[@]}" \
+    "${ROOT_DIR}/tests/lua_rpc_core_oom.c" \
+    "${OBJ_DIR}/dejavu.o" "${OBJ_DIR}/dejavu_engine.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
+    -ldl -lm -pthread -o "${OUT_DIR}/lua_rpc_core_oom"
+"${OUT_DIR}/lua_rpc_core_oom"
 
 echo "== JIT ABI header compile"
 "${CC}" "${COMMON_FLAGS[@]}" -std=c11 -Wall -Wextra -Werror     -I"${ROOT_DIR}/include" -fsyntax-only "${ROOT_DIR}/tests/jit_abi_compile.c"
@@ -119,6 +139,8 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         "${OBJ_DIR}/dejavu.o" \
         "${OBJ_DIR}/dejavu_engine.o" \
         "${OBJ_DIR}/dejavu_lua.o" \
+        "${OBJ_DIR}/dejavu_lua_json.o" \
+        "${OBJ_DIR}/cJSON.o" \
         "${OBJ_DIR}/lua.o" \
         "${OBJ_DIR}/tinycc.o" \
         -Wl,--wrap=mprotect \
