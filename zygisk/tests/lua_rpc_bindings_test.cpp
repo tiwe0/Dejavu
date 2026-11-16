@@ -25,7 +25,10 @@
 // Fail one allocation on the control thread; transport threads stay unaffected.
 thread_local long allocation_countdown = -1;
 thread_local bool allocation_failed = false;
-void *operator new(std::size_t size) {
+
+// Keep GCC from diagnosing the malloc/free implementation as a mismatched
+// allocation pair after inlining these test-only global replacements.
+[[gnu::noinline]] void *operator new(std::size_t size) {
     if (allocation_countdown >= 0 && allocation_countdown-- == 0) {
         allocation_countdown = -1;
         allocation_failed = true;
@@ -35,19 +38,19 @@ void *operator new(std::size_t size) {
         return memory;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t size) {
+[[gnu::noinline]] void *operator new[](std::size_t size) {
     return ::operator new(size);
 }
-void operator delete(void *memory) noexcept {
+[[gnu::noinline]] void operator delete(void *memory) noexcept {
     std::free(memory);
 }
-void operator delete[](void *memory) noexcept {
+[[gnu::noinline]] void operator delete[](void *memory) noexcept {
     std::free(memory);
 }
-void operator delete(void *memory, std::size_t) noexcept {
+[[gnu::noinline]] void operator delete(void *memory, std::size_t) noexcept {
     std::free(memory);
 }
-void operator delete[](void *memory, std::size_t) noexcept {
+[[gnu::noinline]] void operator delete[](void *memory, std::size_t) noexcept {
     std::free(memory);
 }
 
