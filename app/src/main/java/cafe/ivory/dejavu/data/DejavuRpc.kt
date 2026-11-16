@@ -16,15 +16,19 @@ open class RpcException(message: String) : Exception(message)
 internal class TargetProcessNotRunning(val process: String) :
     RpcException("target process is not running: $process")
 
-private data class RpcMetadata(val pid: Int, val socket: String, val token: ByteArray)
+private sealed interface RpcEndpointTransport {
+    data object Bridge : RpcEndpointTransport
+    data class Direct(val socket: String, val token: ByteArray) : RpcEndpointTransport
+}
 
-/**
- * Direct client for Dejavu's abstract-socket Lua control channel. Metadata is
- * root-only, so the app uses RootShell to read it; the socket itself is
- * authenticated by the per-process 32-byte token.
- */
+private data class RpcMetadata(val pid: Int, val transport: RpcEndpointTransport)
+
+/** Client for Dejavu's Lua control channel. */
 object DejavuRpc {
     private const val MODULE_DIR = "/data/adb/modules/dejavu_zygisk"
+    private const val BRIDGE = "$MODULE_DIR/bin/dejavu-rpc-bridge"
+    private const val BRIDGE_AVAILABLE = "dejavu-rpc-bridge"
+    private const val BRIDGE_UNUSABLE = "dejavu-rpc-bridge-unusable"
     private const val MAGIC = 0x444A5250
     private const val VERSION = 1
     private const val EXECUTE_REQUEST = 1
@@ -41,7 +45,26 @@ object DejavuRpc {
         executeRequest(process, script, cancellation)
 
     private fun executeRequest(process: String, script: String, cancellation: RpcCancellation?): String {
+        val payload = script.toByteArray(StandardCharsets.UTF_8)
+        if (payload.size > MAX_PAYLOAD) throw RpcException("script is too large")
         val metadata = readMetadata(process, cancellation)
+        return when (val transport = metadata.transport) {
+            RpcEndpointTransport.Bridge -> RootShell.exchangeBinary(
+                "exec ${RootShell.quote(BRIDGE)} ${RootShell.quote(process)} ${metadata.pid}",
+                EXCHANGE_TIMEOUT_MS.toLong(),
+                cancellation,
+            ) { input, output ->
+                exchange(DataInputStream(input), DataOutputStream(BufferedOutputStream(output)), payload)
+            }
+            is RpcEndpointTransport.Direct -> executeDirect(transport, payload, cancellation)
+        }
+    }
+
+    private fun executeDirect(
+        endpoint: RpcEndpointTransport.Direct,
+        payload: ByteArray,
+        cancellation: RpcCancellation?,
+    ): String {
         val socket = LocalSocket()
         val shutdown = {
             // shutdown wakes blocked reads/writes; close alone need not interrupt a syscall.
@@ -58,54 +81,17 @@ object DejavuRpc {
             socket.soTimeout = EXCHANGE_TIMEOUT_MS
             withRpcDeadline(EXCHANGE_TIMEOUT_MS.toLong(), shutdown) {
                 socket.connect(
-                    LocalSocketAddress(metadata.socket, LocalSocketAddress.Namespace.ABSTRACT),
+                    LocalSocketAddress(endpoint.socket, LocalSocketAddress.Namespace.ABSTRACT),
                 )
                 if (socket.peerCredentials.uid != 0) {
                     throw RpcException("RPC server is not the root companion")
                 }
-                writeFrame(output, metadata.token)
+                writeFrame(output, endpoint.token)
                 val ack = readFrame(input)
                 if (ack.isNotEmpty()) {
                     throw RpcException("RPC authentication rejected")
                 }
-                val requestId = (SecureRandom().nextLong() and Long.MAX_VALUE).let {
-                    if (it == 0L) 1L else it
-                }
-                val payload = script.toByteArray(StandardCharsets.UTF_8)
-                if (payload.size > MAX_PAYLOAD) {
-                    throw RpcException("script is too large")
-                }
-                output.writeIntLE(HEADER_SIZE + payload.size)
-                output.writeIntLE(MAGIC)
-                output.writeIntLE(VERSION)
-                output.writeIntLE(EXECUTE_REQUEST)
-                output.writeIntLE(OK)
-                output.writeLongLE(requestId)
-                output.writeIntLE(payload.size)
-                output.write(payload)
-                output.flush()
-
-                val frame = readFrame(input)
-                if (frame.size < HEADER_SIZE) {
-                    throw RpcException("truncated RPC response")
-                }
-                val magic = frame.intLE(0)
-                val version = frame.intLE(4)
-                val type = frame.intLE(8)
-                val status = frame.intLE(12)
-                val responseId = frame.longLE(16)
-                val payloadSize = frame.intLE(24)
-                if (magic != MAGIC || version != VERSION || type != EXECUTE_RESPONSE ||
-                    responseId != requestId || payloadSize < 0 ||
-                    payloadSize != frame.size - HEADER_SIZE
-                ) {
-                    throw RpcException("invalid RPC response")
-                }
-                val response = String(frame, HEADER_SIZE, payloadSize, StandardCharsets.UTF_8)
-                if (status != OK) {
-                    throw RpcException(response.ifBlank { "Lua execution failed" })
-                }
-                response
+                exchange(input, output, payload)
             }
         }
         try {
@@ -116,6 +102,43 @@ object DejavuRpc {
             } catch (_: Exception) {
             }
         }
+    }
+
+    internal fun exchange(input: DataInputStream, output: DataOutputStream, payload: ByteArray): String {
+        val requestId = (SecureRandom().nextLong() and Long.MAX_VALUE).let {
+            if (it == 0L) 1L else it
+        }
+        output.writeIntLE(HEADER_SIZE + payload.size)
+        output.writeIntLE(MAGIC)
+        output.writeIntLE(VERSION)
+        output.writeIntLE(EXECUTE_REQUEST)
+        output.writeIntLE(OK)
+        output.writeLongLE(requestId)
+        output.writeIntLE(payload.size)
+        output.write(payload)
+        output.flush()
+
+        val frame = readFrame(input)
+        if (frame.size < HEADER_SIZE) {
+            throw RpcException("truncated RPC response")
+        }
+        val magic = frame.intLE(0)
+        val version = frame.intLE(4)
+        val type = frame.intLE(8)
+        val status = frame.intLE(12)
+        val responseId = frame.longLE(16)
+        val payloadSize = frame.intLE(24)
+        if (magic != MAGIC || version != VERSION || type != EXECUTE_RESPONSE ||
+            responseId != requestId || payloadSize < 0 ||
+            payloadSize != frame.size - HEADER_SIZE
+        ) {
+            throw RpcException("invalid RPC response")
+        }
+        val response = String(frame, HEADER_SIZE, payloadSize, StandardCharsets.UTF_8)
+        if (status != OK) {
+            throw RpcException(response.ifBlank { "Lua execution failed" })
+        }
+        return response
     }
 
     fun listPluginStatus(process: String): String = execute(process, "return plugin.list()")
@@ -146,7 +169,7 @@ object DejavuRpc {
     private fun readMetadata(process: String, cancellation: RpcCancellation? = null): RpcMetadata {
         fun read(command: String): ShellResult =
             if (cancellation == null) RootShell.run(command) else RootShell.runCancellable(command, cancellation)
-        if (!process.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
+        if (process.startsWith('-') || !process.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
             throw RpcException("invalid target process name")
         }
         val running = read("pidof ${RootShell.quote(process)}")
@@ -166,9 +189,25 @@ object DejavuRpc {
         if (cmdline.exitCode != 0 || cmdline.output.trimEnd('\r', '\n') != process) {
             throw RpcException("RPC endpoint process no longer matches $process")
         }
-        val metadata = read("cat ${RootShell.quote("$MODULE_DIR/run/${endpoint.fileName}")}")
+        val bridgePath = RootShell.quote(BRIDGE)
+        val metadataPath = RootShell.quote("$MODULE_DIR/run/${endpoint.fileName}")
+        val metadata = read(
+            """
+            if [ -f $bridgePath ] && [ -x $bridgePath ]; then
+                printf '%s\n' '$BRIDGE_AVAILABLE'
+            elif [ -e $bridgePath ] || [ -L $bridgePath ]; then
+                printf '%s\n' '$BRIDGE_UNUSABLE'
+            else
+                cat $metadataPath
+            fi
+            """.trimIndent(),
+        )
         if (metadata.exitCode != 0) throw RpcException("unable to read RPC metadata")
         val raw = metadata.output
+        when (raw.trim()) {
+            BRIDGE_AVAILABLE -> return RpcMetadata(endpoint.pid, RpcEndpointTransport.Bridge)
+            BRIDGE_UNUSABLE -> throw RpcException("installed RPC bridge is not executable")
+        }
         val json = try {
             JSONObject(raw)
         } catch (error: Exception) {
@@ -186,23 +225,22 @@ object DejavuRpc {
         if (!validRpcSocketName(socketName)) throw RpcException("invalid RPC socket name")
         return RpcMetadata(
             pid = endpoint.pid,
-            socket = socketName,
-            token = token,
+            transport = RpcEndpointTransport.Direct(socketName, token),
         )
     }
 
     private fun readFrame(input: DataInputStream): ByteArray {
-        val size = input.readIntLE()
-        if (size < 0 || size > MAX_PAYLOAD + HEADER_SIZE) {
-            throw RpcException("RPC frame is too large")
-        }
-        val bytes = ByteArray(size)
         try {
+            val size = input.readIntLE()
+            if (size < 0 || size > MAX_PAYLOAD + HEADER_SIZE) {
+                throw RpcException("RPC frame is too large")
+            }
+            val bytes = ByteArray(size)
             input.readFully(bytes)
+            return bytes
         } catch (error: EOFException) {
             throw RpcException("RPC connection closed unexpectedly")
         }
-        return bytes
     }
 
     private fun writeFrame(output: DataOutputStream, payload: ByteArray) {

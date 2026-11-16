@@ -119,7 +119,8 @@ target selected: process=bin.mt.plus
 opening Agent for bin.mt.plus
 agent active for bin.mt.plus
 persistent Lua control initialized
-abstract-socket RPC control connected
+Agent control listener ready
+Agent RPC control authenticated root companion
 ```
 
 ## 5. 配置作用域
@@ -659,12 +660,15 @@ ADB_SERIAL=c44d68aa \
 -e, --execute CODE      执行一段内联 Lua 代码后退出
 -i, --repl              保持会话并按行执行 Lua，直到 exit/quit/EOF
 --watch FILE            先执行一次 FILE，再在每次保存后自动重新执行
---reconnect             重新连接并验证同一个 PID 的 Agent 通道
+--reconnect             验证同一个 PID 的 Agent 通道
 ```
 
 CLI 支持 `nil`、布尔、整数、浮点数和字符串结果。Lua 错误、目标不可用
 和协议错误写入 stderr，并返回非零状态。主机上的 `dejavuctl` 按当前用户
 共用一把 advisory lock，跨目标进程和设备串行化调用。
+
+Zygisk 在进程特化前协商 Agent 端点。Agent 就绪后，由 root companion 主动
+连接 Agent 的 Unix socket，验证监听者的 PID、UID 并完成令牌认证。
 
 REPL 模式会复用同一轮 PID/endpoint 发现、临时 `adb forward`、token 认证
 和主机侧串行化逻辑；每输入一行就发送一次 Lua，请求之间不并发。使用
@@ -692,8 +696,9 @@ REPL/watch 会为下一条命令恢复连接；再次执行上一条脚本前应
 App 和 CLI 默认等待 40 秒，覆盖 Lua stream 等待的 25 秒预算及 companion 的
 30 秒 relay 期限。缩短客户端超时不会取消目标里的 Lua 执行。
 
-Agent 通道断开时会以 100 ms 到 5 s 的指数退避自动重连。只要 PID 没有
-改变，Lua 状态和已安装 hook 会保留：
+Agent 通道断开后，root companion 每隔 250 ms 尝试重新连接。
+只要 PID 没有改变，Lua 状态和已安装 hook 会保留。
+可以用以下命令验证连接：
 
 ```sh
 ADB_SERIAL=c44d68aa \

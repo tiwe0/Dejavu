@@ -200,6 +200,23 @@ set_target_properties(dejavu_root_helper PROPERTIES
     ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON
 )
 
+add_executable(dejavu_rpc_bridge
+    rpc_bridge/rpc_bridge.cpp
+    src/control_channel.cpp
+    ../router/third_party/cJSON/cJSON.c
+)
+target_include_directories(dejavu_rpc_bridge PRIVATE include ../router/third_party/cJSON)
+target_compile_options(dejavu_rpc_bridge PRIVATE
+    -Wall -Wextra -Werror -ffunction-sections -fdata-sections
+)
+target_link_options(dejavu_rpc_bridge PRIVATE
+    -Wl,--gc-sections -Wl,--no-undefined -Wl,-z,max-page-size=16384 -static-libstdc++
+)
+set_target_properties(dejavu_rpc_bridge PROPERTIES
+    OUTPUT_NAME dejavu-rpc-bridge
+    ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON
+)
+
 set_target_properties(dejavu_agent PROPERTIES
     OUTPUT_NAME dejavu_agent
     ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON

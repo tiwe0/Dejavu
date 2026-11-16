@@ -66,9 +66,21 @@ bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
                               DejavuControlDeadline deadline = DejavuControlDeadline::max());
 bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
                              DejavuControlDeadline deadline = DejavuControlDeadline::max());
+// The pipe writer requires the process to ignore or block SIGPIPE.
+bool dejavu_control_write_rpc_pipe(int fd, const DejavuControlRpcMessage &message,
+                                   DejavuControlDeadline deadline);
+bool dejavu_control_read_rpc_pipe(int fd, DejavuControlRpcMessage *message,
+                                  DejavuControlDeadline deadline);
 int dejavu_control_open_listener(DejavuControlEndpoint *endpoint);
+bool dejavu_control_generate_endpoint(DejavuControlEndpoint *endpoint);
+int dejavu_control_bind_listener(const DejavuControlEndpoint &endpoint);
 int dejavu_control_connect(const DejavuControlEndpoint &endpoint,
                            DejavuControlDeadline deadline = DejavuControlDeadline::max());
 bool dejavu_control_peer_is_root(int fd);
+#if defined(__linux__)
+bool dejavu_control_peer_matches(int fd, pid_t pid, uid_t uid);
+bool dejavu_control_prove_caller_pid(int fd, DejavuControlDeadline deadline);
+pid_t dejavu_control_receive_caller_pid(int fd, DejavuControlDeadline deadline);
+#endif
 bool dejavu_control_relay_rpc(int *agent_fd, const DejavuControlRpcMessage &request,
                               DejavuControlRpcMessage *response, DejavuControlDeadline deadline);

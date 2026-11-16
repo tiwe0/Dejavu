@@ -1,9 +1,17 @@
 package cafe.ivory.dejavu.data
 
 import java.io.BufferedReader
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.util.UUID
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 data class ShellResult(val exitCode: Int, val output: String)
@@ -74,6 +82,56 @@ object RootShell {
     fun start(command: String): Process = ProcessBuilder(commandArguments(command))
         .redirectErrorStream(true)
         .start()
+
+    internal fun <T> exchangeBinary(
+        command: String,
+        timeoutMillis: Long,
+        cancellation: RpcCancellation?,
+        startProcess: (String) -> Process = {
+            ProcessBuilder(commandArguments(it))
+                .redirectError(File("/dev/null"))
+                .start()
+        },
+        exchange: (InputStream, OutputStream) -> T,
+    ): T {
+        val active = AtomicReference<Process?>()
+        val stopped = AtomicBoolean()
+        val task = FutureTask {
+            val process = startProcess(command)
+            active.set(process)
+            try {
+                if (stopped.get()) throw CancellationException()
+                val result = exchange(process.inputStream, process.outputStream)
+                if (process.waitFor() != 0) throw RpcException("RPC bridge exited unsuccessfully")
+                result
+            } finally {
+                if (active.compareAndSet(process, null)) runCatching { process.destroyForcibly() }
+            }
+        }
+        val shutdown = {
+            stopped.set(true)
+            task.cancel(true)
+            // Process pipe cleanup can block. Keep it off the cancellation path.
+            active.getAndSet(null)?.let { process ->
+                Thread({ runCatching { process.destroyForcibly() } }, "dejavu-rpc-bridge-stop")
+                    .apply { isDaemon = true; start() }
+            }
+            Unit
+        }
+        val await = {
+            Thread(task, "dejavu-rpc-bridge").apply { isDaemon = true; start() }
+            try {
+                task.get(timeoutMillis, TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                throw SocketTimeoutException("RPC deadline exceeded; execution outcome may be unknown")
+            } catch (error: ExecutionException) {
+                throw error.cause ?: error
+            } finally {
+                shutdown()
+            }
+        }
+        return if (cancellation == null) await() else cancellation.withResource(shutdown, await)
+    }
 
     // The app cannot signal a root child. The shell reaps its own logcat
     // when the app closes stdin, including when the app process exits.

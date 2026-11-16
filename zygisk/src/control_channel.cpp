@@ -92,7 +92,7 @@ bool set_nonblocking(int fd) {
     return flags >= 0 && ((flags & O_NONBLOCK) != 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
 }
 
-bool read_all(int fd, void *buffer, size_t size, DejavuControlDeadline deadline) {
+bool read_all(int fd, void *buffer, size_t size, DejavuControlDeadline deadline, bool pipe) {
     if (!set_nonblocking(fd))
         return false;
     auto *bytes = static_cast<unsigned char *>(buffer);
@@ -100,7 +100,8 @@ bool read_all(int fd, void *buffer, size_t size, DejavuControlDeadline deadline)
     while (offset < size) {
         if (!deadline_is_live(deadline))
             return false;
-        const ssize_t count = recv(fd, bytes + offset, size - offset, MSG_DONTWAIT);
+        const ssize_t count = pipe ? read(fd, bytes + offset, size - offset)
+                                   : recv(fd, bytes + offset, size - offset, MSG_DONTWAIT);
         if (count < 0 && errno == EINTR)
             continue;
         if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -115,14 +116,14 @@ bool read_all(int fd, void *buffer, size_t size, DejavuControlDeadline deadline)
     return true;
 }
 
-bool write_all(int fd, const void *buffer, size_t size, DejavuControlDeadline deadline) {
+bool write_all(int fd, const void *buffer, size_t size, DejavuControlDeadline deadline, bool pipe) {
     // Darwin can block large sends despite MSG_DONTWAIT on a blocking socket.
     if (!set_nonblocking(fd))
         return false;
     const auto *bytes = static_cast<const unsigned char *>(buffer);
 #ifdef SO_NOSIGPIPE
     const int enabled = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0)
+    if (!pipe && setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0)
         return false;
 #endif
     size_t offset = 0;
@@ -133,7 +134,8 @@ bool write_all(int fd, const void *buffer, size_t size, DejavuControlDeadline de
 #ifdef MSG_NOSIGNAL
         flags |= MSG_NOSIGNAL;
 #endif
-        const ssize_t count = send(fd, bytes + offset, size - offset, flags);
+        const ssize_t count = pipe ? write(fd, bytes + offset, size - offset)
+                                   : send(fd, bytes + offset, size - offset, flags);
         if (count < 0 && errno == EINTR)
             continue;
         if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -303,28 +305,38 @@ bool rpc_status_is_valid(int32_t status) {
            status == DEJAVU_CONTROL_RPC_UNAVAILABLE || status == DEJAVU_CONTROL_RPC_PROTOCOL_ERROR;
 }
 
-} // namespace
-
-bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size,
-                               DejavuControlDeadline deadline) {
+bool read_frame(int fd, std::string *payload, size_t maximum_size, DejavuControlDeadline deadline,
+                bool pipe) {
     uint32_t size = 0;
-    if (fd < 0 || payload == nullptr || !read_all(fd, &size, sizeof(size), deadline) ||
+    if (fd < 0 || payload == nullptr || !read_all(fd, &size, sizeof(size), deadline, pipe) ||
         size > maximum_size) {
         return false;
     }
     payload->resize(size);
-    return size == 0 || read_all(fd, payload->data(), size, deadline);
+    return size == 0 || read_all(fd, payload->data(), size, deadline, pipe);
 }
 
-bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size,
-                                DejavuControlDeadline deadline) {
+bool write_frame(int fd, const void *payload, size_t payload_size, DejavuControlDeadline deadline,
+                 bool pipe) {
     if (fd < 0 || payload_size > std::numeric_limits<uint32_t>::max() ||
         (payload == nullptr && payload_size != 0)) {
         return false;
     }
     const uint32_t size = static_cast<uint32_t>(payload_size);
-    return write_all(fd, &size, sizeof(size), deadline) &&
-           (size == 0 || write_all(fd, payload, size, deadline));
+    return write_all(fd, &size, sizeof(size), deadline, pipe) &&
+           (size == 0 || write_all(fd, payload, size, deadline, pipe));
+}
+
+} // namespace
+
+bool dejavu_control_read_frame(int fd, std::string *payload, size_t maximum_size,
+                               DejavuControlDeadline deadline) {
+    return read_frame(fd, payload, maximum_size, deadline, false);
+}
+
+bool dejavu_control_write_frame(int fd, const void *payload, size_t payload_size,
+                                DejavuControlDeadline deadline) {
+    return write_frame(fd, payload, payload_size, deadline, false);
 }
 
 bool dejavu_control_file_path(const std::string &process_name, std::string *path) {
@@ -451,8 +463,10 @@ bool dejavu_control_read_authentication(int fd, const DejavuControlEndpoint &end
                                kDejavuControlTokenSize);
 }
 
-bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
-                              DejavuControlDeadline deadline) {
+namespace {
+
+bool write_rpc(int fd, const DejavuControlRpcMessage &message, DejavuControlDeadline deadline,
+               bool pipe) {
     if (!rpc_type_is_valid(message.type) || message.request_id == 0 ||
         !rpc_status_is_valid(message.status) ||
         message.payload.size() > kDejavuMaximumControlScriptSize ||
@@ -469,15 +483,14 @@ bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
     if (!message.payload.empty()) {
         memcpy(payload.data() + kRpcHeaderSize, message.payload.data(), message.payload.size());
     }
-    return dejavu_control_write_frame(fd, payload.data(), payload.size(), deadline);
+    return write_frame(fd, payload.data(), payload.size(), deadline, pipe);
 }
 
-bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
-                             DejavuControlDeadline deadline) {
+bool read_rpc(int fd, DejavuControlRpcMessage *message, DejavuControlDeadline deadline, bool pipe) {
     std::string payload;
     if (message == nullptr ||
-        !dejavu_control_read_frame(fd, &payload, kRpcHeaderSize + kDejavuMaximumControlScriptSize,
-                                   deadline) ||
+        !read_frame(fd, &payload, kRpcHeaderSize + kDejavuMaximumControlScriptSize, deadline,
+                    pipe) ||
         payload.size() < kRpcHeaderSize || read_u32_le(payload.data()) != kRpcMagic ||
         read_u32_le(payload.data() + 4) != kControlProtocolVersion) {
         return false;
@@ -501,27 +514,69 @@ bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
     return true;
 }
 
+} // namespace
+
+bool dejavu_control_write_rpc(int fd, const DejavuControlRpcMessage &message,
+                              DejavuControlDeadline deadline) {
+    return write_rpc(fd, message, deadline, false);
+}
+
+bool dejavu_control_read_rpc(int fd, DejavuControlRpcMessage *message,
+                             DejavuControlDeadline deadline) {
+    return read_rpc(fd, message, deadline, false);
+}
+
+bool dejavu_control_write_rpc_pipe(int fd, const DejavuControlRpcMessage &message,
+                                   DejavuControlDeadline deadline) {
+    return write_rpc(fd, message, deadline, true);
+}
+
+bool dejavu_control_read_rpc_pipe(int fd, DejavuControlRpcMessage *message,
+                                  DejavuControlDeadline deadline) {
+    return read_rpc(fd, message, deadline, true);
+}
+
+bool dejavu_control_generate_endpoint(DejavuControlEndpoint *endpoint) {
+    return generate_endpoint(endpoint);
+}
+
+int dejavu_control_bind_listener(const DejavuControlEndpoint &endpoint) {
+    sockaddr_un address = {};
+    socklen_t address_size = 0;
+    if (!fill_abstract_address(endpoint, &address, &address_size)) {
+        errno = EINVAL;
+        return -1;
+    }
+    const int fd = open_unix_socket();
+    if (fd < 0) {
+        return -1;
+    }
+    if (bind(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0 &&
+        listen(fd, 1) == 0) {
+        return fd;
+    }
+    const int error = errno;
+    close(fd);
+    errno = error;
+    return -1;
+}
+
 int dejavu_control_open_listener(DejavuControlEndpoint *endpoint) {
     if (endpoint == nullptr) {
         return -1;
     }
     for (int attempt = 0; attempt < 4; ++attempt) {
         *endpoint = {};
-        sockaddr_un address = {};
-        socklen_t address_size = 0;
-        if (!generate_endpoint(endpoint) ||
-            !fill_abstract_address(*endpoint, &address, &address_size)) {
+        if (!dejavu_control_generate_endpoint(endpoint)) {
             return -1;
         }
-        const int fd = open_unix_socket();
-        if (fd < 0) {
-            return -1;
-        }
-        if (bind(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0 &&
-            listen(fd, 1) == 0) {
+        const int fd = dejavu_control_bind_listener(*endpoint);
+        if (fd >= 0) {
             return fd;
         }
-        close(fd);
+        if (errno != EADDRINUSE) {
+            break;
+        }
     }
     *endpoint = {};
     return -1;
@@ -573,6 +628,79 @@ bool dejavu_control_peer_is_root(int fd) {
 #endif
 }
 
+#if defined(__linux__)
+bool dejavu_control_peer_matches(int fd, pid_t pid, uid_t uid) {
+    ucred credentials = {};
+    socklen_t size = sizeof(credentials);
+    return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) == 0 &&
+           size == sizeof(credentials) && credentials.pid == pid && credentials.uid == uid;
+}
+
+bool dejavu_control_prove_caller_pid(int fd, DejavuControlDeadline deadline) {
+    std::string ready;
+    const char marker = 'P';
+    return dejavu_control_read_frame(fd, &ready, 0, deadline) &&
+           write_all(fd, &marker, sizeof(marker), deadline, false);
+}
+
+pid_t dejavu_control_receive_caller_pid(int fd, DejavuControlDeadline deadline) {
+    // The loader can pass an existing socket to the companion. Credentials on the
+    // proof byte identify its sender even when SO_PEERCRED identifies the loader.
+    const int enabled = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled)) != 0 ||
+        !dejavu_control_write_frame(fd, nullptr, 0, deadline)) {
+        return -1;
+    }
+    for (;;) {
+        if (!wait_ready(fd, POLLIN, deadline)) {
+            return -1;
+        }
+        char marker = 0;
+        iovec data = {&marker, sizeof(marker)};
+        alignas(cmsghdr) char ancillary[CMSG_SPACE(sizeof(ucred))] = {};
+        msghdr message = {};
+        message.msg_iov = &data;
+        message.msg_iovlen = 1;
+        message.msg_control = ancillary;
+        message.msg_controllen = sizeof(ancillary);
+        const ssize_t count = recvmsg(fd, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
+        if (count != 1) {
+            return -1;
+        }
+        pid_t pid = -1;
+        bool unexpected = (message.msg_flags & MSG_CTRUNC) != 0;
+        for (cmsghdr *header = CMSG_FIRSTHDR(&message); header != nullptr;
+             header = CMSG_NXTHDR(&message, header)) {
+            if (header->cmsg_level == SOL_SOCKET && header->cmsg_type == SCM_CREDENTIALS &&
+                header->cmsg_len == CMSG_LEN(sizeof(ucred))) {
+                ucred sender = {};
+                memcpy(&sender, CMSG_DATA(header), sizeof(sender));
+                pid = sender.pid;
+            } else {
+                unexpected = true;
+                if (header->cmsg_level == SOL_SOCKET && header->cmsg_type == SCM_RIGHTS) {
+                    const size_t count = (header->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+                    for (size_t index = 0; index < count; ++index) {
+                        int received_fd = -1;
+                        memcpy(&received_fd, CMSG_DATA(header) + index * sizeof(int), sizeof(int));
+                        close(received_fd);
+                    }
+                }
+            }
+        }
+        const int disabled = 0;
+        if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &disabled, sizeof(disabled)) != 0 ||
+            marker != 'P' || unexpected || pid <= 0) {
+            return -1;
+        }
+        return pid;
+    }
+}
+#endif
+
 bool dejavu_control_relay_rpc(int *agent_fd, const DejavuControlRpcMessage &request,
                               DejavuControlRpcMessage *response, DejavuControlDeadline deadline) {
     if (agent_fd == nullptr || response == nullptr)
@@ -585,11 +713,26 @@ bool dejavu_control_relay_rpc(int *agent_fd, const DejavuControlRpcMessage &requ
             response->payload = "reconnect request payload must be empty";
             return true;
         }
-        if (*agent_fd >= 0)
-            close(*agent_fd);
-        *agent_fd = -1;
+        if (*agent_fd >= 0) {
+            char unexpected;
+            ssize_t received;
+            do {
+                received =
+                    recv(*agent_fd, &unexpected, sizeof(unexpected), MSG_PEEK | MSG_DONTWAIT);
+            } while (received < 0 && errno == EINTR);
+            if (received >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                close(*agent_fd);
+                *agent_fd = -1;
+            }
+        }
+        if (*agent_fd < 0) {
+            response->status = DEJAVU_CONTROL_RPC_UNAVAILABLE;
+            response->payload =
+                "target Agent is not connected; restart the target process if it stays offline";
+            return true;
+        }
         response->status = DEJAVU_CONTROL_RPC_OK;
-        response->payload = "Agent reconnect requested";
+        response->payload = "Agent channel is connected";
         return true;
     }
     if (request.type != DejavuControlRpcType::kExecuteRequest)

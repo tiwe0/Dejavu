@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify strip on copies of all five real Android runtime ELF artifacts."""
+"""Verify strip on copies of the Android runtime ELF artifacts."""
 import argparse
 import hashlib
 import os
@@ -53,6 +53,7 @@ def main():
         (args.core, {'dejavu_version', 'dejavu_engine_create', 'dejavu_engine_compile',
                      'dejavu_control_session_create', 'dejavu_control_session_register', 'dejavu_value_release'}),
         (args.binary_dir / 'dejavu-root-helper', set()),
+        (args.binary_dir / 'dejavu-rpc-bridge', set()),
         (args.binary_dir / 'dejavuerouter', set()),
     ]
     original = {path: digest(path) for path, _ in files}

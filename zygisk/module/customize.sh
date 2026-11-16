@@ -40,6 +40,7 @@ set_perm "$MODPATH/run" 0 0 0755
 set_perm "$MODPATH/zygisk/arm64-v8a.so" 0 0 0755
 set_perm "$MODPATH/lib/arm64-v8a/libdejavu_agent.so" 0 0 0755
 set_perm "$MODPATH/lib/arm64-v8a/dejavu-root-helper" 0 0 0755
+set_perm "$MODPATH/bin/dejavu-rpc-bridge" 0 0 0700
 set_perm "$MODPATH/bin/dejavuerouter" 0 0 0755
 set_perm "$MODPATH/router-install.sh" 0 0 0755
 set_perm "$MODPATH/router-control.sh" 0 0 0755

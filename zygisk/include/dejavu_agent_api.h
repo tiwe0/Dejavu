@@ -7,7 +7,7 @@
 
 #include "control_channel.h"
 
-#define DEJAVU_AGENT_ABI_VERSION 3u
+#define DEJAVU_AGENT_ABI_VERSION 5u
 
 struct DejavuAgentCreateArgs {
     uint32_t struct_size;
@@ -28,5 +28,5 @@ struct DejavuAgentApi {
 
 using DejavuAgentGetApi = const DejavuAgentApi *(*)(uint32_t abi_version);
 
-extern "C" __attribute__((visibility("default")))
-const DejavuAgentApi *dejavu_agent_get_api(uint32_t abi_version);
+extern "C" __attribute__((visibility("default"))) const DejavuAgentApi *
+dejavu_agent_get_api(uint32_t abi_version);

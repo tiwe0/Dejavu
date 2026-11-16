@@ -17,7 +17,8 @@ REQUIRED = (
     'customize.sh', 'service.sh', 'uninstall.sh', 'root-watchdog.sh',
     'router-control.sh', 'router-install.sh', 'router-watchdog.sh', 'router-config.example.json',
     'zygisk/arm64-v8a.so', 'lib/arm64-v8a/libdejavu_agent.so', 'lib/arm64-v8a/libdejavu.so',
-    'lib/arm64-v8a/dejavu-root-helper', 'bin/dejavuerouter', 'config/init.lua', 'config/targets.txt',
+    'lib/arm64-v8a/dejavu-root-helper', 'bin/dejavu-rpc-bridge', 'bin/dejavuerouter',
+    'config/init.lua', 'config/targets.txt',
 )
 PROP = b'id=dejavu_zygisk\nversion=v0.9.1\nversionCode=12\n'
 

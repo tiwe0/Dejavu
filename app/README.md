@@ -155,14 +155,21 @@ stays visible for cleanup, with new starts/actions/event listeners disabled.
 
 ```text
 app UID
-  ├─ su -M -c: module.prop, targets.txt, root-helper properties, RPC metadata
-  └─ abstract Unix socket + 32-byte token → root companion → target Agent Lua runtime
+  └─ su -M -c → dejavu-rpc-bridge
+       └─ authenticated abstract Unix socket → root companion
+            └─ authenticated abstract Unix socket → target Agent Lua runtime
 ```
 
-Manager runs under its app UID. It reads endpoint metadata from
-`/data/adb/modules/dejavu_zygisk/run/<process>.<pid>.rpc` through `su -M -c`,
-checks the socket peer's root UID, and authenticates with the token before
-the companion relays the request to the target Agent.
+Manager uses its existing root authorization to run the module's RPC bridge
+for one request. The bridge verifies the live process and reads the 32-byte token
+from `/data/adb/modules/dejavu_zygisk/run/<process>.<pid>.rpc`. It checks the
+companion's root UID and authenticates before relaying the request. Manager
+still supports direct socket access on older modules without a bridge, where
+the device's SELinux policy permits it.
+
+Zygisk sets up the Agent's endpoint before specialization. Once the Agent
+is ready, the root companion opens the connection to the Agent and verifies
+that the listener belongs to the scoped process.
 
 ## i18n
 

@@ -1,6 +1,9 @@
 package cafe.ivory.dejavu.data
 
 import java.io.File
+import java.io.BufferedOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.TimeUnit
@@ -91,8 +94,73 @@ fun runRpcRegressionTests() {
     }
     check(!busy.isAlive)
     runRpcCancellationRegressionTests()
+    runRpcBridgeRegressionTests()
     println("OK: RPC Lua arguments round-trip all ASCII controls, digits, quotes and Unicode")
     println("OK: RPC live endpoints, strict tokens/socket names, stalled I/O deadline and timer cancellation")
+}
+
+private fun runRpcBridgeRegressionTests() {
+    fun startBridge(code: String): Process = ProcessBuilder("python3", "-c", code)
+        .redirectError(File("/dev/null"))
+        .start()
+
+    val protocol = """
+        import struct, sys
+        size, = struct.unpack("<I", sys.stdin.buffer.read(4))
+        request = sys.stdin.buffer.read(size)
+        magic, version, kind, status, request_id, size = struct.unpack("<IIIIQI", request[:28])
+        payload = request[28:]
+        assert (magic, version, kind, status) == (0x444a5250, 1, 1, 0)
+        assert request_id and len(payload) == size and payload.decode("utf-8").startswith("中文")
+        sys.stderr.buffer.write(b"ignored" * 20000)
+        reply = struct.pack("<IIIIQI", magic, version, 2, 0, request_id, size) + payload
+        sys.stdout.buffer.write(struct.pack("<I", len(reply)) + reply)
+    """.trimIndent()
+    val payload = "中文\u0000😀".repeat(15000)
+    val echoed = RootShell.exchangeBinary(protocol, 5000, null, ::startBridge) { input, output ->
+        DejavuRpc.exchange(
+            DataInputStream(input),
+            DataOutputStream(BufferedOutputStream(output)),
+            payload.toByteArray(Charsets.UTF_8),
+        )
+    }
+    check(echoed == payload) { "Binary bridge changed the UTF-8 response" }
+
+    val child = AtomicReference<Process?>()
+    val timedOut = runCatching {
+        RootShell.exchangeBinary("import time; time.sleep(30)", 500, null, { code ->
+            startBridge(code).also(child::set)
+        }) { _, output ->
+            output.write(ByteArray(1024 * 1024))
+        }
+    }.exceptionOrNull()
+    check(timedOut is SocketTimeoutException) { "Bridge write escaped the RPC deadline" }
+    check(child.get()?.waitFor(2, TimeUnit.SECONDS) == true) { "Timed-out bridge process survived" }
+
+    val cancellation = RpcCancellation()
+    val reading = CountDownLatch(1)
+    val failure = AtomicReference<Throwable?>()
+    val caller = Thread {
+        failure.set(runCatching {
+            RootShell.exchangeBinary("import time; time.sleep(30)", 5000, cancellation, { code ->
+                startBridge(code).also(child::set)
+            }) { input, _ ->
+                reading.countDown()
+                input.read()
+            }
+        }.exceptionOrNull())
+    }.apply { isDaemon = true; start() }
+    try {
+        check(reading.await(2, TimeUnit.SECONDS))
+        cancellation.cancel()
+        caller.join(2000)
+        check(!caller.isAlive && failure.get() is CancellationException)
+        check(child.get()?.waitFor(2, TimeUnit.SECONDS) == true) { "Cancelled bridge process survived" }
+    } finally {
+        cancellation.cancel()
+        child.get()?.destroyForcibly()
+    }
+    println("OK: RPC bridge preserves binary frames, bounds writes and cancels stalled reads")
 }
 
 private fun runRpcCancellationRegressionTests() {

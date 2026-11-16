@@ -479,7 +479,7 @@ class ControlSession:
                                 file=sys.stderr,
                             )
                         else:
-                            print(f"dejavuctl: reconnected to pid {self.pid}", file=sys.stderr)
+                            print(f"dejavuctl: Agent channel verified for pid {self.pid}", file=sys.stderr)
                         sys.stderr.flush()
                         self.reconnect_pending = False
                         return
@@ -519,7 +519,7 @@ def parse_arguments():
     parser.add_argument(
         "--reconnect",
         action="store_true",
-        help="reset and verify the Agent RPC connection",
+        help="rediscover the endpoint and verify the Agent RPC connection",
     )
     parser.add_argument(
         "-p", "--process", dest="process_option", metavar="PROCESS", help="target process name"
@@ -625,7 +625,7 @@ def execute_with_reconnect(session, script):
         if not is_reconnectable_status(status, payload) or attempt == 1:
             return status, payload
         print_error(
-            f"{render_rpc_error(session.pid, status, payload)}; requesting Agent reconnect"
+            f"{render_rpc_error(session.pid, status, payload)}; checking the Agent connection"
         )
         session.reconnect()
 
@@ -701,7 +701,7 @@ def run_single_command(arguments, process_name):
         ) as session:
             if arguments.reconnect:
                 session.reconnect()
-                print_payload(b"Agent reconnected")
+                print_payload(b"Agent channel verified")
                 return 0
             script = load_script(arguments)
             status, payload = execute_with_status_reconnect(session, script)

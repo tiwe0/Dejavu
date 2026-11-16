@@ -8,6 +8,7 @@ MODULE_LIB=${MODULE_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID
 AGENT_LIB=${AGENT_LIB:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/libdejavu_agent.so"}
 DEJAVU_LIB=${DEJAVU_LIB:-"${PROJECT_DIR}/out/android-arm64-v8a-api${ANDROID_API}/libdejavu.so"}
 ROOT_HELPER=${ROOT_HELPER:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavu-root-helper"}
+RPC_BRIDGE=${RPC_BRIDGE:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavu-rpc-bridge"}
 ROUTER_BIN=${ROUTER_BIN:-"${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/dejavuerouter"}
 TARGETS_FILE=${TARGETS_FILE:-"${ROOT_DIR}/config/targets.txt"}
 INIT_LUA=${INIT_LUA:-"${ROOT_DIR}/config/init.lua"}
@@ -35,6 +36,10 @@ fi
 if [[ ! -x "${ROOT_HELPER}" ]]; then
     echo "error: root helper not found or not executable: ${ROOT_HELPER}" >&2
     echo "build it with: make -C ${ROOT_DIR} build" >&2
+    exit 1
+fi
+if [[ ! -x "${RPC_BRIDGE}" ]]; then
+    echo "error: RPC bridge not found or not executable: ${RPC_BRIDGE}" >&2
     exit 1
 fi
 if [[ ! -x "${ROUTER_BIN}" ]]; then
@@ -105,6 +110,7 @@ cp -R "${WEBROOT_DIR}/." "${STAGE_DIR}/webroot/"
 cp "${MODULE_LIB}" "${STAGE_DIR}/zygisk/arm64-v8a.so"
 cp "${AGENT_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so"
 cp "${ROOT_HELPER}" "${STAGE_DIR}/lib/arm64-v8a/dejavu-root-helper"
+cp "${RPC_BRIDGE}" "${STAGE_DIR}/bin/dejavu-rpc-bridge"
 cp "${DEJAVU_LIB}" "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so"
 cp "${ROUTER_BIN}" "${STAGE_DIR}/bin/dejavuerouter"
 cp "${LICENSE_FILE}" "${STAGE_DIR}/LICENSE"
@@ -152,6 +158,7 @@ strip_runtime_files \
     "${STAGE_DIR}/lib/arm64-v8a/libdejavu_agent.so" \
     "${STAGE_DIR}/lib/arm64-v8a/libdejavu.so" \
     "${STAGE_DIR}/lib/arm64-v8a/dejavu-root-helper" \
+    "${STAGE_DIR}/bin/dejavu-rpc-bridge" \
     "${STAGE_DIR}/bin/dejavuerouter"
 
 rm -f "${ZIP_PATH}"

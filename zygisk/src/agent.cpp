@@ -2,13 +2,14 @@
 
 #include <android/log.h>
 #include <errno.h>
-#include <poll.h>
 #include <string.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <new>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -128,11 +129,20 @@ class DejavuAgent final {
 
     void start_live_control() {
         if (control_endpoint_.socket_name[0] == '\0') {
-            LOGD("live control unavailable: socket endpoint not established");
+            LOGD("live control unavailable: no negotiated endpoint");
             return;
         }
-        std::thread([this]() { run_live_control(); }).detach();
-        LOGD("abstract-socket RPC control starting");
+        const int listener = dejavu_control_bind_listener(control_endpoint_);
+        if (listener < 0) {
+            LOGE("failed to bind Agent control listener: %s", strerror(errno));
+            return;
+        }
+        try {
+            std::thread([this, listener]() { run_live_control(listener); }).detach();
+        } catch (const std::system_error &error) {
+            close(listener);
+            LOGE("failed to start RPC control thread: %s", error.what());
+        }
     }
 
     bool serve_rpc(int control) {
@@ -177,44 +187,37 @@ class DejavuAgent final {
                                         std::chrono::steady_clock::now() + std::chrono::seconds(2));
     }
 
-    void run_live_control() {
-        unsigned int retry_delay_ms = 100;
-        bool unavailable_logged = false;
-        while (true) {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            const int control = dejavu_control_connect(control_endpoint_, deadline);
+    void run_live_control(int listener) {
+        LOGD("Agent control listener ready");
+        for (;;) {
+            pollfd descriptor = {listener, POLLIN, 0};
+            const int status = poll(&descriptor, 1, -1);
+            if (status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (status < 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                break;
+            }
+            const int control = accept4(listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
             if (control < 0) {
-                if (!unavailable_logged) {
-                    LOGE("RPC control unavailable, retrying: %s", strerror(errno));
-                    unavailable_logged = true;
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
                 }
-                poll(nullptr, 0, static_cast<int>(retry_delay_ms));
-                retry_delay_ms =
-                    retry_delay_ms < 5000 ? std::min(retry_delay_ms * 2, 5000u) : 5000u;
-                continue;
+                break;
             }
-            std::string acknowledgement;
-            if (!dejavu_control_peer_is_root(control) ||
-                !dejavu_control_write_authentication(control, control_endpoint_, deadline) ||
-                !dejavu_control_read_frame(control, &acknowledgement, 0, deadline)) {
-                if (!unavailable_logged) {
-                    LOGE("RPC control authentication failed, retrying");
-                    unavailable_logged = true;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            if (dejavu_control_peer_is_root(control) &&
+                dejavu_control_read_authentication(control, control_endpoint_, deadline) &&
+                dejavu_control_write_frame(control, nullptr, 0, deadline)) {
+                LOGD("Agent RPC control authenticated root companion");
+                while (serve_rpc(control)) {
                 }
-                close(control);
-                poll(nullptr, 0, static_cast<int>(retry_delay_ms));
-                retry_delay_ms =
-                    retry_delay_ms < 5000 ? std::min(retry_delay_ms * 2, 5000u) : 5000u;
-                continue;
-            }
-            retry_delay_ms = 100;
-            unavailable_logged = false;
-            LOGD("abstract-socket RPC control connected");
-            while (serve_rpc(control)) {
+                LOGD("Agent RPC control disconnected");
             }
             close(control);
-            LOGD("abstract-socket RPC control disconnected; reconnecting");
         }
+        close(listener);
+        LOGE("Agent control listener stopped");
     }
 };
 

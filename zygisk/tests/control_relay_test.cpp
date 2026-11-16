@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -144,6 +145,83 @@ void listener_connect() {
     close(listener);
     require(dejavu_control_connect(endpoint, Clock::now() + 100ms) < 0,
             "closed listener connect fails");
+#endif
+}
+
+void inherited_peer_proof() {
+#if defined(__linux__)
+    int fds[2];
+    pair(fds);
+    const pid_t child = fork();
+    require(child >= 0, "fork inherited proof sender");
+    if (child == 0) {
+        close(fds[0]);
+        const auto deadline = Clock::now() + 500ms;
+        const bool sent = dejavu_control_prove_caller_pid(fds[1], deadline) &&
+                          dejavu_control_write_client_info(fds[1], getpid(), "com.test", deadline);
+        close(fds[1]);
+        _exit(sent ? 0 : 1);
+    }
+    close(fds[1]);
+    const auto deadline = Clock::now() + 500ms;
+    const pid_t sender = dejavu_control_receive_caller_pid(fds[0], deadline);
+    require(sender == child, "kernel verifies proof sender instead of socket creator");
+    DejavuControlClientInfo info;
+    require(dejavu_control_read_client_info(fds[0], &info, deadline) && info.pid == sender &&
+                info.process_name == "com.test",
+            "credential proof leaves following client-info frame intact");
+    close(fds[0]);
+    wait_ok(child);
+#endif
+}
+
+void reverse_listener_identity() {
+#if defined(__linux__)
+    DejavuControlEndpoint endpoint = {};
+    require(dejavu_control_generate_endpoint(&endpoint), "negotiate private Agent endpoint");
+    int signal[2];
+    require(pipe(signal) == 0, "create Agent readiness pipe");
+    const pid_t parent = getpid();
+    const uid_t uid = getuid();
+    const pid_t agent = fork();
+    require(agent >= 0, "fork mock Agent listener");
+    if (agent == 0) {
+        close(signal[0]);
+        const int listener = dejavu_control_bind_listener(endpoint);
+        if (listener < 0 || write(signal[1], "r", 1) != 1)
+            _exit(1);
+        close(signal[1]);
+        pollfd descriptor = {listener, POLLIN, 0};
+        if (poll(&descriptor, 1, 500) != 1)
+            _exit(1);
+        const int connection = accept(listener, nullptr, nullptr);
+        const auto deadline = Clock::now() + 500ms;
+        const bool accepted = connection >= 0 &&
+                              dejavu_control_peer_matches(connection, parent, uid) &&
+                              dejavu_control_peer_is_root(connection) == (uid == 0) &&
+                              dejavu_control_read_authentication(connection, endpoint, deadline) &&
+                              dejavu_control_write_frame(connection, nullptr, 0, deadline);
+        close(connection);
+        close(listener);
+        _exit(accepted ? 0 : 1);
+    }
+    close(signal[1]);
+    char ready;
+    require(read(signal[0], &ready, 1) == 1, "Agent listener ready");
+    close(signal[0]);
+    const auto deadline = Clock::now() + 500ms;
+    const int connection = dejavu_control_connect(endpoint, deadline);
+    require(connection >= 0, "root companion connects to Agent");
+    require(!dejavu_control_peer_matches(connection, parent, uid) &&
+                !dejavu_control_peer_matches(connection, agent, uid ^ 1U) &&
+                dejavu_control_peer_matches(connection, agent, uid),
+            "wrong PID and UID are rejected before token send");
+    std::string acknowledgement;
+    require(dejavu_control_write_authentication(connection, endpoint, deadline) &&
+                dejavu_control_read_frame(connection, &acknowledgement, 0, deadline),
+            "verified peer authenticates token and acknowledges");
+    close(connection);
+    wait_ok(agent);
 #endif
 }
 
@@ -302,10 +380,14 @@ void relay() {
             "invalid reconnect preserves connection");
     invalid_reconnect.payload.clear();
     require(dejavu_control_relay_rpc(&agent, invalid_reconnect, &response, Clock::now() + 80ms) &&
-                agent == -1 && response.type == DejavuControlRpcType::kReconnectResponse &&
+                agent == fds[0] && response.type == DejavuControlRpcType::kReconnectResponse &&
                 response.status == DEJAVU_CONTROL_RPC_OK,
-            "reconnect clears connection");
+            "legacy reconnect reports and preserves the inherited connection");
     close(fds[1]);
+    require(dejavu_control_relay_rpc(&agent, invalid_reconnect, &response, Clock::now() + 80ms) &&
+                agent == -1 && response.type == DejavuControlRpcType::kReconnectResponse &&
+                response.status == DEJAVU_CONTROL_RPC_UNAVAILABLE,
+            "legacy reconnect reports an offline channel");
 
     pair(fds);
     agent = fds[0];
@@ -340,6 +422,8 @@ void relay() {
 int main() {
     bounded(deadlines);
     bounded(listener_connect);
+    bounded(inherited_peer_proof);
+    bounded(reverse_listener_identity);
     bounded(partial_frame);
     bounded(interrupted_deadline);
     bounded(nested_rpc_deadline);

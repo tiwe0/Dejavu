@@ -16,7 +16,7 @@ namespace {
     std::exit(1);
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     int sockets[2];
@@ -58,10 +58,8 @@ int main() {
     DejavuControlEndpoint received_endpoint = {};
     if (!dejavu_control_read_endpoint(sockets[1], &received_endpoint) ||
         std::strcmp(received_endpoint.socket_name, endpoint.socket_name) != 0 ||
-        !std::equal(
-            std::begin(received_endpoint.token),
-            std::end(received_endpoint.token),
-            std::begin(endpoint.token))) {
+        !std::equal(std::begin(received_endpoint.token), std::end(received_endpoint.token),
+                    std::begin(endpoint.token))) {
         fail("read endpoint");
     }
     close(sockets[0]);
@@ -99,8 +97,7 @@ int main() {
     }
     DejavuControlRpcMessage decoded_request;
     if (!dejavu_control_read_rpc(sockets[1], &decoded_request) ||
-        decoded_request.type != request.type ||
-        decoded_request.request_id != request.request_id ||
+        decoded_request.type != request.type || decoded_request.request_id != request.request_id ||
         decoded_request.status != DEJAVU_CONTROL_RPC_OK ||
         decoded_request.payload != request.payload) {
         fail("read rpc request");
@@ -124,6 +121,26 @@ int main() {
     }
     close(sockets[0]);
     close(sockets[1]);
+
+    int pipe_fds[2];
+    const auto pipe_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    const DejavuControlRpcMessage binary_response = {
+        DejavuControlRpcType::kExecuteResponse,
+        request.request_id,
+        DEJAVU_CONTROL_RPC_OK,
+        std::string("A\0B", 3),
+    };
+    if (pipe(pipe_fds) != 0 ||
+        !dejavu_control_write_rpc_pipe(pipe_fds[1], binary_response, pipe_deadline) ||
+        !dejavu_control_read_rpc_pipe(pipe_fds[0], &decoded_response, pipe_deadline) ||
+        decoded_response.type != binary_response.type ||
+        decoded_response.request_id != binary_response.request_id ||
+        decoded_response.status != binary_response.status ||
+        decoded_response.payload != binary_response.payload) {
+        fail("binary rpc pipe round trip");
+    }
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
         fail("reconnect rpc socketpair");

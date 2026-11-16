@@ -24,7 +24,8 @@ public final class ModuleBundleTool {
         "module.prop", "customize.sh", "service.sh", "uninstall.sh", "root-watchdog.sh",
         "router-control.sh", "router-install.sh", "router-watchdog.sh", "router-config.example.json",
         "zygisk/arm64-v8a.so", "lib/arm64-v8a/libdejavu_agent.so", "lib/arm64-v8a/libdejavu.so",
-        "lib/arm64-v8a/dejavu-root-helper", "bin/dejavuerouter", "config/init.lua", "config/targets.txt");
+        "lib/arm64-v8a/dejavu-root-helper", "bin/dejavu-rpc-bridge", "bin/dejavuerouter",
+        "config/init.lua", "config/targets.txt");
 
     private static Map<String, String> properties(String text) throws IOException {
         Map<String, String> result = new HashMap<>();
