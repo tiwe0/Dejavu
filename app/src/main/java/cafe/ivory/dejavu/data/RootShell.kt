@@ -2,6 +2,7 @@ package cafe.ivory.dejavu.data
 
 import java.io.BufferedReader
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.SocketTimeoutException
@@ -102,7 +103,7 @@ object RootShell {
             try {
                 if (stopped.get()) throw CancellationException()
                 val result = exchange(process.inputStream, process.outputStream)
-                if (process.waitFor() != 0) throw RpcException("RPC bridge exited unsuccessfully")
+                if (process.waitFor() != 0) throw IOException("RPC bridge exited unsuccessfully")
                 result
             } finally {
                 if (active.compareAndSet(process, null)) runCatching { process.destroyForcibly() }
