@@ -20,7 +20,7 @@ TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-importer-regression.XXXXXX")
 trap 'rm -rf "${TEST_DIR}"' EXIT
 printf 'dejavu-importer-host-only\n' > "${TEST_DIR}/.host-only"
 mkdir "${TEST_DIR}/bin" "${TEST_DIR}/mapped-data"
-for tool in su chown base64 mv; do
+for tool in su chown base64 mv printf; do
     cp "${APP_DIR}/tests/importer/fake-tool.py" "${TEST_DIR}/bin/${tool}"
     chmod 700 "${TEST_DIR}/bin/${tool}"
 done

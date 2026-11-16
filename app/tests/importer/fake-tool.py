@@ -58,7 +58,14 @@ if tool == "su":
     if count == 0 or prefix.search(rewritten):
         fail("expected a fixed /data prefix and a fully mapped command")
     audit("su", [rewritten])
+    # Android may invoke printf as an external program. Exercise that path
+    # even on hosts whose /bin/sh provides printf as a builtin.
+    rewritten = f'printf() {{ "{root}/bin/printf" "$@"; }}\n' + rewritten
     os.execv("/bin/sh", ["/bin/sh", "-c", rewritten])
+elif tool == "printf":
+    if any(len(os.fsencode(argument)) + 1 > 128 * 1024 for argument in arguments):
+        fail("printf argument exceeds Android's 128 KiB limit on 4 KiB pages")
+    os.execv("/usr/bin/printf", ["/usr/bin/printf", *arguments])
 elif tool == "chown":
     if len(arguments) != 2 or arguments[0] != "0:0":
         fail("unexpected ownership command")

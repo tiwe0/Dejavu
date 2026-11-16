@@ -102,18 +102,24 @@ fun main() {
     val batchManifest = PluginPackageManifest("many-resources", "Many resources", "1", entry = "entry.lua", files = batchFiles)
     val batchDirectory = File(store, batchManifest.id).apply { mkdirs() }
     File(batchDirectory, PLUGIN_MANIFEST_FILE).writeText(batchManifest.toJson())
+    val largeLua = "--" + "a".repeat(128 * 1024) + "\nreturn {}\n"
     batchFiles.forEach { path ->
         File(batchDirectory, path).apply {
             parentFile.mkdirs()
-            writeText(if (path == batchFiles.last()) "" else "return {}\n")
+            writeText(when (path) {
+                batchManifest.entry -> largeLua
+                batchFiles.last() -> ""
+                else -> "return {}\n"
+            })
         }
     }
     val commandsBeforeBatch = rootCommands()
     val sharedScan = PluginLibraryScan.read()
     val batch = importer.list(sharedScan).single { it.manifest.id == batchManifest.id }
     check(batch.sources.keys == batchFiles.toSet())
+    check(batch.sources.getValue(batchManifest.entry) == largeLua)
     check(rootCommands() - commandsBeforeBatch == 2) { "32-resource packages must use the same two scan commands" }
-    val diagnosticBody = "return 'scan-source-body-must-not-appear-in-errors'"
+    val diagnosticBody = "--scan-source-body-must-not-appear-in-errors\n$largeLua"
     File(batchDirectory, "entry.lua").writeText(diagnosticBody)
     val missingPath = batchFiles[1]
     File(batchDirectory, missingPath).delete()

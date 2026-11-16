@@ -3,6 +3,8 @@ package cafe.ivory.dejavu.data
 import java.io.IOException
 import java.util.Base64
 
+private const val SCAN_ERROR_PREFIX = "DEJAVU_SCAN_ERROR:"
+
 internal data class StoredPluginManifest(val manifest: PluginPackageManifest, val byteSize: Int)
 
 /** One manifest snapshot can be shared by the Lua and native library readers. */
@@ -19,15 +21,16 @@ internal data class PluginLibraryScan(
                     [ -d "${'$'}directory" ] && [ ! -L "${'$'}directory" ] || continue
                     path="${'$'}directory/$PLUGIN_MANIFEST_FILE"
                     [ -e "${'$'}path" ] || [ -L "${'$'}path" ] || continue
-                    if encoded=${'$'}(
+                    printf '%s\000' "${'$'}{directory##*/}" || exit 1
+                    if (
                         [ ! -L "${'$'}path" ] && [ -f "${'$'}path" ] || exit 1
                         size=${'$'}(wc -c < "${'$'}path") || exit 1
                         [ "${'$'}size" -le $MAX_PLUGIN_MANIFEST_BYTES ] || exit 1
                         base64 "${'$'}path"
                     ) 2>/dev/null; then
-                        printf '%s\000ok\000%s\000' "${'$'}{directory##*/}" "${'$'}encoded"
+                        printf '\000ok\000' || exit 1
                     else
-                        printf '%s\000error\000%s\000' "${'$'}{directory##*/}" 'manifest.json is linked, oversized or unreadable'
+                        printf '\n${SCAN_ERROR_PREFIX}manifest.json is linked, oversized or unreadable\000error\000' || exit 1
                     fi
                 done
                 exit 0
@@ -74,19 +77,16 @@ internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Resul
     val batch = StringBuilder()
     var batchBytes = 0
     checks.forEach { (id, script) ->
+        // Write the status after the data so base64 can stream directly to stdout.
         val command = """
-            if output=${'$'}(
+            printf '%s\000' ${RootShell.quote(id)} || exit 1
+            if (
                 dejavu_plugin_root=${RootShell.quote("$DEFAULT_PLUGIN_DIRECTORY/$id/")}
                 $script
             ) 2>/dev/null; then
-                printf '%s\000ok\000%s\000' ${RootShell.quote(id)} "${'$'}output"
+                printf '\000ok\000' || exit 1
             else
-                diagnostic=${'$'}(printf '%s\n' "${'$'}output" | tail -n 1)
-                case "${'$'}diagnostic" in
-                    DEJAVU_SCAN_ERROR:*) diagnostic=${'$'}{diagnostic#DEJAVU_SCAN_ERROR:} ;;
-                    *) diagnostic='Plugin files are invalid or unreadable' ;;
-                esac
-                printf '%s\000error\000%s\000' ${RootShell.quote(id)} "${'$'}diagnostic"
+                printf '\000error\000' || exit 1
             fi
         """.trimIndent()
         val bytes = command.toByteArray(Charsets.UTF_8).size + 1
@@ -103,7 +103,7 @@ internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Resul
     val fileCheck = """
         scan_plugin_error() {
             dejavu_failed_resource=${'$'}{1#"${'$'}dejavu_plugin_root"}
-            printf '\nDEJAVU_SCAN_ERROR:%s (%s)\n' "${'$'}dejavu_failed_resource" "${'$'}2"
+            printf '\n${SCAN_ERROR_PREFIX}%s (%s)\n' "${'$'}dejavu_failed_resource" "${'$'}2"
             return 1
         }
         scan_plugin_file() {
@@ -131,6 +131,7 @@ internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Resul
     return results
 }
 
+/** Each stdout record is ID, payload, then status, separated and terminated by NUL. */
 private fun pluginScanResults(output: String): Map<String, Result<String>> {
     if (output.isBlank()) return emptyMap()
     val fields = output.split('\u0000')
@@ -139,11 +140,18 @@ private fun pluginScanResults(output: String): Map<String, Result<String>> {
     for (index in 0 until fields.lastIndex step 3) {
         val id = fields[index]
         require(id !in results) { "Duplicate plugin scan result" }
-        results[id] = when (fields[index + 1]) {
-            "ok" -> Result.success(fields[index + 2])
-            "error" -> Result.failure(IOException(fields[index + 2].trim().take(1024).ifBlank {
-                "Plugin files are invalid or unreadable"
-            }))
+        val payload = fields[index + 1]
+        results[id] = when (fields[index + 2]) {
+            "ok" -> Result.success(payload)
+            "error" -> {
+                val lastLine = payload.trimEnd('\r', '\n').substringAfterLast('\n')
+                val diagnostic = if (lastLine.startsWith(SCAN_ERROR_PREFIX)) {
+                    lastLine.removePrefix(SCAN_ERROR_PREFIX)
+                } else ""
+                Result.failure(IOException(diagnostic.trim().take(1024).ifBlank {
+                    "Plugin files are invalid or unreadable"
+                }))
+            }
             else -> throw IOException("Invalid plugin scan status")
         }
     }
