@@ -18,6 +18,13 @@ import cafe.ivory.dejavu.ManagerAppearance
 import cafe.ivory.dejavu.ManagerPalette
 import cafe.ivory.dejavu.ManagerThemeMode
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.Font
+import cafe.ivory.dejavu.R
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFFA0D5B9),
@@ -47,26 +54,26 @@ private val DarkColors = darkColorScheme(
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF14583E),
+    primary = Color(0xFF1F5C43),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD9EDDD),
     onPrimaryContainer = Color(0xFF16442C),
     secondary = Color(0xFF59636D),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDDEEDC),
+    secondaryContainer = Color(0xFFE3EEDF),
     onSecondaryContainer = Color(0xFF15442D),
     tertiary = Color(0xFF6E5D26),
     onTertiary = Color.White,
-    background = Color(0xFFF8F5EE),
+    background = Color(0xFFF6F3EA),
     onBackground = Color(0xFF18231D),
     surface = Color(0xFFFCFAF5),
     onSurface = Color(0xFF18231D),
-    surfaceVariant = Color(0xFFEDEEE6),
+    surfaceVariant = Color(0xFFECEAE0),
     onSurfaceVariant = Color(0xFF4F5C54),
     surfaceContainerLow = Color(0xFFFBF8F0),
-    surfaceContainer = Color(0xFFF3EFE5),
-    surfaceContainerHigh = Color(0xFFECE9DE),
-    surfaceContainerHighest = Color(0xFFE5E4D8),
+    surfaceContainer = Color(0xFFF1EDE2),
+    surfaceContainerHigh = Color(0xFFEBE7DB),
+    surfaceContainerHighest = Color(0xFFE4E1D4),
     outline = Color(0xFF737D75),
     outlineVariant = Color(0xFFDEDCD3),
     error = Color(0xFF9B332E),
@@ -152,11 +159,37 @@ fun managerDisplayColorScheme(palette: ManagerPalette, dark: Boolean): ColorSche
 
 private val AppShapes = Shapes(
     extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
-    small = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
     medium = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
 )
+
+private val AppTypography = Typography().run {
+    copy(
+        titleLarge = titleLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+        titleMedium = titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        labelSmall = labelSmall.copy(letterSpacing = 0.4.sp),
+    )
+}
+
+/** Signal color reserved for live state (running plugin, healthy chain link). */
+val ColorScheme.signal: Color
+    get() = if (background.luminance() < 0.5f) Color(0xFF7FD3A0) else Color(0xFF2E9A5E)
+
+/**
+ * Bundled JetBrains Mono (SIL OFL 1.1). Some vendor ROMs replace the system monospace face
+ * with their UI font, so identifiers would otherwise lose their technical texture.
+ */
+val DejavuMono = FontFamily(
+    Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
+    Font(R.font.jetbrains_mono_medium, FontWeight.Medium),
+    Font(R.font.jetbrains_mono_medium, FontWeight.SemiBold),
+)
+
+/** Monospace style used for package names, plugin IDs, versions and ports. */
+val Typography.mono: TextStyle
+    get() = bodySmall.copy(fontFamily = DejavuMono, letterSpacing = 0.sp)
 
 @Composable
 fun DejavuTheme(appearance: ManagerAppearance = ManagerAppearance(), content: @Composable () -> Unit) {
@@ -166,9 +199,38 @@ fun DejavuTheme(appearance: ManagerAppearance = ManagerAppearance(), content: @C
         ManagerThemeMode.DARK -> true
     }
     MaterialTheme(
-        colorScheme = managerDisplayColorScheme(appearance.palette, dark),
-        typography = Typography(),
+        colorScheme = animateColorScheme(managerDisplayColorScheme(appearance.palette, dark)),
+        typography = AppTypography,
         shapes = AppShapes,
         content = content,
+    )
+}
+
+/** Cross-fades palette and light/dark switches instead of snapping every surface at once. */
+@Composable
+private fun animateColorScheme(target: ColorScheme): ColorScheme {
+    val spec = androidx.compose.animation.core.tween<Color>(380)
+    @Composable fun a(color: Color, label: String) =
+        androidx.compose.animation.animateColorAsState(color, spec, label = label).value
+    return target.copy(
+        primary = a(target.primary, "primary"),
+        onPrimary = a(target.onPrimary, "onPrimary"),
+        primaryContainer = a(target.primaryContainer, "primaryContainer"),
+        onPrimaryContainer = a(target.onPrimaryContainer, "onPrimaryContainer"),
+        secondary = a(target.secondary, "secondary"),
+        secondaryContainer = a(target.secondaryContainer, "secondaryContainer"),
+        onSecondaryContainer = a(target.onSecondaryContainer, "onSecondaryContainer"),
+        background = a(target.background, "background"),
+        onBackground = a(target.onBackground, "onBackground"),
+        surface = a(target.surface, "surface"),
+        onSurface = a(target.onSurface, "onSurface"),
+        surfaceVariant = a(target.surfaceVariant, "surfaceVariant"),
+        onSurfaceVariant = a(target.onSurfaceVariant, "onSurfaceVariant"),
+        surfaceContainerLow = a(target.surfaceContainerLow, "surfaceContainerLow"),
+        surfaceContainer = a(target.surfaceContainer, "surfaceContainer"),
+        surfaceContainerHigh = a(target.surfaceContainerHigh, "surfaceContainerHigh"),
+        surfaceContainerHighest = a(target.surfaceContainerHighest, "surfaceContainerHighest"),
+        outline = a(target.outline, "outline"),
+        outlineVariant = a(target.outlineVariant, "outlineVariant"),
     )
 }

@@ -115,7 +115,6 @@ internal fun PluginCardHeader(
         StatusPill(
             label = status,
             active = active,
-            activeColor = MaterialTheme.colorScheme.primary,
             modifier = modifier.background(
                 if (active) MaterialTheme.colorScheme.secondaryContainer
                 else MaterialTheme.colorScheme.surfaceVariant,
@@ -179,7 +178,6 @@ fun DirectoryPluginEventsSheet(state: PackageEventsUi, onDismiss: () -> Unit) {
                     },
                 ),
                 active = state.connected,
-                activeColor = MaterialTheme.colorScheme.primary,
             )
             state.error?.let { error ->
                 Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)

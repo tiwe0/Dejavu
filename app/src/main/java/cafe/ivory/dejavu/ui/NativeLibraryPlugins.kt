@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.ui.theme.DejavuMono
 import cafe.ivory.dejavu.data.NativeLibraryPluginUi
 
 @Composable
@@ -74,7 +75,7 @@ fun NativeLibraryPluginCard(
                 Text(
                     text = item.artifact.path,
                     modifier = Modifier.padding(bottom = 8.dp),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

@@ -211,7 +211,7 @@ private fun RuntimePanel(
                     active = !targetOffline && state == DirectoryPluginState.RUNNING,
                 )
             }
-            runtimeError?.let { ErrorBanner(it) }
+            runtimeError?.let { if (targetOffline) NoticeBanner(it) else ErrorBanner(it) }
             plugin.error?.takeIf { it != runtimeError }?.let { ErrorBanner(it) }
             if (working) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -533,22 +533,7 @@ private fun MorePluginActions(actions: List<PluginPageAction>, enabled: Boolean,
 
 @Composable
 private fun PresetBadge(label: String, active: Boolean, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = CircleShape,
-        color = if (active) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (active) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-    ) {
-        Row(
-            Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(6.dp).background(if (active) MaterialTheme.colorScheme.onSecondaryContainer
-                else MaterialTheme.colorScheme.outline, CircleShape))
-            Text(label, style = MaterialTheme.typography.labelMedium)
-        }
-    }
+    LiveStatus(label = label, live = active, modifier = modifier.padding(vertical = 4.dp))
 }
 
 @Composable

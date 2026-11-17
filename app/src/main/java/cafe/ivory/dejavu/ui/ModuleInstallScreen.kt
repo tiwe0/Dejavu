@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -32,8 +33,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.ui.theme.DejavuMono
 import cafe.ivory.dejavu.data.ModuleUiState
 import cafe.ivory.dejavu.data.RootProvider
+import cafe.ivory.dejavu.ui.theme.mono
 
 @Composable
 internal fun ModuleInstallScreen(state: ModuleUiState, onInstall: () -> Unit) {
@@ -44,8 +47,8 @@ internal fun ModuleInstallScreen(state: ModuleUiState, onInstall: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         item {
-            Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+            Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface,
+                border = androidx.compose.material3.CardDefaults.outlinedCardBorder()) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     AnimatedContent(targetState = when {
                         state.working -> R.string.module_install_progress
@@ -75,7 +78,7 @@ internal fun ModuleInstallScreen(state: ModuleUiState, onInstall: () -> Unit) {
                     } else if (snapshot?.rebootPending == true) {
                         Text(stringResource(R.string.module_install_pending_detail), style = MaterialTheme.typography.bodyMedium)
                     } else {
-                        Button(onClick = onInstall, enabled = state.canInstall, modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = onInstall, enabled = state.canInstall, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
                             Icon(Icons.Rounded.Download, null, Modifier.padding(end = 8.dp))
                             Text(stringResource(
                                 if (state.bundledVersion == snapshot?.installedVersion) R.string.module_install_reinstall else R.string.module_install_action,
@@ -126,7 +129,7 @@ internal fun ModuleInstallScreen(state: ModuleUiState, onInstall: () -> Unit) {
                 AnimatedVisibility(showOutput) {
                     SelectionContainer {
                         Text(state.output, Modifier.fillMaxWidth().padding(12.dp),
-                            style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                            style = MaterialTheme.typography.bodySmall, fontFamily = DejavuMono)
                     }
                 }
             }
@@ -137,8 +140,10 @@ internal fun ModuleInstallScreen(state: ModuleUiState, onInstall: () -> Unit) {
 @Composable
 private fun InstallValue(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.mono.copy(fontSize = MaterialTheme.typography.bodyMedium.fontSize),
+            fontWeight = FontWeight.Medium)
     }
 }
 

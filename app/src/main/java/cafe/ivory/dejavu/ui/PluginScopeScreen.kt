@@ -34,6 +34,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.InstalledApp
+import cafe.ivory.dejavu.ui.theme.mono
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.HorizontalDivider
 
 @Composable
 internal fun PluginScopeScreen(
@@ -60,7 +64,7 @@ internal fun PluginScopeScreen(
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(stringResource(R.string.plugin_scope_hint), style = MaterialTheme.typography.bodyMedium,
+            Text(stringResource(R.string.plugin_scope_hint), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -69,7 +73,8 @@ internal fun PluginScopeScreen(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(value = process, onValueChange = { process = it; processError = false },
                     modifier = Modifier.weight(1f), enabled = enabled, singleLine = true,
-                    isError = processError, label = { Text(stringResource(R.string.plugin_scope_custom_process)) },
+                    isError = processError, label = { Text(stringResource(R.string.plugin_scope_custom_process), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = cafe.ivory.dejavu.ui.theme.DejavuMono),
                     supportingText = if (processError) {{ Text(stringResource(R.string.msg_invalid_process)) }} else null)
                 TextButton(enabled = enabled, onClick = {
                     val value = process.trim()
@@ -81,11 +86,6 @@ internal fun PluginScopeScreen(
                         query = ""
                     }
                 }) { Text(stringResource(R.string.plugin_scope_add_process)) }
-            }
-            Button(onClick = { onSave(selected.distinct().sorted()) },
-                enabled = enabled && selected.toSet() != scope.toSet(),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                Text(stringResource(if (saving) R.string.plugin_scope_saving else R.string.plugin_scope_save, selected.size))
             }
             if (loading || saving) LinearProgressIndicator(Modifier.fillMaxWidth())
         }
@@ -106,10 +106,18 @@ internal fun PluginScopeScreen(
                     ProcessIcon(app)
                     Column(Modifier.weight(1f)) {
                         if (app != null) Text(app.label, style = MaterialTheme.typography.bodyLarge)
-                        Text(target, style = MaterialTheme.typography.bodySmall,
+                        Text(target, style = MaterialTheme.typography.mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Button(onClick = { onSave(selected.distinct().sorted()) },
+                enabled = enabled && selected.toSet() != scope.toSet(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                Text(stringResource(if (saving) R.string.plugin_scope_saving else R.string.plugin_scope_save, selected.size))
             }
         }
     }

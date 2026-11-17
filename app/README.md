@@ -40,20 +40,26 @@ the profile uses the standard Android debug signing credentials.
 
 ## What it does
 
-- **Overview** – module version, root access, root helper, total injection targets,
-  installation management, project source, third-party notices and copyright.
-- **Plugins** – import ZIP packages, scan `/data/adb/dejavu/plugins`, configure each
+- **Overview** – the injection chain (module version → root access → root helper
+  port) with an inline repair action for a broken link, followed by configured
+  plugin scopes grouped by target process and any manual targets. Tapping a
+  plugin row opens it with that process selected. Overview shows scope, not
+  per-process running state.
+- **Plugins** – identity rows (monogram, name, `TYPE · version`, scope count),
+  import ZIP packages, scan `/data/adb/dejavu/plugins`, configure each
   plugin's multi-process scope, and use its controls or Lua-authored page.
   Within a plugin, select the process to inspect/start/stop; changing that selection
   does not stop plugins already running in other processes. Native folders retain
   load/unload and SKILL.md support.
 - **Configuration** – six saved color palettes, Android 12+ wallpaper colors,
-  system/light/dark appearance, framework installation, the built-in router, and live framework logs. The mobile Lua console has been removed;
+  system/light/dark appearance, framework installation, the built-in router, live
+  framework logs, and About (source, third-party notices, license). The mobile Lua console has been removed;
   desktop `dejavu`/`dejavuctl` Lua RPC remains available.
 
-Plugin details use **Control**, **Scope** and **Info** tabs. The control panel
-shows the selected process's runtime state and actions, including any declared
-Lua page. **Scope** edits the plugin's target list. **Info** shows the manifest
+Plugin details keep the inspected-process selector above a **Control**, **Scope**
+and **Info** segmented control. The control panel shows the selected process's
+runtime state and actions, including any declared Lua page; plugins without a
+page get a bottom-docked Start/Stop/Check action. **Scope** edits the plugin's target list. **Info** shows the manifest
 metadata and configured targets. Leaving **Control** releases the live viewer
 and clears its message list.
 
@@ -113,8 +119,10 @@ Configuration offers Forest, Ocean, Iris, Rose, Amber and Graphite palettes,
 plus Android 12+ system wallpaper colors. Each supports system, light or dark
 appearance. The main Configuration page shows the current choices; tap a row
 to open mode or palette options in a sheet. Changes apply immediately, including
-the Overview dog panel, in-app mark colors and system-bar icon contrast, and
-are saved in Manager's private preferences across relaunches.
+in-app mark colors and system-bar icon contrast, and are saved in Manager's
+private preferences across relaunches. Identifiers use the bundled JetBrains
+Mono NL font (OFL-1.1) so they stay monospace on ROMs that replace the system
+monospace face.
 
 ### Back navigation
 

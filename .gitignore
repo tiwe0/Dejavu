@@ -12,3 +12,4 @@ app/docs/*.png.tmp
 app/keystore.properties
 *.jks
 *.keystore
+.oil-ui/

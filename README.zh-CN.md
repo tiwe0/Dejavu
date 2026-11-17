@@ -17,14 +17,17 @@ Lua + TinyCC 核心也可以嵌入能够控制自身进程的应用，这种用�
 
 <table>
   <tr>
-    <td align="center"><img src="app/docs/manager-overview.png" width="270" alt="海洋蓝深色主题下的 Manager 概览"><br><strong>概览</strong><br>模块、root 与辅助服务状态</td>
-    <td align="center"><img src="app/docs/manager-configuration.png" width="270" alt="折叠外观选项后的 Manager 配置页"><br><strong>配置</strong><br>简洁入口，按需展开外观选项</td>
+    <td align="center"><img src="app/docs/manager-overview.png" width="200" alt="Manager 概览：注入链路与按进程分组的插件作用域"><br><strong>概览</strong><br>注入链路与按进程分组的作用域</td>
+    <td align="center"><img src="app/docs/manager-plugins.png" width="200" alt="插件库：类型、版本与作用域数量"><br><strong>插件</strong><br>身份、类型标签与作用域</td>
+    <td align="center"><img src="app/docs/manager-plugin-detail.png" width="200" alt="插件详情：查看进程、控制／作用域／信息与运行状态"><br><strong>插件详情</strong><br>查看进程与运行状态</td>
+    <td align="center"><img src="app/docs/manager-configuration.png" width="200" alt="配置页：外观、诊断与关于"><br><strong>配置</strong><br>外观、诊断与关于</td>
   </tr>
 </table>
 
-<sub>以上为开发版 Manager 的实机截图，截图中的模块版本可能早于当前发布版本。</sub>
+<sub>以上为开发版 Manager 在默认森林绿浅色主题下的实机截图，截图中的模块版本可能早于当前发布版本。</sub>
 
-Manager 分为**概览、插件、配置**三个主页面。外部插件列表只保留身份信息，
+Manager 分为**概览、插件、配置**三个主页面。概览以注入链路（模块 → Root →
+辅助服务）开头，并按目标进程分组显示插件作用域；插件列表显示身份、类型与作用域，
 每个插件内部的**控制／作用域／信息**分别承载运行操作、目标选择和完整元数据。
 
 - **每个插件独立配置作用域。** 支持多选应用与精确进程名，框架合并各插件的

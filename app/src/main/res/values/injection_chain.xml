@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chain_module">Module</string>
+    <string name="chain_root">Root</string>
+    <string name="chain_helper">Helper</string>
+    <string name="chain_missing">Missing</string>
+    <string name="chain_install_module">Install the framework module</string>
+    <string name="chain_open_module">Open module management</string>
+    <string name="chain_recheck_helper">Helper offline · check again</string>
+    <string name="injecting_title">Injection scope</string>
+    <string name="injecting_summary">%1$d processes · %2$d plugins</string>
+    <string name="injecting_empty_title">No plugin scopes yet</string>
+    <string name="injecting_empty_detail">Open a plugin and choose target apps in Scope. Processes appear here grouped by target.</string>
+    <string name="injecting_open_plugins">Open plugins</string>
+    <string name="injecting_manual_targets">Manual targets</string>
+    <string name="injecting_manual_detail">Injected without a plugin scope</string>
+    <string name="injecting_unknown_plugin">Plugin no longer imported</string>
+    <string name="plugin_row_scope">%1$d processes</string>
+    <string name="plugin_row_no_scope">No scope yet</string>
+    <string name="plugin_import_zip">Import ZIP</string>
+    <string name="configuration_about">About</string>
+    <string name="detail_runtime_hint_unknown">Check the selected process to read its state.</string>
+    <string name="detail_session">Session %1$s</string>
+</resources>

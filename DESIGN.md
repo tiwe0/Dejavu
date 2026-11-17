@@ -10,7 +10,7 @@ the [Manager guide](app/README.md).
 ## Brand
 Focused technical utility. Trust comes from a visible target, explicit actions,
 truthful runtime state and useful errors. Default to warm ivory and forest green, offer coherent optional palettes, and keep the
-pixel dog from the launcher mark.
+pixel dog from the launcher mark (top bar of Overview and the empty scope state).
 Avoid decorative dashboards, status inferred from import success and hidden starts.
 
 ## Product goals
@@ -28,16 +28,26 @@ They need repeatable plugin activation and live feedback on a phone screen.
 
 ## Information architecture
 
-The three main destinations are Overview, Plugins and Configuration. Overview shows
-module detection, aggregate injection targets, root/helper status and project
-references. Each plugin owns a multi-process scope. The native injection list
-is the union of plugin scopes and legacy/manual targets. Plugins shows compact
-identity rows (icon, name, type/version) and a floating ZIP add button. Details
-are internal Control / Scope / Info tabs. Control selects the inspected process
-and shows its runtime state. Lua-authored pages render inline here. Switching
-the inspected process changes the displayed state only.
+The three main destinations are Overview, Plugins and Configuration. Overview
+leads with the injection chain (module → root → helper): each link shows its
+value or failure, a broken link turns red with a dashed connector, and the only
+repair action sits directly under it (manage module or re-check helper). Below
+it, "Injection scope" groups configured plugins by target process (app label,
+monospace process name, plugin rows with a type tag); processes injected without
+a plugin scope are listed as manual targets. Overview never shows per-process
+running state because only the selected process is read. Each plugin owns a
+multi-process scope. The native injection list is the union of plugin scopes
+and legacy/manual targets. Plugins shows identity rows (monogram, name,
+`TYPE · version` tag, scope count) on hairline dividers and an extended
+"Import ZIP" button. Details keep the inspected-process selector above a
+Control / Scope / Info segmented control on every tab. Control selects the
+inspected process and shows its runtime state; plugins without a declared page
+get an enlarged state block and a bottom-docked Start/Stop/Check action.
+Lua-authored pages render inline here. Switching the inspected process changes
+the displayed state only.
 Scope is multi-select and Info contains manifest metadata and configured targets.
-Configuration offers persisted palettes and system/light/dark mode plus log access.
+Configuration offers persisted palettes and system/light/dark mode, diagnostics
+(installer, logs, router) and About (source, third-party notices, license).
 The language picker remains at the far right of the top bar. The mobile console
 and global single-target scope screen have been removed.
 Manifest and declared resources live in `/data/adb/dejavu/plugins/<id>` and the
@@ -52,18 +62,52 @@ version on failed import. Stop/cleanup errors remain visible and retryable.
 
 ## Visual language
 
-Reuse MaterialTheme colorScheme, typography and shapes from Theme.kt, with
-16dp page padding and 48dp minimum action targets. The Overview module panel
-shows detection and version with colors from the selected theme. Native, JIT
-and Lua summary rows share a rounded surface. List names can span two lines
-before truncating. Status includes text as well as color.
+North star: "see which plugin is injected into which process, and which link of
+the chain is broken". Reuse MaterialTheme colorScheme, typography and shapes
+from Theme.kt, with 16dp page padding and 48dp minimum action targets. Forest is
+warm ivory (`#F6F3EA` background, `#FCFAF5` surface) with forest green
+(`#1F5C43`) for primary actions and selection. A separate signal green
+(`ColorScheme.signal`) is reserved for live state: healthy chain links and
+running plugins. Unknown or stopped states use a neutral dot; errors use the
+error color. Shapes are 6/10/12/16dp; groups are outlined surfaces with
+hairline dividers instead of filled cards. Identifiers (package and process
+names, plugin IDs, versions, ports, socket paths) use the bundled JetBrains Mono
+NL (`DejavuMono`, `Typography.mono`) because some ROMs replace the system
+monospace face. Status always includes text as well as color. Expected
+preconditions such as an offline target use a neutral notice, not an error
+banner. List names can span two lines before truncating.
+
+Motion (`ui/Motion.kt`, one vocabulary for the whole app):
+- Drawer feel for surfaces: damped spring (ratio 0.92, stiffness 420), no visible
+  overshoot. Exits run at about two thirds of the enter duration and accelerate.
+- Pages: entering a plugin or tool detail pushes in from the trailing edge
+  (1/5 width) while the list drifts back; returning is the exact reverse.
+  Bottom-navigation siblings fade through with a slight rise. A committed
+  predictive-back gesture skips the page animation so it never plays twice;
+  the outgoing page renders as a read-only preview while it leaves.
+- Detail tabs: the segmented plate slides to the chosen option and content
+  moves in the same direction.
+- Chrome: the title rolls up to the new name, the back arrow slides in, the
+  bottom bar slides away on detail pages, and loading bars fade.
+- Lists: rows animate insertion, removal and reordering; Overview and Plugins
+  stagger in once per session (50ms steps, at most 8 steps).
+- Feedback: primary actions and the import button scale to 0.97 on press with a
+  short spring; runtime state and action labels roll to their new value; the
+  progress spinner expands into the button; the chain dims on refresh and
+  lights node by node; its repair action expands in place; the running dot
+  pulses; palette and light/dark changes cross-fade over 380ms.
+- All specs follow the system animator duration scale, so "remove animations"
+  makes every state land immediately with the same content.
 
 ## Components
 
-The plugin list uses a shared summary row, a floating add button, an import
-progress indicator and error banners. Details reuse TargetMenu, StatusPill
-and Material dialogs. Declared events appear in the Lua page or a live-event
-sheet. The ZIP picker uses the platform Storage Access Framework.
+Shared pieces live in `ui/ChainComponents.kt` and `ui/Components.kt`:
+`InjectionChain`, `LiveStatus` (dot + text, pulsing when live), `TypeTag`,
+`PluginMonogram`, `StatusPill`, `NoticeBanner`, `ErrorBanner`, `TargetMenu` and
+`ManagerGroup`. Details reuse Material segmented buttons and dialogs. Declared
+events appear in the Lua page or a live-event sheet. The ZIP picker uses the
+platform Storage Access Framework. Scope editing docks its save button at the
+bottom like plugin actions.
 
 ## Accessibility
 Keep touch targets >=48dp, label icon actions, preserve TalkBack reading order,
@@ -91,7 +135,9 @@ Explain only actionable prerequisites; no internal stack traces in normal UI.
 
 ## Implementation constraints
 
-Kotlin + Jetpack Compose Material 3, minSdk26. No new third-party dependencies.
+Kotlin + Jetpack Compose Material 3, minSdk26. No new third-party library
+dependencies; the bundled JetBrains Mono NL font files are OFL-1.1 (see
+`THIRD_PARTY_NOTICES.md`).
 Each ZIP contains one `manifest.json` at its root or one folder deep. The
 library stores each plugin in an immediate subfolder named for its manifest ID.
 The manifest uses `schemaVersion: 1` and declares the identity, kind, entry and

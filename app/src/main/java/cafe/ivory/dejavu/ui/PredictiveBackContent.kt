@@ -39,6 +39,7 @@ internal fun PredictiveBackContent(
     onBack: () -> Unit,
     previousContent: @Composable () -> Unit,
     navigationKey: Any? = Unit,
+    onGestureCommitted: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     val progress = remember { Animatable(0f) }
@@ -52,6 +53,7 @@ internal fun PredictiveBackContent(
     val currentCanNavigate by rememberUpdatedState(canNavigate)
     val currentOnBack by rememberUpdatedState(onBack)
     val currentKey by rememberUpdatedState(navigationKey)
+    val currentGestureCommitted by rememberUpdatedState(onGestureCommitted)
 
     DisposableEffect(navigationKey, enabled) {
         generation++
@@ -92,7 +94,11 @@ internal fun PredictiveBackContent(
             }
             if (valid()) {
                 if (receivedProgress) progress.animateTo(1f, tween(140))
-                if (valid()) currentOnBack()
+                if (valid()) {
+                    // The gesture already played the exit; the page switch must not animate again.
+                    if (receivedProgress) currentGestureCommitted()
+                    currentOnBack()
+                }
             }
         } catch (error: CancellationException) {
             cancelled = true

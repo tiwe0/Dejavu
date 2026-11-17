@@ -18,6 +18,7 @@ and the component license texts that are available in the working tree under
 | cJSON | 1.7.19 (vendored) | MIT | <https://github.com/DaveGamble/cJSON> | `router/third_party/cJSON/LICENSE` |
 | libevent | 2.1.12-stable (SHA-256 pinned archive) | BSD-3-Clause and bundled notices | <https://github.com/libevent/libevent> | fetched: `router` build dependency `LICENSE` |
 | Zygisk API header | API v5 @ `8ce26128` | 0BSD | <https://github.com/topjohnwu/zygisk-module-sample> | `zygisk/include/zygisk.hpp` (header) |
+| JetBrains Mono NL (Manager font, Regular/Medium) | 2.304 | OFL-1.1 | <https://github.com/JetBrains/JetBrainsMono> | `LICENSES/JetBrainsMono-OFL.txt` |
 
 ## Source availability and patches
 

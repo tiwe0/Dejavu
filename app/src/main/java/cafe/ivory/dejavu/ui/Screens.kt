@@ -1,6 +1,13 @@
 package cafe.ivory.dejavu.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -72,8 +79,20 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.ui.theme.DejavuMono
 import cafe.ivory.dejavu.data.pluginOperationInProgress
 import cafe.ivory.dejavu.data.ConsoleUiState
+import cafe.ivory.dejavu.ui.theme.mono
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -244,25 +263,42 @@ fun PluginsScreen(
             if (selectedTab != 0) onCloseDirectoryEvents()
         }
         Column(Modifier.fillMaxSize()) {
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = MaterialTheme.colorScheme.background,
+            Column(
+                Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                listOf(R.string.plugin_detail_control, R.string.plugin_scope_title, R.string.plugin_detail_info)
-                    .forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedTab == index,
-                            enabled = !busy,
-                            onClick = {
-                                if (index != 0) onCloseDirectoryEvents()
-                                showingInfo = index == 2
-                                if (index == 1) onOpenScope(pluginId) else onShowPluginControl()
-                            },
-                            text = { Text(stringResource(title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        )
-                    }
+                TargetMenu(
+                    targets = (scope + listOfNotNull(target)).distinct(),
+                    selected = target,
+                    onSelect = onSelectTarget,
+                    enabled = !busy,
+                    apps = state.installedApps,
+                    label = stringResource(R.string.plugin_inspect_process),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                SlidingSegmented(
+                    options = listOf(
+                        stringResource(R.string.plugin_detail_control),
+                        stringResource(R.string.plugin_scope_title),
+                        stringResource(R.string.plugin_detail_info),
+                    ),
+                    selected = selectedTab,
+                    enabled = !busy,
+                    onSelect = { index ->
+                        if (index != 0) onCloseDirectoryEvents()
+                        showingInfo = index == 2
+                        if (index == 1) onOpenScope(pluginId) else onShowPluginControl()
+                    },
+                )
             }
-            when (selectedTab) {
+            AnimatedContent(
+                targetState = selectedTab,
+                modifier = Modifier.weight(1f),
+                transitionSpec = { Motion.tab(if (targetState > initialState) 1 else -1) },
+                label = "detail-tab",
+            ) { tab ->
+            Column(Modifier.fillMaxSize()) {
+            when (tab) {
                 1 -> Box(Modifier.weight(1f)) {
                     PluginScopeScreen(
                         id = pluginId,
@@ -286,23 +322,16 @@ fun PluginsScreen(
                 )
                 else -> Column(Modifier.weight(1f)) {
                     if (state.pluginsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TargetMenu(
-                            targets = (scope + listOfNotNull(target)).distinct(),
-                            selected = target,
-                            onSelect = onSelectTarget,
-                            enabled = !busy,
-                            apps = state.installedApps,
-                            label = stringResource(R.string.plugin_inspect_process),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (scope.isEmpty()) {
-                            Text(stringResource(R.string.plugin_scope_empty),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall)
+                    if (scope.isEmpty() || (target != null && !inScope)) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (scope.isEmpty()) {
+                                Text(stringResource(R.string.plugin_scope_empty),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (target != null && !inScope) ErrorBanner(stringResource(R.string.plugin_scope_removed))
                         }
-                        if (target != null && !inScope) ErrorBanner(stringResource(R.string.plugin_scope_removed))
                     }
                     val page = directory?.plugin?.page
                     if (directory != null && page != null) {
@@ -321,34 +350,21 @@ fun PluginsScreen(
                                 targetOffline = state.directoryTargetOffline,
                                 inScope = inScope,
                                 hoistHeader = true,
-                                preview = preview,
+                                preview = preview || tab != selectedTab,
                             )
                         }
                     } else {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            state.directoryRuntimeError?.let { ErrorBanner(it) }
+                            state.directoryRuntimeError?.let {
+                                if (state.directoryTargetOffline) NoticeBanner(it) else ErrorBanner(it)
+                            }
                             if (directory != null) {
-                                StatusPill(stringResource(directory.runState.labelRes),
-                                    directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING)
+                                RuntimeStateBlock(directory.runState, directory.session)
                                 directory.error?.let { ErrorBanner(it) }
-                                val canStop = directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING ||
-                                    directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.ERROR
-                                Button(onClick = {
-                                    if (target != null) {
-                                        if (canStop) onStopDirectory(target, pluginId)
-                                        else if (directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN) onScanDirectory()
-                                        else onStartDirectory(target, pluginId)
-                                    }
-                                }, enabled = target != null && !controlsBusy && (canStop || inScope)) {
-                                    Text(stringResource(when {
-                                        canStop -> R.string.package_stop
-                                        directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN -> R.string.package_check_status
-                                        else -> R.string.package_start
-                                    }))
-                                }
                                 if (directory.plugin.manifest.events != null) {
                                     OutlinedButton(onClick = { if (target != null) onDirectoryEvents(target, pluginId, null) },
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                         enabled = inScope && !controlsBusy && directory.runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING && directory.session != null) {
                                         Text(stringResource(R.string.package_live_events))
                                     }
@@ -374,12 +390,72 @@ fun PluginsScreen(
                                     },
                                 )
                             }
-                            OutlinedButton(onClick = onRefresh, enabled = !controlsBusy) {
-                                Text(stringResource(R.string.package_check_status))
+                            if (directory?.runState != cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN) {
+                                TextButton(onClick = onRefresh, enabled = !controlsBusy, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text(stringResource(R.string.package_check_status))
+                                }
+                            }
+                        }
+                        if (directory != null) {
+                            val runState = directory.runState
+                            val canStop = runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING ||
+                                runState == cafe.ivory.dejavu.data.DirectoryPluginState.ERROR
+                            val unknown = runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN
+                            val working = state.pluginActionId == pluginId
+                            Column {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                    val onClick = {
+                                        if (target != null) {
+                                            if (canStop) onStopDirectory(target, pluginId)
+                                            else if (unknown) onScanDirectory()
+                                            else onStartDirectory(target, pluginId)
+                                        }
+                                    }
+                                    val enabled = target != null && !controlsBusy && (canStop || inScope)
+                                    val label: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {
+                                        AnimatedVisibility(working, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
+                                            Row {
+                                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = LocalContentColor.current)
+                                                Spacer(Modifier.size(10.dp))
+                                            }
+                                        }
+                                        AnimatedContent(
+                                            targetState = when {
+                                                canStop -> R.string.package_stop
+                                                unknown -> R.string.package_check_status
+                                                else -> R.string.package_start
+                                            },
+                                            transitionSpec = { Motion.roll() },
+                                            label = "primary-label",
+                                        ) { Text(stringResource(it)) }
+                                    }
+                                    val press = remember { MutableInteractionSource() }
+                                    val buttonModifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).pressScale(press)
+                                    AnimatedContent(
+                                        targetState = canStop,
+                                        transitionSpec = { fadeIn(tween(Motion.FADE_IN)) togetherWith fadeOut(tween(Motion.FADE_OUT)) },
+                                        label = "primary-action",
+                                    ) { stopMode ->
+                                        if (stopMode) {
+                                            OutlinedButton(onClick = onClick, enabled = enabled, modifier = buttonModifier,
+                                                interactionSource = press,
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                                border = BorderStroke(1.dp, if (enabled) MaterialTheme.colorScheme.error
+                                                    else MaterialTheme.colorScheme.outlineVariant)) { label() }
+                                        } else {
+                                            Button(onClick = onClick, enabled = enabled, modifier = buttonModifier,
+                                                interactionSource = press) { label() }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
+            }
+            }
             }
         }
     } else {
@@ -400,16 +476,20 @@ fun PluginsScreen(
         val importing = state.pluginImporting
         val scanning = state.pluginDirectoryLoading
         val canAdd = state.rootGranted && !busy && !scanning
+        // Stagger only the first time the library appears this session, once rows exist.
+        val hasRows = state.directoryPlugins.isNotEmpty() || state.nativeLibrary.isNotEmpty()
+        val revealList = remember(hasRows) { hasRows && RevealMemory.firstTime("plugins") }
+        val fabPress = remember { MutableInteractionSource() }
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(0.dp, 4.dp, 0.dp, 96.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 if (importing || scanning) {
                     item(key = "progress") {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                             Text(
                                 stringResource(if (importing) R.string.package_zip_importing else R.string.package_scanning),
@@ -420,7 +500,7 @@ fun PluginsScreen(
                     }
                 }
                 state.pluginDirectoryError?.let { error ->
-                    item(key = "scan-error") { ErrorBanner(error) }
+                    item(key = "scan-error") { ErrorBanner(error, Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                 }
                 if (state.directoryPlugins.isEmpty() && state.nativeLibrary.isEmpty() &&
                     !importing && !scanning && state.pluginDirectoryError == null
@@ -432,23 +512,27 @@ fun PluginsScreen(
                         )
                     }
                 }
-                items(state.directoryPlugins, key = { "lua:${it.plugin.manifest.id}" }) { item ->
+                itemsIndexed(state.directoryPlugins, key = { _, it -> "lua:${it.plugin.manifest.id}" }) { index, item ->
                     val id = item.plugin.manifest.id
-                    PluginSummaryCard(
+                    Box(Modifier.animateItem()) { Reveal(index, revealList) {
+                    PluginListRow(
                         name = item.plugin.manifest.name,
-                        metadata = "Lua · ${item.plugin.manifest.version}",
+                        tag = "LUA · ${item.plugin.manifest.version}",
+                        scopeCount = state.pluginScopes[id].orEmpty().size,
                         enabled = !busy,
                         onOpen = { onCloseDirectoryEvents(); onOpenPluginPage(id) },
                     )
+                    } }
                 }
-                items(state.nativeLibrary, key = { "native:${it.artifact.path}" }) { item ->
+                itemsIndexed(state.nativeLibrary, key = { _, it -> "native:${it.artifact.path}" }) { index, item ->
                     val id = item.artifact.id
-                    if (id != null) PluginSummaryCard(
+                    if (id != null) Box(Modifier.animateItem()) { Reveal(state.directoryPlugins.size + index, revealList) { PluginListRow(
                         name = item.artifact.name,
-                        metadata = (if (item.artifact.jit) "JIT" else "Native") + " · " + item.artifact.version,
+                        tag = (if (item.artifact.jit) "JIT" else "NATIVE") + " · " + item.artifact.version,
+                        scopeCount = state.pluginScopes[id].orEmpty().size,
                         enabled = !busy,
                         onOpen = { onOpenPluginPage(id) },
-                    )
+                    ) } }
                 }
             }
             AnimatedVisibility(
@@ -457,20 +541,26 @@ fun PluginsScreen(
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it },
             ) {
-                FloatingActionButton(
+                ExtendedFloatingActionButton(
                     onClick = { if (canAdd) onImportZip() },
-                    modifier = Modifier.semantics { if (!canAdd) disabled() },
-                    containerColor = if (canAdd || importing) MaterialTheme.colorScheme.primaryContainer
+                    interactionSource = fabPress,
+                    modifier = Modifier.pressScale(fabPress, 0.95f).semantics { if (!canAdd) disabled() },
+                    containerColor = if (canAdd || importing) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (canAdd || importing) MaterialTheme.colorScheme.onPrimaryContainer
+                    contentColor = if (canAdd || importing) MaterialTheme.colorScheme.onPrimary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
-                ) {
-                    if (importing) {
-                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.package_add_zip))
-                    }
-                }
+                    icon = {
+                        if (importing) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary)
+                        } else {
+                            Icon(Icons.Rounded.Add, contentDescription = null)
+                        }
+                    },
+                    text = {
+                        Text(stringResource(if (importing) R.string.package_zip_importing else R.string.plugin_import_zip))
+                    },
+                )
             }
         }
     }
@@ -490,13 +580,89 @@ fun PluginsScreen(
             Column(Modifier.fillMaxWidth().padding(20.dp).verticalScroll(rememberScrollState())) {
                 Text(stringResource(R.string.skill_md), style = MaterialTheme.typography.titleLarge)
                 if (skillLoading) CircularProgressIndicator()
-                else SelectionContainer { Text(skillText.orEmpty(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)) }
+                else SelectionContainer { Text(skillText.orEmpty(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono)) }
                 Spacer(Modifier.height(32.dp))
             }
         }
     }
     if (!preview && !scopeEditor && !showingInfo && directory?.plugin?.page == null) state.packageEvents?.takeIf { it.packageId == pluginId && it.target == target }?.let {
         DirectoryPluginEventsSheet(it, onCloseDirectoryEvents)
+    }
+}
+
+@Composable
+private fun PluginListRow(
+    name: String,
+    tag: String,
+    scopeCount: Int,
+    enabled: Boolean,
+    onOpen: () -> Unit,
+) {
+    Column {
+        Surface(onClick = onOpen, enabled = enabled, color = MaterialTheme.colorScheme.background) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PluginMonogram(name)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TypeTag(tag)
+                        Text(
+                            if (scopeCount > 0) stringResource(R.string.plugin_row_scope, scopeCount)
+                            else stringResource(R.string.plugin_row_no_scope),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (scopeCount > 0) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.outline,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Icon(
+                    Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@Composable
+private fun RuntimeStateBlock(runState: cafe.ivory.dejavu.data.DirectoryPluginState, session: String?) {
+    val running = runState == cafe.ivory.dejavu.data.DirectoryPluginState.RUNNING
+    val error = runState == cafe.ivory.dejavu.data.DirectoryPluginState.ERROR
+    ManagerGroup {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.plugin_detail_runtime), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                LiveStatus("", live = running, error = error)
+                AnimatedContent(targetState = runState, transitionSpec = { Motion.roll() }, label = "run-state") { shown ->
+                    Text(stringResource(shown.labelRes), style = MaterialTheme.typography.headlineSmall,
+                        color = if (shown == cafe.ivory.dejavu.data.DirectoryPluginState.ERROR) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurface)
+                }
+            }
+            when {
+                session != null && (running || error) -> Text(stringResource(R.string.detail_session, session),
+                    style = MaterialTheme.typography.mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                runState == cafe.ivory.dejavu.data.DirectoryPluginState.UNKNOWN -> Text(
+                    stringResource(R.string.detail_runtime_hint_unknown),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
@@ -527,7 +693,7 @@ private fun PluginInformation(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(stringResource(R.string.package_plugin_id), style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(id, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
+                    Text(id, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = DejavuMono))
                 }
             }
             item {
@@ -547,7 +713,7 @@ private fun PluginInformation(
                 }
             }
             items(scope, key = { it }) { process ->
-                Text(process, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
+                Text(process, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = DejavuMono))
             }
         }
     }
@@ -657,7 +823,7 @@ fun LogsScreen(
                         Text(
                             line,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
+                                fontFamily = DejavuMono,
                             ),
                             color = when {
                                 line.contains(" E ") || line.contains("FATAL") ->

@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
@@ -71,7 +72,7 @@ internal fun RouterScreen(
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (state.loading || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        StatusPill(stringResource(when {
+                        LiveStatus(stringResource(when {
                             !state.healthKnown && state.failure != null -> R.string.router_unknown
                             state.service == null -> R.string.router_loading
                             !state.service.installed -> R.string.router_unavailable
@@ -81,7 +82,7 @@ internal fun RouterScreen(
                         if (state.service?.installed == false) Text(stringResource(R.string.router_install_hint), style = MaterialTheme.typography.bodySmall)
                         if (state.service?.installed == true) {
                             Text(stringResource(if (state.service.enabled) R.string.router_boot_enabled else R.string.router_boot_disabled), style = MaterialTheme.typography.bodySmall)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
                                 Button(onClick = { onSetRunning(!running) }, enabled = !state.busy && !state.loading && (state.healthKnown || running)) {
                                     Text(stringResource(if (running) R.string.router_stop else R.string.router_start))
                                 }
@@ -100,7 +101,7 @@ internal fun RouterScreen(
                     ManagerGroup {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(stringResource(R.string.router_counters, snapshot.pluginCount, snapshot.pendingJobs), style = MaterialTheme.typography.bodySmall)
-                            if (snapshot.pluginSocket.isNotBlank()) Text(stringResource(R.string.router_plugin_socket, snapshot.pluginSocket), style = MaterialTheme.typography.bodySmall)
+                            if (snapshot.pluginSocket.isNotBlank()) MonoText(stringResource(R.string.router_plugin_socket, snapshot.pluginSocket))
                             if (snapshot.listenTcp) Text(stringResource(R.string.router_compatibility_port, snapshot.listenPort), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = onReloadPlugins, enabled = canManage) { Text(stringResource(R.string.router_reload_plugins)) }
                         }
@@ -110,9 +111,11 @@ internal fun RouterScreen(
             items(snapshot.upstreams, key = { "upstream:${it.id}" }) { upstream ->
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (upstream.isDefault) stringResource(R.string.router_default_hub) else upstream.id,
-                            style = MaterialTheme.typography.titleSmall)
-                        StatusPill(stringResource(if (upstream.connected) R.string.router_hub_online else R.string.router_hub_offline), upstream.connected)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (upstream.isDefault) stringResource(R.string.router_default_hub) else upstream.id,
+                                style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                            LiveStatus(stringResource(if (upstream.connected) R.string.router_hub_online else R.string.router_hub_offline), upstream.connected)
+                        }
                         if (upstream.host.isNotBlank()) MonoText("${upstream.host}:${upstream.port}")
                         if (!upstream.isDefault) {
                             Text(stringResource(R.string.router_source, upstream.source), style = MaterialTheme.typography.bodySmall)
@@ -144,9 +147,9 @@ internal fun RouterScreen(
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth()) {
-                            Column(Modifier.weight(1f)) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(route.route, style = MaterialTheme.typography.titleSmall)
-                                StatusPill(stringResource(if (route.online) R.string.router_route_online else R.string.router_route_offline), route.online)
+                                LiveStatus(stringResource(if (route.online) R.string.router_route_online else R.string.router_route_offline), route.online)
                             }
                             IconButton(onClick = { editing = route }, enabled = canManage) {
                                 Icon(Icons.Rounded.Edit, stringResource(R.string.router_edit_route))

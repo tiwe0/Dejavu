@@ -44,6 +44,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.ui.theme.DejavuMono
+import cafe.ivory.dejavu.ui.theme.signal
 import cafe.ivory.dejavu.data.InstalledApp
 
 @Composable
@@ -51,7 +53,7 @@ fun StatusPill(
     label: String,
     active: Boolean,
     modifier: Modifier = Modifier,
-    activeColor: Color = MaterialTheme.colorScheme.secondary,
+    activeColor: Color = MaterialTheme.colorScheme.signal,
 ) {
     Row(
         modifier = modifier.padding(vertical = 4.dp),
@@ -126,7 +128,7 @@ fun MonoText(
     Text(
         text,
         modifier = modifier,
-        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono),
         color = color,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
@@ -172,7 +174,7 @@ fun TargetMenu(
                     )
                     Text(
                         selected ?: stringResource(R.string.not_selected),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -275,6 +277,26 @@ fun StatusLine(
         }
         if (icon) {
             Spacer(Modifier.width(0.dp))
+        }
+    }
+}
+
+/** Neutral notice for expected preconditions (e.g. the target process is not running). */
+@Composable
+fun NoticeBanner(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Info, contentDescription = null)
+            Text(text, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

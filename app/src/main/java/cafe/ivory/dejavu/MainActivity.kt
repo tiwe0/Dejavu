@@ -9,6 +9,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import cafe.ivory.dejavu.ui.Motion
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -82,6 +94,8 @@ import cafe.ivory.dejavu.ui.OverviewScreen
 import cafe.ivory.dejavu.ui.PluginsScreen
 import cafe.ivory.dejavu.ui.RootRequiredScreen
 import cafe.ivory.dejavu.ui.ConfigurationScreen
+import cafe.ivory.dejavu.ui.ManagerMark
+import androidx.compose.foundation.layout.size
 import cafe.ivory.dejavu.ui.PredictiveBackContent
 import cafe.ivory.dejavu.ui.theme.DejavuTheme
 import kotlinx.coroutines.launch
@@ -103,6 +117,11 @@ private enum class ManagerPage(
 }
 
 private val tabs = ManagerPage.entries.filterNot { it.isToolDetail }
+
+/** Navigation destination used to choose a transition direction. */
+private data class PageKey(val page: ManagerPage, val plugin: String?) {
+    val depth get() = if (page.isToolDetail || plugin != null) 1 else 0
+}
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
@@ -159,6 +178,8 @@ private fun ManagerApp(
     var installerOrigin by rememberSaveable { mutableStateOf(ManagerPage.Overview) }
     val parentPage = if (page == ManagerPage.Installer) installerOrigin else ManagerPage.Tools
     var pluginPageId by remember(page) { mutableStateOf<String?>(null) }
+    var pendingPlugin by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var skipPageTransition by remember { mutableStateOf(false) }
     var scopeEditor by remember(pluginPageId) { mutableStateOf(false) }
     val pluginDetail = pluginPageId?.let { id -> state.directoryPlugins.firstOrNull { it.plugin.manifest.id == id } }
     val nativeDetail = pluginPageId?.let { id -> state.nativeLibrary.firstOrNull { it.artifact.id == id } }
@@ -202,6 +223,20 @@ private fun ManagerApp(
         }
         if (page == ManagerPage.Logs) vm.startLogs() else vm.stopLogs()
         if (page == ManagerPage.Plugins) vm.refreshPluginLibrary(force = false)
+        if (page == ManagerPage.Overview) {
+            vm.refreshPluginLibrary(force = false)
+            vm.loadInstalledApps()
+        }
+    }
+
+    LaunchedEffect(page, pendingPlugin, state.rootGranted) {
+        val (id, process) = pendingPlugin ?: return@LaunchedEffect
+        if (page != ManagerPage.Plugins || !state.rootGranted) return@LaunchedEffect
+        pendingPlugin = null
+        if (vm.selectPlugin(id)) {
+            pluginPageId = id
+            vm.selectTarget(process)
+        }
     }
 
     LaunchedEffect(page, pluginPageId, state.selectedTarget, state.activePluginId, state.rootGranted) {
@@ -243,7 +278,11 @@ private fun ManagerApp(
                 moduleState = moduleState,
                 onManageModule = { installerOrigin = ManagerPage.Overview; page = ManagerPage.Installer },
                 onManagePlugins = { page = ManagerPage.Plugins },
-                onLinkUnavailable = { vm.message(it, error = true) },
+                onRefresh = { vm.refresh(); moduleVm.refresh() },
+                onOpenPlugin = { id, process ->
+                    pendingPlugin = id to process
+                    page = ManagerPage.Plugins
+                },
             )
             ManagerPage.Plugins -> PluginsScreen(
                 state = state,
@@ -281,6 +320,7 @@ private fun ManagerApp(
                 onOpenLogs = { page = ManagerPage.Logs },
                 onOpenRouter = { page = ManagerPage.Router },
                 onOpenInstaller = { installerOrigin = ManagerPage.Tools; page = ManagerPage.Installer },
+                onLinkUnavailable = { vm.message(it, error = true) },
             )
             ManagerPage.Installer -> ModuleInstallScreen(moduleState, moduleVm::install)
             ManagerPage.Router -> RouterScreen(
@@ -313,21 +353,44 @@ private fun ManagerApp(
                         containerColor = MaterialTheme.colorScheme.background,
                     ),
                     title = {
-                        Text(
-                            when {
-                                !state.rootGranted -> stringResource(R.string.permission_title)
-                                pluginDetail != null -> pluginDetail.plugin.manifest.name
-                                nativeDetail != null -> nativeDetail.artifact.name
-                                else -> stringResource(page.title)
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        val titleText = when {
+                            !state.rootGranted -> stringResource(R.string.permission_title)
+                            page == ManagerPage.Overview -> null
+                            pluginDetail != null -> pluginDetail.plugin.manifest.name
+                            nativeDetail != null -> nativeDetail.artifact.name
+                            else -> stringResource(page.title)
+                        }
+                        AnimatedContent(
+                            targetState = titleText,
+                            transitionSpec = { Motion.roll() },
+                            label = "title",
+                        ) { text ->
+                            if (text == null) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    ManagerMark(Modifier.size(40.dp))
+                                    Text(
+                                        "Dejavu",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        modifier = Modifier.padding(start = 6.dp),
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     },
                     navigationIcon = {
-                        if (state.rootGranted && (page.isToolDetail || pluginPageId != null)) {
+                        AnimatedVisibility(
+                            visible = state.rootGranted && (page.isToolDetail || pluginPageId != null),
+                            enter = fadeIn(tween(Motion.FADE_IN)) + slideInHorizontally(Motion.drawerOffset) { it / 2 },
+                            exit = fadeOut(tween(Motion.FADE_OUT)) + slideOutHorizontally(tween(Motion.EXIT)) { it / 2 },
+                        ) {
                             IconButton(enabled = !pluginsBusy, onClick = {
                                 if (pluginPageId != null) closePluginPage() else page = parentPage
                             }) {
@@ -369,13 +432,18 @@ private fun ManagerApp(
                         }
                     },
                 )
-                if (state.loading) {
+                AnimatedVisibility(state.loading, enter = fadeIn(tween(Motion.FADE_IN)), exit = fadeOut(tween(Motion.EXIT))) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
         },
         bottomBar = {
-            if (!state.rootGranted || page.isToolDetail || pluginPageId != null) return@Scaffold
+            AnimatedVisibility(
+                visible = state.rootGranted && !page.isToolDetail && pluginPageId == null,
+                enter = slideInVertically(Motion.drawerOffset) { it } + fadeIn(tween(Motion.FADE_IN)),
+                exit = slideOutVertically(tween(Motion.EXIT, easing = FastOutLinearInEasing)) { it } +
+                    fadeOut(tween(Motion.FADE_OUT)),
+            ) {
             Column {
                 HorizontalDivider()
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
@@ -392,6 +460,7 @@ private fun ManagerApp(
                         )
                     }
                 }
+            }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -431,6 +500,7 @@ private fun ManagerApp(
                 enabled = page.isToolDetail || pluginPageId != null,
                 canNavigate = !pluginsBusy,
                 navigationKey = listOf(page, pluginPageId, scopeEditor),
+                onGestureCommitted = { skipPageTransition = true },
                 onBack = {
                     if (pluginPageId != null) closePluginPage() else page = parentPage
                 },
@@ -443,7 +513,25 @@ private fun ManagerApp(
                     )
                 },
             ) {
-                renderPage(page, pluginPageId, scopeEditor, false)
+                val destination = PageKey(page, pluginPageId)
+                LaunchedEffect(destination) { skipPageTransition = false }
+                AnimatedContent(
+                    targetState = destination,
+                    transitionSpec = {
+                        when {
+                            skipPageTransition -> Motion.none()
+                            targetState.depth > initialState.depth -> Motion.forward()
+                            targetState.depth < initialState.depth -> Motion.backward()
+                            else -> Motion.fadeThrough()
+                        }
+                    },
+                    label = "page",
+                ) { key ->
+                    // The outgoing page renders as a read-only preview so it never re-attaches
+                    // listeners or secure-window flags while it animates away.
+                    val leaving = transition.targetState == EnterExitState.PostExit
+                    renderPage(key.page, key.plugin, key.plugin == pluginPageId && scopeEditor, leaving)
+                }
             }
         }
     }

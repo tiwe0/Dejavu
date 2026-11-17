@@ -196,7 +196,6 @@ internal fun PluginPageScreen(
                     StatusPill(
                         label = stringResource(plugin.runState.labelRes),
                         active = plugin.runState == DirectoryPluginState.RUNNING,
-                        activeColor = MaterialTheme.colorScheme.primary,
                     )
                 }
                 is PluginPageBlock.Button -> item {
@@ -293,7 +292,6 @@ private fun PluginPageEventStatus(events: PackageEventsUi?, waitingForStart: Boo
                 },
             ),
             active = events?.connected == true,
-            activeColor = MaterialTheme.colorScheme.primary,
         )
         events?.listenPort?.let { port ->
             Text(stringResource(R.string.package_page_listen_address, port), style = MaterialTheme.typography.bodySmall)

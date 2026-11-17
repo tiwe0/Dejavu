@@ -20,7 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.AltRoute
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -68,6 +69,7 @@ internal fun ConfigurationScreen(
     onOpenLogs: () -> Unit,
     onOpenRouter: () -> Unit,
     onOpenInstaller: () -> Unit,
+    onLinkUnavailable: (String) -> Unit,
 ) {
     val dark = when (appearance.mode) {
         ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -108,7 +110,7 @@ internal fun ConfigurationScreen(
                 SectionTitle(stringResource(R.string.configuration_diagnostics))
                 ManagerGroup {
                     ManagerLinkRow(
-                        Icons.Rounded.Settings,
+                        Icons.Rounded.SystemUpdate,
                         stringResource(R.string.module_install_title),
                         stringResource(R.string.module_install_summary),
                         Icons.AutoMirrored.Rounded.KeyboardArrowRight,
@@ -124,7 +126,7 @@ internal fun ConfigurationScreen(
                     )
                     HorizontalDivider()
                     ManagerLinkRow(
-                        Icons.Rounded.Settings,
+                        Icons.Rounded.AltRoute,
                         stringResource(R.string.router_title),
                         stringResource(R.string.router_summary),
                         Icons.AutoMirrored.Rounded.KeyboardArrowRight,
@@ -133,6 +135,7 @@ internal fun ConfigurationScreen(
                 }
             }
         }
+        item { ProjectReferences(onLinkUnavailable) }
     }
     if (panel != null) {
         ModalBottomSheet(onDismissRequest = { panel = null }) {

@@ -18,16 +18,20 @@ an application that controls its own process, without Zygisk.
 
 <table>
   <tr>
-    <td align="center"><img src="app/docs/manager-overview.png" width="270" alt="Manager overview in the Ocean dark theme"><br><strong>Overview</strong><br>Module, root and helper status</td>
-    <td align="center"><img src="app/docs/manager-configuration.png" width="270" alt="Collapsed Manager configuration showing appearance and diagnostics"><br><strong>Configuration</strong><br>Appearance choices tucked behind concise entries</td>
+    <td align="center"><img src="app/docs/manager-overview.png" width="200" alt="Manager overview: injection chain and plugins grouped by target process"><br><strong>Overview</strong><br>Injection chain and scope by process</td>
+    <td align="center"><img src="app/docs/manager-plugins.png" width="200" alt="Plugin library with type, version and scope count"><br><strong>Plugins</strong><br>Identity, type tag and scope</td>
+    <td align="center"><img src="app/docs/manager-plugin-detail.png" width="200" alt="Plugin detail with inspected process, Control / Scope / Info and runtime state"><br><strong>Plugin detail</strong><br>Inspected process and runtime state</td>
+    <td align="center"><img src="app/docs/manager-configuration.png" width="200" alt="Configuration with appearance, diagnostics and About"><br><strong>Configuration</strong><br>Appearance, diagnostics and About</td>
   </tr>
 </table>
 
-<sub>Actual device captures from the development Manager; the captured module version may precede the current release.</sub>
+<sub>Actual device captures from the development Manager in the default Forest light theme; the captured module version may precede the current release.</sub>
 
 The Manager has three main pages: **Overview**, **Plugins** and **Configuration**.
-Plugin rows show identity first; **Control / Scope / Info** inside each plugin
-hold its runtime controls, target selection and complete metadata.
+Overview leads with the injection chain (module → root → helper) and groups
+plugin scopes by target process. Plugin rows show identity, type and scope;
+**Control / Scope / Info** inside each plugin hold its runtime controls, target
+selection and complete metadata.
 
 - **One scope per plugin.** Select multiple apps or exact process names. The
   framework merges their injection targets; changing the inspected process does
