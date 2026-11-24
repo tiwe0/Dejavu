@@ -336,7 +336,7 @@ Reusable skills for common scenarios live in [SKILLS/](SKILLS/README.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **app and Zygisk module package version** (currently `0.9.6`). The app reads
+  **app and Zygisk module package version** (currently `0.9.7`). The app reads
   its version and version code from the module metadata and embeds that version's ZIP.
   This version remains independent of the core library ABI.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`
