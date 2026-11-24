@@ -17,11 +17,73 @@ java.release(handle)
 - `java.new` constructs an object and returns a process-session scoped integer
   handle.
 - `java.load_dex(path)` loads a raw `.dex` file with
-  `android.system.InMemoryDexClassLoader` (API 26+) and returns a ClassLoader
-  handle. Use `"<loader_handle>:<class_name>"` as the class argument of
-  `java.invoke`/`java.new` to resolve classes from that loader.
+  `dalvik.system.InMemoryDexClassLoader` (API 26+) and returns a ClassLoader
+  handle. Use `"<loader_handle>:<class_name>"` (or `java.use(cls, loader)`) to
+  resolve classes from that loader.
 - `java.release` deletes the global reference behind a handle. Releasing a
   loader handle does not unload classes already loaded from it.
+
+## Frida-style proxy API (`java.use`, `obj:method(...)`, fields & arrays)
+
+In addition to raw JNI signatures, the persistent Lua session provides a cached
+reflection proxy layer built on top of `java.invoke`:
+
+```lua
+local app <close> = java.app() -- shortcut for ActivityThread.currentApplication()
+local pkg = app:getPackageName()
+local intent <close> = app:getPackageManager():getLaunchIntentForPackage(pkg)
+
+-- Direct class call construction + proxy arguments (instance & Class<?>)
+local Intent = java.use("android.content.Intent")
+local MainActivity = java.use("com.example.MainActivity")
+local explicit <close> = Intent(app, MainActivity)
+
+-- Overload auto-matching, explicit :overload(...), and typed primitive / null markers
+local StringBuilder = java.use("java.lang.StringBuilder")
+local sb <close> = StringBuilder("hello")
+sb:append(" world")
+local String = java.use("java.lang.String")
+local t1 = String.valueOf:overload("long")(42)
+local t2 = String.valueOf(java.long(42))
+obj:ambig(java.null("java.io.File"))
+
+-- Static/instance fields, __cast views, __instanceof, __str, and REPL __inspect
+local Build = java.use("android.os.Build")
+local model = Build.MODEL
+obj.timeout = 5000
+local base = obj:__cast("com.example.Base") -- also accepts a class proxy
+if obj:__instanceof(base:__class()) then print(obj:__str()) end
+print(StringBuilder:__inspect("append"))
+
+-- Arrays (1-based Lua arr[i]/ipairs + 0-based __get/__set) and binary-safe byte[]
+local MD = java.use("java.security.MessageDigest")
+local md <close> = MD.getInstance("SHA-256")
+local digest <close> = md:digest(java.bytes("hello"))
+local raw_bytes = digest:__bytes()
+local names <close> = java.array("java.lang.String", {"a", "b"})
+for i, v in ipairs(names) do print(i, v) end
+
+-- Auto-closing collection/Map iteration & recursive Java -> Lua conversion (ideal for RPC!)
+-- Arrays/Iterables yield (1-based index, item) so null elements never truncate the loop.
+for i, item in java.each(pkgList) do print(i, item and item.packageName) end
+-- Maps yield (key_or_java_NULL, value) so null keys never truncate the loop.
+for k, v in java.each(headersMap) do print(k == java.NULL and "null" or k:__str(), v and v:__str()) end
+local plain_lua = java.to_lua(resultMap, { bytes = "hex" }) -- JSON/UTF-8 safe
+
+-- Direct hook installation from a static or instance method proxy (or :overload)
+local hook_id = String.valueOf:overload("long"):hook(c_source)
+local on_create_id = java.use("android.app.Activity").onCreate:hook(c_source)
+```
+
+To avoid collisions with real Java method names (such as `WakeLock:release()` or
+`obj:id()`), proxy meta-operations use the `__` prefix (`__id`, `__is_alive`,
+`__release`, `__detach`, `__class`, `__class_name`, `__instanceof`, `__str`,
+`__inspect`, `__each`, `__cast`, `__invoke`, `__field`, `__set_field`,
+`__length`, `__get`, `__set`, `__bytes`, `__to_table`, `Cls:__new`) alongside
+module helpers (`java.app`, `java.release`, `java.id`, `java.detach`,
+`java.is_alive`, `java.is_ref`, `java.is_class`, `java.cast`, `java.instanceof`,
+`java.str`, `java.each`, `java.to_lua`, `java.bytes`, `java.array`, `java.NULL`,
+`java.boolean`/`byte`/`char`/`short`/`int`/`long`/`float`/`double`/`null`).
 
 ## Automatic handle release & resource scopes
 
@@ -35,9 +97,9 @@ managed Lua 5.4 references:
   to release immediately when leaving a lexical block (even on error).
 - **Scoped cleanup (`java.scope`)**: wraps a function and releases every Java
   handle created inside it in LIFO order on return or error; call `scope:keep(h)`
-  to promote a handle out of the scope, or `h:detach()` to transfer raw integer
-  ownership (disabling GC auto-release).
-- **Explicit `java.release(h)` / `h:release()`**: remains supported and disarms
+  to promote a handle out of the scope, or `h:__detach()` / `java.detach(h)` to
+  transfer raw integer ownership (disabling GC auto-release).
+- **Explicit `java.release(h)` / `h:__release()`**: remains supported and disarms
   `__gc` so double-release cannot occur. `loader .. ":com.example.Cls"` works
   through `__concat`.
 - **Registration resources (`dejavu.scope()` / Manager `ctx.track_*`)**: long-lived
@@ -118,8 +180,8 @@ corresponding parameter descriptor.
 | `J` | integer | 64-bit signed; Lua 5.4 integers are exact |
 | `F` | number or integer | converted to `float` |
 | `D` | number or integer | converted to `double` |
-| `Ljava/lang/String;` | string, nil or String handle | UTF-8 ↔ UTF-16 conversion; `nil` is null |
-| other object / array descriptor | integer handle or nil | handles come from `java.new` / object return values; no auto array creation |
+| `Ljava/lang/String;` / `Ljava/lang/CharSequence;` / `Ljava/lang/Object;` | string, nil, or object/class proxy | UTF-8 ↔ UTF-16 conversion for Lua strings; `nil` is null |
+| other object / array descriptor | object proxy, class proxy (`Class<?>`), integer handle, or nil | validated with JNI `IsInstanceOf`; create arrays with `java.array` / `java.bytes` |
 
 Return values use the same table in reverse:
 
@@ -130,7 +192,7 @@ Return values use the same table in reverse:
 | `B C S I J` | integer |
 | `F D` | number |
 | `Ljava/lang/String;` | string (UTF-8), or nil |
-| other object / array | integer handle, or nil |
+| other object / array | managed Java proxy handle (or raw integer via CLI), or nil |
 | Java exception | Lua error (`Throwable.toString()`, exception cleared) |
 
 ## Chaining invocation results
@@ -182,22 +244,24 @@ Object handles are *not* jobject pointers and only have meaning to
 - Handles are positive integers scoped to the target process. They stay valid
   across CLI reconnects and REPL commands while the process lives; restarting
   the target app invalidates them.
-- Object handles are JNI global references. Up to 1024 live handles are
-  allowed; release them with `java.release(handle)` or the process must exit
-  to clean them up.
+- Object handles are JNI global references. Up to 8192 live handles are
+  allowed; release them with `<close>`, `java.scope`, `java.release(handle)`,
+  or drop references for `__gc` cleanup.
 - Arguments and return values are synchronous. A blocking Java call blocks the
   Lua control channel until it returns; there is no timeout or cancellation.
 
 ## Limits
 
-- Exact JNI signature required; overloads are selected by signature.
-- Arrays are opaque handles only: no element access or array creation yet.
-- No field access, no interface dispatch beyond normal JNI `GetMethodID`
-  semantics, no Java varargs helpers, no synchronized/wait wrappers.
+- `method:hook(c_source)` delegates to LSPlant (`hook.install`), which only
+  hooks methods (not `<init>` constructors) in the target app's ClassLoader
+  (not classes loaded via `java.load_dex`).
+- No automatic Java varargs packing (`Object...` expects a `java.array(...)`),
+  and no `synchronized` / `Object.wait` wrappers.
 - Classes are loaded through the target app's ClassLoader (with `FindClass`
   as fallback). Class-loading or resolution failures surface as Lua errors.
-- All conversions are range-checked; mismatches are reported as Lua errors.
-  Native faults such as a broken ART/JNI state cannot be recovered from.
+- All conversions, casts, field lookups, and array operations are type- and
+  range-checked; mismatches are reported as Lua errors. Native faults such as
+  a broken ART/JNI state cannot be recovered from.
 
 ## Validation
 

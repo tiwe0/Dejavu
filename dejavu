@@ -740,7 +740,7 @@ def _java_export_lua(expr: str) -> str:
     return (
         f"local _r = {expr}; "
         "if type(java) == 'table' and type(java.is_ref) == 'function' and java.is_ref(_r) "
-        "then return _r:detach() end; return _r"
+        "then return java.detach(_r) end; return _r"
     )
 
 

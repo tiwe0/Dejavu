@@ -93,13 +93,18 @@ object LuaPackageScripts {
                 return lease
             end
             function ctx.track_java(ref)
-                assert(ref ~= nil, "ctx.track_java expects a Java object handle")
+                local is_valid_ref = type(java) == "table" and type(java.is_ref) == "function" and java.is_ref(ref)
+                local is_valid_int = type(ref) == "number" and math.type(ref) == "integer" and ref > 0
+                assert(is_valid_ref or is_valid_int, "ctx.track_java expects a Java object handle or positive handle id")
                 ctx.defer(function()
                     if type(java) == "table" and type(java.release) == "function" then
                         if java.is_ref and java.is_ref(ref) then
-                            if ref:is_alive() then ref:release() end
+                            if java.is_alive(ref) then java.release(ref) end
                         else
-                            java.release(ref)
+                            local ok_rel, err_rel = pcall(java.release, ref)
+                            if not ok_rel and not tostring(err_rel):find("unknown Java object handle", 1, true) then
+                                return false, err_rel
+                            end
                         end
                     end
                     return true
