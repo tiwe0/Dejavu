@@ -450,7 +450,71 @@ private fun runPackageLifecycleRegression(manifest: PluginPackageManifest, examp
         assert(${run(LuaPackageScripts.snapshot())} == "dejavu-packages-v1\n${example.manifest.id}\trunning\t$session")
         ${run(LuaPackageScripts.stop(example.manifest.id, session))}
         assert(${run(LuaPackageScripts.snapshot())} == "dejavu-packages-v1")
-        print("OK: Lua package ownership, idempotence, quoting and retryable start/stop cleanup")
+        -- Verify ctx resource tracking: LIFO auto-cleanup on stop, rollback on start error, and retryable busy RPC.
+        tracked_log = {}
+        hook = {
+          remove = function(id) tracked_log[#tracked_log + 1] = "hook:" .. id end,
+          stream_release = function(l) tracked_log[#tracked_log + 1] = "stream:" .. l end,
+        }
+        native = { uninstall = function(id) tracked_log[#tracked_log + 1] = "native:" .. id end }
+        java = { release = function(h) tracked_log[#tracked_log + 1] = "java:" .. h end }
+        rpc_busy = true
+        local tracked_pkg = ${longLuaString(LuaPackageScripts.start(
+            ImportedPluginPackage(
+                PluginPackageManifest("tracked", "Tracked", "1.0.0", "", "entry.lua", listOf("entry.lua")),
+                mapOf("entry.lua" to """
+                    return {
+                      start = function(ctx)
+                        ctx.track_rpc({ unregister = function()
+                          tracked_log[#tracked_log + 1] = "rpc"
+                          if rpc_busy then return false, "busy" end
+                          return true
+                        end })
+                        ctx.track_hook(7)
+                        ctx.track_native_hook(8)
+                        ctx.track_stream("s1")
+                        ctx.track_java(9)
+                        ctx.defer(function() tracked_log[#tracked_log + 1] = "defer" end)
+                        return true
+                      end,
+                      stop = function(ctx) return true end,
+                      status = function(ctx) return "ok" end,
+                    }
+                """.trimIndent()),
+            ),
+            session,
+        ))}
+        run(tracked_pkg)
+        assert(not pcall(run, ${longLuaString(LuaPackageScripts.stop("tracked", session))}))
+        assert(${run(LuaPackageScripts.snapshot())} == "dejavu-packages-v1\ntracked\terror\t$session")
+        assert(table.concat(tracked_log, ",") == "defer,java:9,stream:s1,native:8,hook:7,rpc")
+        rpc_busy = false
+        ${run(LuaPackageScripts.stop("tracked", session))}
+        assert(${run(LuaPackageScripts.snapshot())} == "dejavu-packages-v1")
+        assert(table.concat(tracked_log, ",") == "defer,java:9,stream:s1,native:8,hook:7,rpc,rpc")
+        -- Rollback on start failure automatically cleans up tracked resources.
+        rollback_log = {}
+        local failing_tracked = ${longLuaString(LuaPackageScripts.start(
+            ImportedPluginPackage(
+                PluginPackageManifest("rollback", "Rollback", "1.0.0", "", "entry.lua", listOf("entry.lua")),
+                mapOf("entry.lua" to """
+                    return {
+                      start = function(ctx)
+                        ctx.defer(function() rollback_log[#rollback_log + 1] = "first" end)
+                        ctx.defer(function() rollback_log[#rollback_log + 1] = "second" end)
+                        error("boom after tracking")
+                      end,
+                      stop = function(ctx) return true end,
+                      status = function(ctx) return "ok" end,
+                    }
+                """.trimIndent()),
+            ),
+            session,
+        ))}
+        assert(not pcall(run, failing_tracked))
+        assert(table.concat(rollback_log, ",") == "second,first")
+        assert(${run(LuaPackageScripts.snapshot())} == "dejavu-packages-v1")
+        print("OK: Lua package ownership, idempotence, quoting, resource tracking and retryable start/stop cleanup")
     """.trimIndent()
     val file = File.createTempFile("dejavu-package-lifecycle-", ".lua")
     try {

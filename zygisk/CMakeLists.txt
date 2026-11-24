@@ -56,6 +56,17 @@ add_custom_command(
     VERBATIM
 )
 
+set(LUA_RESOURCES_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/lua-resources)
+add_custom_command(
+    OUTPUT ${LUA_RESOURCES_GENERATED_DIR}/lua_resources_bootstrap_generated.h
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/config/resources.lua
+        -DOUTPUT=${LUA_RESOURCES_GENERATED_DIR}/lua_resources_bootstrap_generated.h
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-lua-resources.cmake
+    DEPENDS config/resources.lua scripts/generate-lua-resources.cmake
+    VERBATIM
+)
+
 set(HOOK_BRIDGE_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/hook-bridge)
 add_custom_command(
     OUTPUT ${HOOK_BRIDGE_GENERATED_DIR}/hook_bridge_dex.h
@@ -73,6 +84,7 @@ add_custom_command(
 
 add_library(dejavu_agent SHARED
     ${LUA_RPC_GENERATED_DIR}/lua_rpc_bootstrap_generated.h
+    ${LUA_RESOURCES_GENERATED_DIR}/lua_resources_bootstrap_generated.h
     ${HOOK_BRIDGE_GENERATED_DIR}/hook_bridge_dex.h
     src/aarch64_adrp_add.cpp
     src/art_elf_resolver.cpp
@@ -125,6 +137,7 @@ target_include_directories(dejavu_agent PRIVATE
     ${HOOK_BRIDGE_GENERATED_DIR}
     ${JIT_PRELUDE_GENERATED_DIR}
     ${LUA_RPC_GENERATED_DIR}
+    ${LUA_RESOURCES_GENERATED_DIR}
 )
 add_dependencies(dejavu_agent jit_prelude_generated)
 target_link_libraries(dejavu_agent PRIVATE kcp_static)

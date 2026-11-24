@@ -13,6 +13,7 @@
 #include "hook_bridge_dex.h"
 #include "hook_api_runtime.h"
 #include "lua_stream_wait.h"
+#include "lua_resources_bootstrap_generated.h"
 #include "lua_rpc_bootstrap_generated.h"
 
 namespace {
@@ -522,6 +523,18 @@ bool HookManager::start_control(JNIEnv *env, jobject app_class_loader, const std
         // stopped instance for the remaining control-session lifetime.
         impl_->lua_rpc->shutdown();
         return false;
+    }
+    {
+        dejavu_value bootstrap_result = {};
+        status = impl_->runtime->control_session_eval(impl_->session, kLuaResourcesBootstrap,
+                                                      &bootstrap_result, runtime_error,
+                                                      sizeof(runtime_error));
+        impl_->runtime->value_release(&bootstrap_result);
+        if (status != DEJAVU_OK) {
+            impl_->lua_rpc->shutdown();
+            set_error(error, runtime_error);
+            return false;
+        }
     }
     LuaStreamWaitScope wait_scope;
     dejavu_value result = {};

@@ -736,27 +736,34 @@ def java_call_arguments(values: list[str]) -> str:
     return "".join(f", {lua_argument_literal(value)}" for value in values)
 
 
+def _java_export_lua(expr: str) -> str:
+    return (
+        f"local _r = {expr}; "
+        "if type(java) == 'table' and type(java.is_ref) == 'function' and java.is_ref(_r) "
+        "then return _r:detach() end; return _r"
+    )
+
+
 def command_java(args: argparse.Namespace) -> int:
     action = args.java_action
     if action == "invoke":
-        code = (
-            f"return java.invoke({java_target_literal(args.target)}, "
+        expr = (
+            f"java.invoke({java_target_literal(args.target)}, "
             f"{lua_quote(args.method)}, {lua_quote(args.signature)}"
             f"{java_call_arguments(args.arguments)})"
         )
-        return exec_inline(args, args.process, code)
+        return exec_inline(args, args.process, _java_export_lua(expr))
     if action == "new":
-        code = (
-            f"return java.new({lua_quote(args.class_name)}, "
+        expr = (
+            f"java.new({lua_quote(args.class_name)}, "
             f"{lua_quote(args.signature)}{java_call_arguments(args.arguments)})"
         )
-        return exec_inline(args, args.process, code)
+        return exec_inline(args, args.process, _java_export_lua(expr))
     if action == "release":
         return exec_inline(args, args.process, f"return java.release({args.handle})")
     if action in ("load_dex", "load-dex"):
-        return exec_inline(
-            args, args.process, f"return java.load_dex({lua_quote(args.path)})"
-        )
+        expr = f"java.load_dex({lua_quote(args.path)})"
+        return exec_inline(args, args.process, _java_export_lua(expr))
     fail(f"unsupported java action: {action}")
 
 

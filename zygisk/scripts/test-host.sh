@@ -171,3 +171,4 @@ LUA_OBJECT="${OUT_DIR}/lua-lib.o" bash "${ROOT_DIR}/tests/test-agent-startup-scr
 "${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_test.lua" "${ROOT_DIR}"
 "${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_compile_test.lua" "${ROOT_DIR}"
 "${OUT_DIR}/lua" "${ROOT_DIR}/tests/hookx_bundle_test.lua" "${ROOT_DIR}"
+"${OUT_DIR}/lua" "${ROOT_DIR}/tests/resources_test.lua" "${ROOT_DIR}"

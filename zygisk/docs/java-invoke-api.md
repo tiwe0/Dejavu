@@ -23,6 +23,30 @@ java.release(handle)
 - `java.release` deletes the global reference behind a handle. Releasing a
   loader handle does not unload classes already loaded from it.
 
+## Automatic handle release & resource scopes
+
+Inside the persistent Lua control session, handles returned by `java.new`,
+`java.load_dex`, and object/array-returning `java.invoke` calls are wrapped in
+managed Lua 5.4 references:
+
+- **GC fallback (`__gc`)**: dropping the last Lua reference releases the
+  underlying JNI global reference automatically on garbage collection.
+- **Deterministic `<close>` (`__close`)**: use `local obj <close> = java.new(...)`
+  to release immediately when leaving a lexical block (even on error).
+- **Scoped cleanup (`java.scope`)**: wraps a function and releases every Java
+  handle created inside it in LIFO order on return or error; call `scope:keep(h)`
+  to promote a handle out of the scope, or `h:detach()` to transfer raw integer
+  ownership (disabling GC auto-release).
+- **Explicit `java.release(h)` / `h:release()`**: remains supported and disarms
+  `__gc` so double-release cannot occur. `loader .. ":com.example.Cls"` works
+  through `__concat`.
+- **Registration resources (`dejavu.scope()` / Manager `ctx.track_*`)**: long-lived
+  registrations (`rpc.register`, `hook.install`, `native.install*`,
+  `hook.stream_acquire`) are **not** tied to `__gc`; track them with
+  `dejavu.scope()` or Manager plugin `ctx.track_rpc` / `ctx.track_hook` /
+  `ctx.track_native_hook` / `ctx.track_stream` / `ctx.track_java` / `ctx.defer`
+  for deterministic LIFO cleanup (with retryable `"busy"` preservation on `stop`).
+
 ## Examples
 
 Static methods and primitive conversions:

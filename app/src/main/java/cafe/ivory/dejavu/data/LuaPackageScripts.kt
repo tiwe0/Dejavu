@@ -56,6 +56,76 @@ object LuaPackageScripts {
                 assert(type(path) == "string" and sources[path] ~= nil, "undeclared plugin resource")
                 return sources[path]
             end
+            local resources = {}
+            function ctx.defer(fn)
+                assert(type(fn) == "function", "ctx.defer expects a function")
+                resources[#resources + 1] = fn
+                return fn
+            end
+            function ctx.track_rpc(service)
+                assert(type(service) == "table" and type(service.unregister) == "function",
+                       "ctx.track_rpc expects an RPC service")
+                ctx.defer(function() return service:unregister() end)
+                return service
+            end
+            function ctx.track_hook(hook_id)
+                assert(type(hook_id) == "number", "ctx.track_hook expects a hook id")
+                ctx.defer(function()
+                    if type(hook) == "table" and type(hook.remove) == "function" then hook.remove(hook_id) end
+                    return true
+                end)
+                return hook_id
+            end
+            function ctx.track_native_hook(hook_id)
+                assert(type(hook_id) == "number", "ctx.track_native_hook expects a native hook id")
+                ctx.defer(function()
+                    if type(native) == "table" and type(native.uninstall) == "function" then native.uninstall(hook_id) end
+                    return true
+                end)
+                return hook_id
+            end
+            function ctx.track_stream(lease)
+                assert(lease ~= nil, "ctx.track_stream expects a stream lease")
+                ctx.defer(function()
+                    if type(hook) == "table" and type(hook.stream_release) == "function" then hook.stream_release(lease) end
+                    return true
+                end)
+                return lease
+            end
+            function ctx.track_java(ref)
+                assert(ref ~= nil, "ctx.track_java expects a Java object handle")
+                ctx.defer(function()
+                    if type(java) == "table" and type(java.release) == "function" then
+                        if java.is_ref and java.is_ref(ref) then
+                            if ref:is_alive() then ref:release() end
+                        else
+                            java.release(ref)
+                        end
+                    end
+                    return true
+                end)
+                return ref
+            end
+            function ctx.cleanup()
+                local remaining, first_error = {}, nil
+                for i = #resources, 1, -1 do
+                    local fn = resources[i]
+                    local ok_item, res_item, detail = pcall(fn)
+                    if not ok_item then
+                        remaining[#remaining + 1] = fn
+                        if first_error == nil then first_error = tostring(res_item) end
+                    elseif res_item == false then
+                        remaining[#remaining + 1] = fn
+                        if first_error == nil then
+                            first_error = detail ~= nil and tostring(detail) or "cleanup returned false"
+                        end
+                    end
+                end
+                resources = {}
+                for i = #remaining, 1, -1 do resources[#resources + 1] = remaining[i] end
+                if first_error ~= nil then return false, first_error end
+                return true
+            end
             local record = {session = session, state = "error", ctx = ctx}
             registry[id] = record
             local ok, failure = pcall(function()
@@ -72,6 +142,12 @@ object LuaPackageScripts {
                     cleaned, stopped = pcall(record.api.stop, ctx)
                     if cleaned and stopped == false then cleaned, stopped = false, "stop returned false" end
                     cleanup_error = stopped
+                end
+                local drained, drain_error = ctx.cleanup()
+                if not drained then
+                    if cleaned then cleanup_error = drain_error
+                    else cleanup_error = tostring(cleanup_error) .. "; " .. tostring(drain_error) end
+                    cleaned = false
                 end
                 if cleaned then registry[id] = nil else record.error = tostring(cleanup_error) end
                 error(id .. " start failed: " .. tostring(failure) ..
@@ -100,9 +176,17 @@ object LuaPackageScripts {
             assert(type(record.api) == "table" and type(record.api.stop) == "function",
                    "plugin cleanup is unavailable; restart the target process")
             local ok, result = pcall(record.api.stop, record.ctx)
-            if not ok or result == false then
-                record.state, record.error = "error", tostring(result)
-                error(id .. " stop failed: " .. tostring(result), 0)
+            local drained, drain_error = true, nil
+            if type(record.ctx) == "table" and type(record.ctx.cleanup) == "function" then
+                drained, drain_error = record.ctx.cleanup()
+            end
+            if not ok or result == false or not drained then
+                local message = (not ok or result == false) and tostring(result) or tostring(drain_error)
+                if (not ok or result == false) and not drained then
+                    message = message .. "; " .. tostring(drain_error)
+                end
+                record.state, record.error = "error", message
+                error(id .. " stop failed: " .. message, 0)
             end
             if record.socket ~= nil then
                 hook.stream_release(record.socket.lease)
