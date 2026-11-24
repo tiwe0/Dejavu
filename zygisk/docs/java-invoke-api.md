@@ -250,6 +250,30 @@ Object handles are *not* jobject pointers and only have meaning to
 - Arguments and return values are synchronous. A blocking Java call blocks the
   Lua control channel until it returns; there is no timeout or cancellation.
 
+## Interactive CLI REPL
+
+Launch an interactive Lua session in a running process:
+
+```bash
+./dejavu repl -p com.example.app
+```
+
+Features:
+
+- **Expression auto-return & pretty-printing**: expressions evaluate without
+  writing `return`, `print(...)` output is captured inline, `_` holds the last
+  non-nil result, and Java proxies/arrays/tables are formatted cleanly
+  (including hex previews for short `byte[]` arrays).
+- **Multiline input & history**: incomplete Lua chunks continue on `... > `
+  (press `Ctrl-C` to cancel a block without exiting), and history persists in
+  `~/.dejavu_repl_history` (override via `--history` or `DEJAVU_REPL_HISTORY`).
+- **Live Tab completion**: completes globals, Lua tables, `Cls:method` /
+  `Cls.field` / `Cls.method:overload`, `obj:method`, and dot-commands without
+  invoking getters or user metamethods.
+- **Dot-commands**: `.help`, `.use <class> [alias]`, `.inspect <expr> [filter]`,
+  `.load <file.lua>`, `.hooks`, `.gc`, `.reconnect`, `.raw <lua>`, `.clear`,
+  `.exit` / `.quit`.
+
 ## Limits
 
 - `method:hook(c_source)` delegates to LSPlant (`hook.install`), which only

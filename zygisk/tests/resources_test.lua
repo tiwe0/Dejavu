@@ -1050,4 +1050,234 @@ do
     assert(ok_close == true and close_err == nil and sc2:count() == 0)
 end
 
-print("OK: Lua Java proxy (use/methods/fields/overloads/cast/arrays/sugar/review-fixes), GC/<close>/scope and dejavu.scope passed")
+-- 25) Interactive REPL runtime helpers (dejavu._repl_eval / _repl_format / _repl_complete / _repl_gc / _repl_hooks)
+do
+    assert(type(dejavu._repl_eval) == "function")
+    assert(type(dejavu._repl_format) == "function")
+    assert(type(dejavu._repl_complete) == "function")
+    assert(type(dejavu._repl_gc) == "function")
+    assert(type(dejavu._repl_hooks) == "function")
+
+    -- Expression auto-return, multi-return, and _ last result binding
+    local r1 = dejavu._repl_eval("1 + 2")
+    assert(r1:find('"ok":true', 1, true) and r1:find('"values":["3"]', 1, true), r1)
+    assert(_G._ == 3)
+
+    local r_nil = dejavu._repl_eval("nil")
+    assert(r_nil:find('"ok":true', 1, true) and r_nil:find('"values":["nil"]', 1, true), r_nil)
+    assert(_G._ == 3, "evaluating nil must preserve previous _")
+
+    local r_multi = dejavu._repl_eval("return 10, 'ok', false")
+    assert(r_multi:find('"values":["10","\\"ok\\"","false"]', 1, true), r_multi)
+    assert(_G._ == 10)
+
+    -- Statement mode produces no return values
+    local r_stmt = dejavu._repl_eval("_repl_test_x = 99")
+    assert(r_stmt:find('"ok":true', 1, true) and r_stmt:find('"values":[]', 1, true), r_stmt)
+    assert(_G._repl_test_x == 99)
+
+    -- print() capture and guaranteed restoration on both success and runtime error
+    local orig_print = _G.print
+    local r_print = dejavu._repl_eval("print('hello', 42); print('line2'); return 'done'")
+    assert(_G.print == orig_print, "print must be restored after eval")
+    assert(r_print:find('"stdout":"hello\\t42\\nline2"', 1, true), r_print)
+    assert(r_print:find('"values":["\\"done\\""]', 1, true), r_print)
+
+    local r_err = dejavu._repl_eval("print('before-boom'); error('kaboom')")
+    assert(_G.print == orig_print, "print must be restored after runtime error")
+    assert(r_err:find('"ok":false', 1, true) and r_err:find('"incomplete":false', 1, true), r_err)
+    assert(r_err:find('"stdout":"before-boom"', 1, true), r_err)
+    assert(r_err:find("kaboom", 1, true) and not r_err:find("_repl_eval", 1, true), r_err)
+
+    -- Incomplete multiline detection vs immediate syntax errors
+    for _, incomplete_code in ipairs({
+        "1 +",
+        "{ a = 1,",
+        "function f()",
+        "for i = 1, 3 do",
+        "local s = [[hello",
+        'local s = "continued\\',
+        'local s = "continued\\z   ',
+        'local s = "continued\\z\n   ',
+        "a = ",
+    }) do
+        local res = dejavu._repl_eval(incomplete_code)
+        assert(res:find('"ok":false', 1, true) and res:find('"incomplete":true', 1, true),
+               "expected incomplete=true for: " .. incomplete_code .. " got: " .. res)
+    end
+    for _, bad_code in ipairs({
+        "1 + )",
+        'local s = "unterminated',
+        "local = 1",
+    }) do
+        local res = dejavu._repl_eval(bad_code)
+        assert(res:find('"ok":false', 1, true) and res:find('"incomplete":false', 1, true),
+               "expected incomplete=false for: " .. bad_code .. " got: " .. res)
+    end
+
+    -- Shadowing stdlib globals (`table`, `rawget`) must never brick REPL or leak repl_print
+    do
+        local saved_table = _G.table
+        local saved_rawget = _G.rawget
+        local saved_print = _G.print
+        local r_shadow = dejavu._repl_eval("table = { a = 1 }; rawget = 123; print('still-works'); return table")
+        assert(_G.print == saved_print, "print must be restored even when rawget is shadowed")
+        assert(r_shadow:find('"ok":true', 1, true) and r_shadow:find('"stdout":"still-works"', 1, true), r_shadow)
+        assert(r_shadow:find('a = 1', 1, true), r_shadow)
+        _G.table = saved_table
+        _G.rawget = saved_rawget
+    end
+
+    -- Traceback trimming: strip xpcall/_repl_eval frames, preserve user frames & error body text
+    local r_err_name = dejavu._repl_eval("local function my_repl_eval() error('stack traceback:\\n_repl_eval boom') end; my_repl_eval()")
+    assert(r_err_name:find("my_repl_eval", 1, true), r_err_name)
+    assert(r_err_name:find("_repl_eval boom", 1, true), r_err_name)
+    assert(not r_err_name:find("in function 'xpcall'", 1, true), r_err_name)
+
+    -- Binary/non-UTF-8 bytes, DEL (0x7f), and valid UTF-8 truncation safety
+    local bin_fmt = dejavu._repl_format("\xff\xfe\x7f\xbe\xef")
+    assert(bin_fmt == '"\\xff\\xfe\\x7f\\xbe\\xef"', bin_fmt)
+    local utf8_fmt = dejavu._repl_format("中文测试", { max_str = 4 })
+    assert(utf8_fmt == '"中..." (12 bytes)', utf8_fmt)
+
+    -- Custom __tostring >4096 bytes UTF-8 boundary + metatable with throwing __index
+    do
+        local bad_mt = setmetatable({}, {
+            __index = function() error("metatable __index must not run") end,
+        })
+        assert(dejavu._repl_format(setmetatable({ a = 1 }, bad_mt)) == "{ a = 1 }")
+        local long_ts = setmetatable({}, {
+            __tostring = function() return string.rep("中", 2000) end,
+        })
+        local ts_out = dejavu._repl_format(long_ts)
+        assert(utf8.len(ts_out) ~= nil and #ts_out <= 4099 and ts_out:sub(-3) == "...")
+    end
+
+    -- Hard max_bytes cap even on giant identifier keys and escaped binary strings
+    do
+        local giant_keys = {}
+        for i = 1, 20 do
+            giant_keys[string.rep("a", 500) .. tostring(i)] = i
+        end
+        local capped = dejavu._repl_format(giant_keys, { max_bytes = 256 })
+        assert(#capped <= 256, "expected <= 256 bytes, got " .. tostring(#capped))
+        local capped_bin = dejavu._repl_format(string.rep("\xff", 4096), { max_bytes = 256 })
+        assert(#capped_bin <= 256, "expected <= 256 bytes, got " .. tostring(#capped_bin))
+    end
+
+    -- Side-effect-free table formatting (must not trigger __len or __index) & bounded DAG
+    local trap_len_or_index = false
+    local trap_tbl = setmetatable({ 10, 20 }, {
+        __len = function()
+            trap_len_or_index = true
+            error("__len must not be called")
+        end,
+        __index = function()
+            trap_len_or_index = true
+            error("__index must not be called")
+        end,
+    })
+    assert(dejavu._repl_format(trap_tbl) == "{ 10, 20 }" and trap_len_or_index == false)
+    local dag = { leaf = "x" }
+    for _ = 1, 12 do
+        dag = { a = dag, b = dag }
+    end
+    local dag_fmt = dejavu._repl_format(dag)
+    assert(#dag_fmt < 65536 and dag_fmt:find("{ ... }", 1, true), "DAG formatting must stay bounded")
+
+    -- Formatting of Java proxies, byte[], arrays, methods, typed markers, and cyclic tables
+    assert(dejavu._repl_format(StringBuilder) == "<java.class java.lang.StringBuilder>")
+    local sb_fmt = dejavu._repl_format(sb)
+    assert(sb_fmt:find("<java.lang.StringBuilder #", 1, true) and
+           sb_fmt:find('"hello world">', 1, true), sb_fmt)
+    local tmp_sb = StringBuilder("gone")
+    tmp_sb:__release()
+    assert(dejavu._repl_format(tmp_sb) == "<java.ref (released)>")
+
+    local b_arr <close> = java.bytes("\xde\xad\xbe\xef")
+    local b_fmt = dejavu._repl_format(b_arr)
+    assert(b_fmt:find("<byte[4] #", 1, true) and b_fmt:find("[de ad be ef]>", 1, true), b_fmt)
+
+    local s_arr <close> = java.array("java.lang.String", { "a", "b" })
+    local s_fmt = dejavu._repl_format(s_arr)
+    assert(s_fmt:find("<java.lang.String[2] #", 1, true), s_fmt)
+
+    local m_fmt = dejavu._repl_format(StringBuilder.append)
+    assert(m_fmt:find("<java.method java.lang.StringBuilder.append", 1, true) and
+           m_fmt:find("java.lang.String", 1, true), m_fmt)
+    local ov_fmt = dejavu._repl_format(StringBuilder.append:overload("java.lang.String"))
+    assert(ov_fmt:find("<java.overload java.lang.StringBuilder.append(java.lang.String)", 1, true), ov_fmt)
+    assert(dejavu._repl_format(java.int(7)) == "<java.typed int = 7>")
+    assert(dejavu._repl_format(java.null("java.io.File")) == "<java.null java.io.File>")
+
+    local cyc = { a = 1 }
+    cyc.self = cyc
+    local cyc_fmt = dejavu._repl_format(cyc)
+    assert(cyc_fmt:find("a = 1", 1, true) and cyc_fmt:find("self = <cycle>", 1, true), cyc_fmt)
+
+    -- Safe live Tab completion
+    _G._repl_sb_cls = StringBuilder
+    _G._repl_sb_obj = sb
+    _G._repl_sub_obj = sub
+    local index_triggered = false
+    _G._repl_trap = setmetatable({}, {
+        __index = function()
+            index_triggered = true
+            error("must not invoke __index during completion")
+        end,
+    })
+
+    local c_glob = dejavu._repl_complete("ja")
+    assert(c_glob:find('"java"', 1, true), c_glob)
+    local c_kw = dejavu._repl_complete("func")
+    assert(c_kw:find('"function"', 1, true), c_kw)
+    local c_tbl = dejavu._repl_complete("java.u")
+    assert(c_tbl:find('"java.use"', 1, true), c_tbl)
+    local c_cls = dejavu._repl_complete("_repl_sb_cls:app")
+    assert(c_cls:find('"_repl_sb_cls:append"', 1, true), c_cls)
+    local c_cls_meta = dejavu._repl_complete("_repl_sb_cls:__i")
+    assert(c_cls_meta:find('"_repl_sb_cls:__inspect"', 1, true), c_cls_meta)
+    local c_cls_dot_only = dejavu._repl_complete("_repl_sb_cls.__n")
+    assert(c_cls_dot_only:find('"_repl_sb_cls.__name"', 1, true), c_cls_dot_only)
+    local c_cls_colon_no_name = dejavu._repl_complete("_repl_sb_cls:__n")
+    assert(not c_cls_colon_no_name:find('"_repl_sb_cls:__name"', 1, true) and
+           c_cls_colon_no_name:find('"_repl_sb_cls:__new"', 1, true), c_cls_colon_no_name)
+    local c_cls_method = dejavu._repl_complete("_repl_sb_cls.append:ov")
+    assert(c_cls_method:find('"_repl_sb_cls.append:overload"', 1, true) and
+           c_cls_method:find('"_repl_sb_cls.append:overloads"', 1, true), c_cls_method)
+    local c_ref = dejavu._repl_complete("_repl_sb_obj:toS")
+    assert(c_ref:find('"_repl_sb_obj:toString"', 1, true), c_ref)
+    local c_ref_meta = dejavu._repl_complete("_repl_sb_obj:__ins")
+    assert(c_ref_meta:find('"_repl_sb_obj:__inspect"', 1, true), c_ref_meta)
+    local c_ref_field = dejavu._repl_complete("_repl_sub_obj.ta")
+    assert(c_ref_field:find('"_repl_sub_obj.tag"', 1, true), c_ref_field)
+    local c_trap = dejavu._repl_complete("_repl_trap.foo.bar")
+    assert(c_trap == "[]" and index_triggered == false, "completion must never invoke __index")
+    assert(dejavu._repl_complete("java..u") == "[]")
+    _G._repl_ov = StringBuilder.append:overload("java.lang.String")
+    local c_ov = dejavu._repl_complete("_repl_ov.s")
+    assert(c_ov:find('"_repl_ov.sig"', 1, true) and c_ov:find('"_repl_ov.signature"', 1, true), c_ov)
+    _G._repl_ov = nil
+
+    _G._repl_test_x = nil
+    _G._repl_sb_cls = nil
+    _G._repl_sb_obj = nil
+    _G._repl_sub_obj = nil
+    _G._repl_trap = nil
+
+    -- GC and hooks summary helpers
+    local gc_json = dejavu._repl_gc()
+    assert(gc_json:find('"memory_kb":', 1, true) and gc_json:find('"live_java_refs":', 1, true), gc_json)
+
+    local prev_hook_list = hook.list
+    local prev_native_list = native.list
+    hook.list = function() return "1\tactive\tcom.demo.A#foo()V\n" end
+    native.list = function() return "2\tactive\tlibc.so!read\n" end
+    local hooks_json = dejavu._repl_hooks()
+    hook.list = prev_hook_list
+    native.list = prev_native_list
+    assert(hooks_json:find('com.demo.A#foo()V', 1, true) and
+           hooks_json:find('libc.so!read', 1, true), hooks_json)
+end
+
+print("OK: Lua Java proxy (use/methods/fields/overloads/cast/arrays/sugar/review-fixes), REPL runtime, GC/<close>/scope and dejavu.scope passed")

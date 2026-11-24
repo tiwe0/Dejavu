@@ -28,10 +28,10 @@ class ExecTimeoutTest(unittest.TestCase):
     def forwarded_command(self, *arguments):
         args = cli.build_parser().parse_args(["exec", "-p", "example.app", *arguments])
         with mock.patch.object(cli, "toolchain_env", return_value={}), \
-                mock.patch.object(cli.subprocess, "run") as run:
-            run.return_value.returncode = 0
+                mock.patch.object(cli.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
             self.assertEqual(cli.command_exec(args), 0)
-        return run.call_args.args[0]
+        return popen.call_args.args[0]
 
     def test_custom_timeout_reaches_rpc_for_inline_and_file_scripts(self):
         for source in (("-e", "return true"), ("script.lua",)):
@@ -72,10 +72,10 @@ class ExecTimeoutTest(unittest.TestCase):
                 if timeout is not None:
                     arguments["timeout"] = timeout
                 with mock.patch.object(cli, "toolchain_env", return_value={}), \
-                        mock.patch.object(cli.subprocess, "run") as run:
-                    run.return_value.returncode = 0
+                        mock.patch.object(cli.subprocess, "Popen") as popen:
+                    popen.return_value.wait.return_value = 0
                     self.assertEqual(server.call_tool("dejavu_exec", arguments), "done")
-                command = run.call_args.args[0]
+                command = popen.call_args.args[0]
                 actual_timeout = float(command[command.index("--timeout") + 1])
                 self.assertEqual(actual_timeout, timeout if timeout is not None else 120.0)
                 self.assertGreater(runner.outer_timeout, actual_timeout)
@@ -266,6 +266,43 @@ class RunnerTimeoutTest(unittest.TestCase):
             fake_cli.write_text("import sys\nprint('bad', file=sys.stderr)\nsys.exit(2)\n")
             with self.assertRaisesRegex(dejavu_mcp.ToolFailure, "bad"):
                 runner.run(["exec"])
+
+
+class ReplCliTest(unittest.TestCase):
+    def test_repl_forwards_options_and_expands_history(self):
+        args = cli.build_parser().parse_args([
+            "repl", "-p", "example.app", "--timeout=12.5", "--wait=0",
+            "--no-color", "--history=-weird-hist",
+        ])
+        with mock.patch.object(cli, "toolchain_env", return_value={}), \
+                mock.patch.object(cli.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            self.assertEqual(cli.command_repl(args), 0)
+        command = popen.call_args.args[0]
+        self.assertIn("-i", command)
+        self.assertIn("--timeout=12.5", command)
+        self.assertIn("--wait=0.0", command)
+        self.assertIn("--no-color", command)
+        self.assertIn("--history=-weird-hist", command)
+
+    def test_repl_rejects_invalid_wait(self):
+        for value in ("-1", "nan", "inf", "-inf"):
+            with self.subTest(value=value), mock.patch("sys.stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit):
+                    cli.build_parser().parse_args(["repl", f"--wait={value}"])
+
+    def test_delegate_dejavuctl_waits_past_sigint_and_normalizes_signal_exit(self):
+        args = cli.build_parser().parse_args(["repl", "-p", "example.app"])
+        proc = mock.Mock()
+        proc.wait.side_effect = [KeyboardInterrupt(), -signal.SIGTERM]
+        proc.poll.return_value = None
+        with mock.patch.object(cli, "toolchain_env", return_value={}), \
+                mock.patch.object(cli, "_is_foreground_tty_pgrp", return_value=True), \
+                mock.patch.object(cli.subprocess, "Popen", return_value=proc):
+            rc = cli.command_repl(args)
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        proc.send_signal.assert_not_called()
+        proc.kill.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ local reflect_cache = {}
 local loader_reflect_cache = setmetatable({}, { __mode = "k" })
 local raw_loader_reflect_cache = {}
 local scope_stack = {}
+local reflect_for_repl = nil
 
 local PRIMITIVE_TO_JNI = {
     void = "V",
@@ -1780,6 +1781,29 @@ local function install_java_resource_guards()
         return table.unpack(results, 2, results.n)
     end
 
+    reflect_for_repl = function(val)
+        local cls_st = class_state_of(val)
+        if cls_st ~= nil then
+            local ok, meta = pcall(get_reflection_meta, cls_st.name, cls_st.loader, nil)
+            return ok and meta or nil, "class", cls_st.name
+        end
+        local root_st = root_state_of(val)
+        if root_st ~= nil then
+            if root_st.id == nil then
+                return nil, "released", nil
+            end
+            local st = state_of(val)
+            local ok_name, cname, loader = pcall(get_ref_class_name, val)
+            if not ok_name or type(cname) ~= "string" then
+                return nil, "ref", nil
+            end
+            local fallback = (st ~= nil and st.cast_class ~= nil) and nil or root_st.id
+            local ok_meta, meta = pcall(get_reflection_meta, cname, loader, fallback)
+            return ok_meta and meta or nil, "ref", cname
+        end
+        return nil, nil, nil
+    end
+
     rawset(java, "_managed_refs", true)
 end
 
@@ -1910,5 +1934,993 @@ local function install_resource_scope()
     end
 end
 
+local function install_repl_runtime()
+    -- Pin stdlib functions as upvalues so shadowing globals like `table`, `string`,
+    -- `type`, or `rawget` in the REPL never bricks _repl_eval or leaks repl_print.
+    local type = type
+    local rawget = rawget
+    local rawset = rawset
+    local rawlen = rawlen
+    local next = next
+    local pairs = pairs
+    local pcall = pcall
+    local xpcall = xpcall
+    local tostring = tostring
+    local select = select
+    local load = load
+    local getmetatable = getmetatable
+    local setmetatable = setmetatable
+    local collectgarbage = collectgarbage
+    local t_concat = table.concat
+    local t_sort = table.sort
+    local t_pack = table.pack
+    local s_format = string.format
+    local s_rep = string.rep
+    local m_type = math.type
+    local m_min = math.min
+    local m_huge = math.huge
+    local debug_lib = rawget(_G, "debug")
+    local debug_traceback = type(debug_lib) == "table" and rawget(debug_lib, "traceback") or nil
+
+    local target = rawget(_G, "dejavu")
+    if type(target) ~= "table" then
+        target = {}
+        rawset(_G, "dejavu", target)
+    end
+    if type(rawget(target, "_repl_eval")) == "function" then
+        return
+    end
+
+    local LUA_KEYWORDS = {
+        "and", "break", "do", "else", "elseif", "end", "false", "for",
+        "function", "goto", "if", "in", "local", "nil", "not", "or",
+        "repeat", "return", "then", "true", "until", "while",
+    }
+
+    local REF_META_COMPLETIONS = {
+        "__bytes", "__cast", "__class", "__class_name", "__detach",
+        "__each", "__field", "__get", "__id", "__inspect", "__instanceof",
+        "__invoke", "__is_alive", "__length", "__release", "__set",
+        "__set_field", "__str", "__to_table",
+    }
+
+    local CLASS_META_DOT_COMPLETIONS = {
+        "__class", "__field", "__fields", "__inspect", "__loader",
+        "__methods", "__name", "__new", "__set_field",
+    }
+
+    local CLASS_META_COLON_COMPLETIONS = {
+        "__field", "__inspect", "__new", "__set_field",
+    }
+
+    local JSON_ARRAY_MT = {}
+    local function json_array(list)
+        return setmetatable(list, JSON_ARRAY_MT)
+    end
+
+    local function utf8_seq_len(s, i)
+        local b1 = s:byte(i)
+        if b1 == nil then
+            return 0
+        end
+        if b1 < 0x80 then
+            return 1
+        end
+        local b2 = s:byte(i + 1)
+        if b2 == nil or b2 < 0x80 or b2 > 0xbf then
+            return 0
+        end
+        if b1 >= 0xc2 and b1 <= 0xdf then
+            return 2
+        end
+        local b3 = s:byte(i + 2)
+        if b3 == nil or b3 < 0x80 or b3 > 0xbf then
+            return 0
+        end
+        if b1 >= 0xe0 and b1 <= 0xef then
+            if b1 == 0xe0 and b2 < 0xa0 then return 0 end
+            if b1 == 0xed and b2 > 0x9f then return 0 end
+            return 3
+        end
+        local b4 = s:byte(i + 3)
+        if b4 == nil or b4 < 0x80 or b4 > 0xbf then
+            return 0
+        end
+        if b1 >= 0xf0 and b1 <= 0xf4 then
+            if b1 == 0xf0 and b2 < 0x90 then return 0 end
+            if b1 == 0xf4 and b2 > 0x8f then return 0 end
+            return 4
+        end
+        return 0
+    end
+
+    local function truncate_utf8(s, max_bytes)
+        if #s <= max_bytes then
+            return s, false
+        end
+        local i = 1
+        local last_end = 0
+        while i <= max_bytes do
+            local seq = utf8_seq_len(s, i)
+            local step = seq > 0 and seq or 1
+            if i + step - 1 > max_bytes then
+                break
+            end
+            last_end = i + step - 1
+            i = i + step
+        end
+        return s:sub(1, last_end), true
+    end
+
+    local function safe_tostring(val)
+        local ok, s = pcall(tostring, val)
+        if ok and type(s) == "string" then
+            return s
+        end
+        return "<" .. type(val) .. ">"
+    end
+
+    local function json_escape_string(s)
+        local out = {}
+        local n = #s
+        local i = 1
+        while i <= n do
+            local b = s:byte(i)
+            if b == 0x5c then
+                out[#out + 1] = "\\\\"
+                i = i + 1
+            elseif b == 0x22 then
+                out[#out + 1] = '\\"'
+                i = i + 1
+            elseif b == 0x08 then
+                out[#out + 1] = "\\b"
+                i = i + 1
+            elseif b == 0x0c then
+                out[#out + 1] = "\\f"
+                i = i + 1
+            elseif b == 0x0a then
+                out[#out + 1] = "\\n"
+                i = i + 1
+            elseif b == 0x0d then
+                out[#out + 1] = "\\r"
+                i = i + 1
+            elseif b == 0x09 then
+                out[#out + 1] = "\\t"
+                i = i + 1
+            elseif b < 0x20 or b == 0x7f then
+                out[#out + 1] = s_format("\\u%04x", b)
+                i = i + 1
+            elseif b < 0x80 then
+                out[#out + 1] = s:sub(i, i)
+                i = i + 1
+            else
+                local seq = utf8_seq_len(s, i)
+                if seq > 0 then
+                    out[#out + 1] = s:sub(i, i + seq - 1)
+                    i = i + seq
+                else
+                    out[#out + 1] = s_format("\\u%04x", b)
+                    i = i + 1
+                end
+            end
+        end
+        return t_concat(out)
+    end
+
+    local function json_encode(val)
+        local tv = type(val)
+        if val == nil then
+            return "null"
+        elseif tv == "boolean" then
+            return val and "true" or "false"
+        elseif tv == "number" then
+            if val ~= val or val == m_huge or val == -m_huge then
+                return "null"
+            end
+            if m_type(val) == "integer" then
+                return s_format("%d", val)
+            end
+            -- Normalize comma decimal separators under non-C LC_NUMERIC locales.
+            return (tostring(val):gsub(",", "."))
+        elseif tv == "string" then
+            return '"' .. json_escape_string(val) .. '"'
+        elseif tv == "table" then
+            if getmetatable(val) == JSON_ARRAY_MT then
+                local items = {}
+                for i = 1, rawlen(val) do
+                    items[i] = json_encode(rawget(val, i))
+                end
+                return "[" .. t_concat(items, ",") .. "]"
+            end
+            local keys = {}
+            for k in next, val do
+                if type(k) == "string" then
+                    keys[#keys + 1] = k
+                end
+            end
+            t_sort(keys)
+            local items = {}
+            for i = 1, #keys do
+                local k = keys[i]
+                items[i] = '"' .. json_escape_string(k) .. '":' .. json_encode(rawget(val, k))
+            end
+            return "{" .. t_concat(items, ",") .. "}"
+        end
+        return '"' .. json_escape_string(safe_tostring(val)) .. '"'
+    end
+
+    local function escape_display_string(s, max_len)
+        local total_len = #s
+        local limit = (max_len ~= nil and total_len > max_len) and max_len or total_len
+        local truncated = limit < total_len
+        local out = {}
+        local i = 1
+        while i <= limit do
+            local b = s:byte(i)
+            if b == 0x5c then
+                out[#out + 1] = "\\\\"
+                i = i + 1
+            elseif b == 0x22 then
+                out[#out + 1] = '\\"'
+                i = i + 1
+            elseif b == 0x0a then
+                out[#out + 1] = "\\n"
+                i = i + 1
+            elseif b == 0x0d then
+                out[#out + 1] = "\\r"
+                i = i + 1
+            elseif b == 0x09 then
+                out[#out + 1] = "\\t"
+                i = i + 1
+            elseif b == 0x00 then
+                out[#out + 1] = "\\0"
+                i = i + 1
+            elseif b < 0x20 or b == 0x7f then
+                out[#out + 1] = s_format("\\x%02x", b)
+                i = i + 1
+            elseif b < 0x80 then
+                out[#out + 1] = s:sub(i, i)
+                i = i + 1
+            else
+                local seq = utf8_seq_len(s, i)
+                if seq > 0 then
+                    if i + seq - 1 > limit then
+                        truncated = true
+                        break
+                    end
+                    out[#out + 1] = s:sub(i, i + seq - 1)
+                    i = i + seq
+                else
+                    out[#out + 1] = s_format("\\x%02x", b)
+                    i = i + 1
+                end
+            end
+        end
+        local escaped = t_concat(out)
+        if truncated then
+            return '"' .. escaped .. '..." (' .. tostring(total_len) .. " bytes)"
+        end
+        return '"' .. escaped .. '"'
+    end
+
+    local function format_overload_sig(ov)
+        local params = ov.params or {}
+        local parts = {}
+        for i = 1, #params do
+            parts[i] = jni_to_friendly(params[i])
+        end
+        local ret = ov.ret and jni_to_friendly(ov.ret) or "void"
+        return "(" .. t_concat(parts, ", ") .. ") -> " .. ret
+    end
+
+    local function format_java_ref(v)
+        local alive_ok, alive = pcall(v.__is_alive, v)
+        if not alive_ok or not alive then
+            return "<java.ref (released)>"
+        end
+        local id_ok, id = pcall(v.__id, v)
+        local id_tag = (id_ok and id ~= nil) and (" #" .. tostring(id)) or ""
+        local cls_ok, cname = pcall(v.__class_name, v)
+        if not cls_ok or type(cname) ~= "string" or cname == "" then
+            return "<java.ref" .. id_tag .. ">"
+        end
+        if cname == "[B" then
+            local len_ok, len = pcall(v.__length, v)
+            local len_str = (len_ok and type(len) == "number") and tostring(len) or "?"
+            local preview = ""
+            if len_ok and type(len) == "number" and len > 0 and len <= 16 then
+                local b_ok, raw = pcall(v.__bytes, v)
+                if b_ok and type(raw) == "string" then
+                    local hex = {}
+                    for i = 1, #raw do
+                        hex[i] = s_format("%02x", raw:byte(i))
+                    end
+                    preview = " [" .. t_concat(hex, " ") .. "]"
+                end
+            end
+            return "<byte[" .. len_str .. "]" .. id_tag .. preview .. ">"
+        end
+        if cname:sub(1, 1) == "[" then
+            local friendly = jni_to_friendly(runtime_class_to_jni(cname))
+            local len_ok, len = pcall(v.__length, v)
+            if len_ok and type(len) == "number" then
+                local sized = friendly:gsub("%[%]", "[" .. tostring(len) .. "]", 1)
+                return "<" .. sized .. id_tag .. ">"
+            end
+            return "<" .. friendly .. id_tag .. ">"
+        end
+        local str_ok, str_val = pcall(v.__str, v)
+        if str_ok and type(str_val) == "string" then
+            return "<" .. cname .. id_tag .. " " .. escape_display_string(str_val, 80) .. ">"
+        end
+        return "<" .. cname .. id_tag .. ">"
+    end
+
+    local function is_identifier_key(k)
+        return type(k) == "string" and #k <= 128 and k:match("^[A-Za-z_][A-Za-z0-9_]*$") ~= nil
+    end
+
+    local function key_entry_cmp(a, b)
+        local ta, tb = a.tk, b.tk
+        if ta == tb then
+            if ta == "number" or ta == "string" then
+                return a.k < b.k
+            end
+            return a.s < b.s
+        end
+        if ta == "number" then return true end
+        if tb == "number" then return false end
+        if ta == "string" then return true end
+        if tb == "string" then return false end
+        return ta < tb
+    end
+
+    local function consume_budget(budget, rendered)
+        budget.bytes = budget.bytes - #rendered
+        return rendered
+    end
+
+    local function format_value(v, depth, seen, max_depth, max_items, top_str_limit, budget)
+        local tv = type(v)
+        if v == nil then
+            return consume_budget(budget, "nil")
+        elseif tv == "boolean" then
+            return consume_budget(budget, v and "true" or "false")
+        elseif tv == "number" then
+            return consume_budget(budget, tostring(v))
+        elseif tv == "string" then
+            local limit = depth == 0 and (top_str_limit or 4096) or 512
+            return consume_budget(budget, escape_display_string(v, limit))
+        elseif tv ~= "table" then
+            return consume_budget(budget, safe_tostring(v))
+        end
+
+        -- Check Dejavu Java proxy types via module-private marker keys.
+        local cls_st = rawget(v, CLASS_KEY)
+        if cls_st ~= nil then
+            return consume_budget(budget, "<java.class " .. tostring(cls_st.name) .. ">")
+        end
+        local handle_st = rawget(v, HANDLE_KEY)
+        if handle_st ~= nil then
+            return consume_budget(budget, format_java_ref(v))
+        end
+        local method_st = rawget(v, METHOD_KEY)
+        if method_st ~= nil then
+            if method_st.ov ~= nil and method_st.m_st ~= nil then
+                return consume_budget(
+                    budget,
+                    "<java.overload " .. method_st.m_st.class_name .. "." ..
+                    method_st.m_st.name .. format_overload_sig(method_st.ov) .. ">"
+                )
+            end
+            local ovs = method_st.overloads or {}
+            local shown = {}
+            local cap = m_min(#ovs, 3)
+            for i = 1, cap do
+                shown[i] = format_overload_sig(ovs[i])
+            end
+            local suffix = #ovs > cap and (" | +" .. tostring(#ovs - cap) .. " more") or ""
+            return consume_budget(
+                budget,
+                "<java.method " .. method_st.class_name .. "." .. method_st.name ..
+                t_concat(shown, " | ") .. suffix .. ">"
+            )
+        end
+        local typed_st = rawget(v, TYPED_KEY)
+        if typed_st ~= nil then
+            local friendly = typed_st.jni and jni_to_friendly(typed_st.jni) or "unknown"
+            if typed_st.value == nil then
+                return consume_budget(budget, "<java.null " .. friendly .. ">")
+            end
+            return consume_budget(
+                budget,
+                "<java.typed " .. friendly .. " = " .. safe_tostring(typed_st.value) .. ">"
+            )
+        end
+
+        local mt = getmetatable(v)
+        if type(mt) == "table" then
+            local ts = rawget(mt, "__tostring")
+            if type(ts) == "function" then
+                local ok, s = pcall(ts, v)
+                if ok and type(s) == "string" then
+                    local clipped, was_clipped = truncate_utf8(s, 4096)
+                    if was_clipped then
+                        clipped = clipped .. "..."
+                    end
+                    return consume_budget(budget, clipped)
+                end
+            end
+        end
+
+        if seen[v] then
+            return consume_budget(budget, "<cycle>")
+        end
+        if depth >= max_depth or budget.nodes <= 0 or budget.bytes <= 0 then
+            return consume_budget(budget, "{ ... }")
+        end
+
+        budget.nodes = budget.nodes - 1
+        seen[v] = true
+
+        -- Check whether table is a pure 1..N sequence without triggering __len / __index,
+        -- bounding the scan for huge tables.
+        local seq_len = rawlen(v)
+        local scan_cap = max_items * 16
+        local total_keys = 0
+        local scan_capped = false
+        local is_seq = seq_len > 0
+        for k in next, v do
+            total_keys = total_keys + 1
+            if is_seq then
+                if type(k) ~= "number" or m_type(k) ~= "integer" or k < 1 or k > seq_len then
+                    is_seq = false
+                end
+            end
+            if total_keys >= scan_cap then
+                scan_capped = true
+                if is_seq and seq_len > total_keys then
+                    -- Keep sequence fast path only when remaining keys are beyond scan_cap.
+                    is_seq = false
+                end
+                break
+            end
+        end
+        if total_keys == 0 then
+            seen[v] = nil
+            return consume_budget(budget, "{}")
+        end
+        if is_seq and total_keys ~= seq_len then
+            is_seq = false
+        end
+
+        local indent = s_rep("  ", depth + 1)
+        local close_indent = s_rep("  ", depth)
+        local entries = {}
+        local multiline = false
+        local inline_len = 2
+
+        if is_seq then
+            local limit = m_min(seq_len, max_items)
+            local rendered_count = 0
+            for i = 1, limit do
+                if budget.nodes <= 0 or budget.bytes <= 0 then
+                    break
+                end
+                local rendered = format_value(
+                    rawget(v, i), depth + 1, seen, max_depth, max_items, top_str_limit, budget
+                )
+                entries[#entries + 1] = rendered
+                rendered_count = rendered_count + 1
+                if rendered:find("\n", 1, true) then
+                    multiline = true
+                end
+                inline_len = inline_len + #rendered + 2
+                budget.bytes = budget.bytes - (#indent + 2)
+            end
+            if seq_len > rendered_count then
+                entries[#entries + 1] = "... (+" .. tostring(seq_len - rendered_count) .. " more)"
+                multiline = true
+            end
+        else
+            local key_entries = {}
+            local collected = 0
+            local has_more_keys = false
+            for k in next, v do
+                if collected >= scan_cap then
+                    has_more_keys = true
+                    break
+                end
+                collected = collected + 1
+                local tk = type(k)
+                key_entries[collected] = {
+                    k = k,
+                    tk = tk,
+                    s = (tk == "number" or tk == "string") and "" or safe_tostring(k),
+                }
+            end
+            t_sort(key_entries, key_entry_cmp)
+            local limit = m_min(#key_entries, max_items)
+            local rendered_count = 0
+            for i = 1, limit do
+                if budget.nodes <= 0 or budget.bytes <= 0 then
+                    break
+                end
+                local k = key_entries[i].k
+                local key_str
+                if is_identifier_key(k) then
+                    key_str = consume_budget(budget, k)
+                else
+                    key_str = "[" .. format_value(
+                        k, depth + 1, seen, max_depth, max_items, top_str_limit, budget
+                    ) .. "]"
+                    budget.bytes = budget.bytes - 2
+                end
+                local val_str
+                if budget.bytes <= 0 then
+                    val_str = consume_budget(budget, "...")
+                else
+                    val_str = format_value(
+                        rawget(v, k), depth + 1, seen, max_depth, max_items, top_str_limit, budget
+                    )
+                end
+                local entry = key_str .. " = " .. val_str
+                entries[#entries + 1] = entry
+                rendered_count = rendered_count + 1
+                if entry:find("\n", 1, true) then
+                    multiline = true
+                end
+                inline_len = inline_len + #entry + 2
+                budget.bytes = budget.bytes - (#indent + 5)
+            end
+            if has_more_keys or scan_capped then
+                entries[#entries + 1] = "... (+" .. tostring(#key_entries - rendered_count) .. "+ more)"
+                multiline = true
+            elseif #key_entries > rendered_count then
+                entries[#entries + 1] = "... (+" .. tostring(#key_entries - rendered_count) .. " more)"
+                multiline = true
+            end
+            if #entries > 4 then
+                multiline = true
+            end
+        end
+
+        seen[v] = nil
+
+        if not multiline and inline_len <= 72 then
+            return "{ " .. t_concat(entries, ", ") .. " }"
+        end
+        local lines = {}
+        for i = 1, #entries do
+            lines[i] = indent .. entries[i]
+        end
+        return "{\n" .. t_concat(lines, ",\n") .. "\n" .. close_indent .. "}"
+    end
+
+    function target._repl_format(value, opts)
+        local max_depth = (type(opts) == "table" and rawget(opts, "max_depth")) or 4
+        local max_items = (type(opts) == "table" and rawget(opts, "max_items")) or 64
+        local max_str = (type(opts) == "table" and rawget(opts, "max_str")) or 4096
+        local max_bytes = (type(opts) == "table" and rawget(opts, "max_bytes")) or 49152
+        local budget = {
+            nodes = (type(opts) == "table" and rawget(opts, "max_nodes")) or 256,
+            bytes = max_bytes,
+        }
+        local rendered = format_value(value, 0, {}, max_depth, max_items, max_str, budget)
+        if #rendered > max_bytes then
+            local suffix = "... (truncated)"
+            local keep = max_bytes > #suffix and (max_bytes - #suffix) or max_bytes
+            local clipped = truncate_utf8(rendered, keep)
+            rendered = max_bytes > #suffix and (clipped .. suffix) or clipped
+        end
+        return rendered
+    end
+
+    local function is_incomplete_error(err, code)
+        if type(err) ~= "string" then
+            return false
+        end
+        if not err:match("<eof>%s*$") then
+            return false
+        end
+        if err:find("unfinished string near <eof>", 1, true) then
+            -- Lua 5.4 allows short string multiline continuations with trailing \ or \z<whitespace>.
+            local trailing_bs = code:match("(\\+)$")
+            if trailing_bs ~= nil and (#trailing_bs % 2 == 1) then
+                return true
+            end
+            local z_bs = code:match("(\\+)z%s*$")
+            return z_bs ~= nil and (#z_bs % 2 == 1)
+        end
+        return true
+    end
+
+    local function clean_error_message(err)
+        return safe_tostring(err)
+    end
+
+    function target._repl_eval(code)
+        if type(code) ~= "string" then
+            return json_encode({
+                ok = false,
+                incomplete = false,
+                stdout = "",
+                error = "expected string code",
+            })
+        end
+        if code:match("^%s*$") then
+            return json_encode({
+                ok = true,
+                incomplete = false,
+                stdout = "",
+                values = json_array({}),
+            })
+        end
+
+        local chunk, expr_err = load("return " .. code, "=repl", "t")
+        local stmt_err = nil
+        if chunk == nil then
+            chunk, stmt_err = load(code, "=repl", "t")
+        end
+
+        if chunk == nil then
+            if is_incomplete_error(stmt_err, code) or is_incomplete_error(expr_err, code) then
+                return json_encode({
+                    ok = false,
+                    incomplete = true,
+                    stdout = "",
+                    error = clean_error_message(stmt_err or expr_err),
+                })
+            end
+            return json_encode({
+                ok = false,
+                incomplete = false,
+                stdout = "",
+                error = clean_error_message(stmt_err or expr_err),
+            })
+        end
+
+        local out_lines = {}
+        local out_bytes = 0
+        local out_truncated = false
+        local MAX_STDOUT_LINES = 512
+        local MAX_STDOUT_BYTES = 65536
+
+        local orig_print = rawget(_G, "print")
+        local function repl_print(...)
+            if out_truncated then
+                return
+            end
+            local n = select("#", ...)
+            local parts = {}
+            for i = 1, n do
+                parts[i] = tostring(select(i, ...))
+            end
+            local line = t_concat(parts, "\t")
+            if #out_lines >= MAX_STDOUT_LINES or out_bytes + #line > MAX_STDOUT_BYTES then
+                out_truncated = true
+                out_lines[#out_lines + 1] = "... (stdout truncated)"
+                return
+            end
+            out_lines[#out_lines + 1] = line
+            out_bytes = out_bytes + #line + 1
+        end
+
+        local function err_handler(e)
+            local msg = safe_tostring(e)
+            if type(debug_traceback) == "function" then
+                local tb = debug_traceback("", 2)
+                if type(tb) == "string" then
+                    local lines = {}
+                    for line in (tb .. "\n"):gmatch("(.-)\n") do
+                        lines[#lines + 1] = line
+                    end
+                    -- Trim from the bottom at the REPL wrapper frame and its preceding xpcall frame.
+                    local cut = #lines
+                    for i = #lines, 1, -1 do
+                        if lines[i]:find("'_repl_eval'", 1, true) or
+                           lines[i]:find("in field '_repl_eval'", 1, true) then
+                            cut = i - 1
+                            if cut >= 1 and lines[cut]:find("in function 'xpcall'", 1, true) then
+                                cut = cut - 1
+                            end
+                            break
+                        end
+                    end
+                    local kept = {}
+                    for i = 1, cut do
+                        if lines[i] ~= "" then
+                            kept[#kept + 1] = lines[i]
+                        end
+                    end
+                    if #kept > 0 then
+                        return msg .. "\n" .. t_concat(kept, "\n")
+                    end
+                end
+            end
+            return msg
+        end
+
+        rawset(_G, "print", repl_print)
+        local packed = t_pack(xpcall(chunk, err_handler))
+        if rawget(_G, "print") == repl_print then
+            rawset(_G, "print", orig_print)
+        end
+
+        local stdout_text = t_concat(out_lines, "\n")
+        if not packed[1] then
+            return json_encode({
+                ok = false,
+                incomplete = false,
+                stdout = stdout_text,
+                error = clean_error_message(packed[2]),
+            })
+        end
+
+        local values = {}
+        local MAX_RETURN_VALUES = 64
+        if packed.n >= 2 then
+            if packed[2] ~= nil then
+                rawset(_G, "_", packed[2])
+            end
+            local total_vals = packed.n - 1
+            local cap = m_min(total_vals, MAX_RETURN_VALUES)
+            for i = 2, cap + 1 do
+                local ok_fmt, formatted = pcall(target._repl_format, packed[i])
+                if ok_fmt and type(formatted) == "string" then
+                    values[#values + 1] = formatted
+                else
+                    values[#values + 1] = "<format error: " .. safe_tostring(formatted) .. ">"
+                end
+            end
+            if total_vals > cap then
+                values[#values + 1] = "... (+" .. tostring(total_vals - cap) .. " more values)"
+            end
+        end
+
+        return json_encode({
+            ok = true,
+            incomplete = false,
+            stdout = stdout_text,
+            values = json_array(values),
+        })
+    end
+
+    local function resolve_readonly_path(expr)
+        if type(expr) ~= "string" or expr == "" or expr:find("..", 1, true) then
+            return nil, false
+        end
+        local segments = {}
+        for seg in expr:gmatch("[^%.]+") do
+            if not seg:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+                return nil, false
+            end
+            segments[#segments + 1] = seg
+        end
+        if #segments == 0 or expr:sub(1, 1) == "." or expr:sub(-1) == "." then
+            return nil, false
+        end
+        local cur = rawget(_G, segments[1])
+        if cur == nil then
+            return nil, false
+        end
+        for i = 2, #segments do
+            if type(cur) ~= "table" then
+                return nil, false
+            end
+            -- Allow read-only method proxy metadata lookup on the final segment of Cls.method
+            -- (e.g. SB.append:ho<Tab>) without ever reading static fields or invoking JNI calls.
+            if rawget(cur, CLASS_KEY) ~= nil then
+                if i == #segments and type(reflect_for_repl) == "function" then
+                    local meta, kind = reflect_for_repl(cur)
+                    if kind == "class" and type(meta) == "table" and type(meta.methods) == "table" then
+                        local ovs = meta.methods[segments[i]]
+                        if type(ovs) == "table" and #ovs > 0 then
+                            return { [METHOD_KEY] = { overloads = ovs } }, true
+                        end
+                    end
+                end
+                return nil, false
+            end
+            -- Never invoke arbitrary __index metamethods during Tab completion.
+            if rawget(cur, HANDLE_KEY) ~= nil or
+               rawget(cur, METHOD_KEY) ~= nil or rawget(cur, TYPED_KEY) ~= nil then
+                return nil, false
+            end
+            cur = rawget(cur, segments[i])
+            if cur == nil then
+                return nil, false
+            end
+        end
+        return cur, true
+    end
+
+    local function add_if_match(bucket, seen, name, partial, include_dunder)
+        if type(name) ~= "string" or name == "" then
+            return
+        end
+        if not include_dunder and name:sub(1, 2) == "__" then
+            return
+        end
+        if partial ~= "" and name:sub(1, #partial) ~= partial then
+            return
+        end
+        if not seen[name] then
+            seen[name] = true
+            bucket[#bucket + 1] = name
+        end
+    end
+
+    function target._repl_complete(text)
+        if type(text) ~= "string" then
+            return "[]"
+        end
+        local matches = {}
+        local seen = {}
+        local base, sep, partial = text:match("^(.*)([%.:])([A-Za-z0-9_]*)$")
+        if base ~= nil and base ~= "" then
+            local val, ok = resolve_readonly_path(base)
+            if not ok or type(val) ~= "table" then
+                return "[]"
+            end
+            local include_dunder = partial:sub(1, 1) == "_"
+            local meta, kind = nil, nil
+            if type(reflect_for_repl) == "function" then
+                meta, kind = reflect_for_repl(val)
+            end
+            if kind == "class" then
+                if type(meta) == "table" then
+                    if type(meta.methods) == "table" then
+                        for mname in pairs(meta.methods) do
+                            add_if_match(matches, seen, mname, partial, include_dunder)
+                        end
+                    end
+                    if sep == "." and type(meta.fields) == "table" then
+                        for fname, finfo in pairs(meta.fields) do
+                            if type(finfo) == "table" and finfo.static then
+                                add_if_match(matches, seen, fname, partial, include_dunder)
+                            end
+                        end
+                    end
+                    if type(meta.constructors) == "table" and #meta.constructors > 0 then
+                        add_if_match(matches, seen, "new", partial, include_dunder)
+                    end
+                end
+                local meta_list = sep == "." and CLASS_META_DOT_COMPLETIONS or CLASS_META_COLON_COMPLETIONS
+                for i = 1, #meta_list do
+                    add_if_match(matches, seen, meta_list[i], partial, include_dunder)
+                end
+            elseif kind == "ref" then
+                if type(meta) == "table" then
+                    if type(meta.methods) == "table" then
+                        for mname in pairs(meta.methods) do
+                            add_if_match(matches, seen, mname, partial, include_dunder)
+                        end
+                    end
+                    if sep == "." and type(meta.fields) == "table" then
+                        for fname in pairs(meta.fields) do
+                            add_if_match(matches, seen, fname, partial, include_dunder)
+                        end
+                    end
+                end
+                for i = 1, #REF_META_COMPLETIONS do
+                    add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
+                end
+            elseif kind == "released" then
+                for i = 1, #REF_META_COMPLETIONS do
+                    add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
+                end
+            elseif rawget(val, METHOD_KEY) ~= nil then
+                local m_st = rawget(val, METHOD_KEY)
+                local method_helpers
+                if m_st.ov ~= nil then
+                    method_helpers = sep == "."
+                        and { "hook", "sig", "signature" }
+                        or { "hook", "signature" }
+                else
+                    method_helpers = { "hook", "overload", "overloads" }
+                end
+                for i = 1, #method_helpers do
+                    add_if_match(matches, seen, method_helpers[i], partial, include_dunder)
+                end
+            else
+                -- Plain Lua table: iterate via next to avoid triggering custom __pairs.
+                for k in next, val do
+                    if is_identifier_key(k) then
+                        if not (val == target and k:sub(1, 6) == "_repl_" and partial:sub(1, 5) ~= "_repl") then
+                            add_if_match(matches, seen, k, partial, include_dunder)
+                        end
+                    end
+                end
+            end
+            t_sort(matches)
+            local prefix = base .. sep
+            local out = {}
+            local cap = m_min(#matches, 200)
+            for i = 1, cap do
+                out[i] = prefix .. matches[i]
+            end
+            return json_encode(json_array(out))
+        end
+
+        if not text:match("^[A-Za-z0-9_]*$") then
+            return "[]"
+        end
+        local include_internal = text:sub(1, 1) == "_"
+        for k in next, _G do
+            if is_identifier_key(k) then
+                if include_internal or k:sub(1, 1) ~= "_" then
+                    add_if_match(matches, seen, k, text, true)
+                end
+            end
+        end
+        for i = 1, #LUA_KEYWORDS do
+            add_if_match(matches, seen, LUA_KEYWORDS[i], text, true)
+        end
+        t_sort(matches)
+        local out = {}
+        local cap = m_min(#matches, 200)
+        for i = 1, cap do
+            out[i] = matches[i]
+        end
+        return json_encode(json_array(out))
+    end
+
+    function target._repl_gc()
+        collectgarbage("collect")
+        local mem_kb = collectgarbage("count")
+        local ref_count = 0
+        for _ in pairs(live_refs) do
+            ref_count = ref_count + 1
+        end
+        return json_encode({
+            memory_kb = mem_kb,
+            live_java_refs = ref_count,
+        })
+    end
+
+    local function collect_hook_lines(raw_list)
+        local lines = {}
+        if type(raw_list) == "string" then
+            for line in (raw_list .. "\n"):gmatch("(.-)\n") do
+                if line ~= "" then
+                    lines[#lines + 1] = line
+                end
+            end
+        elseif type(raw_list) == "table" then
+            for i = 1, rawlen(raw_list) do
+                lines[#lines + 1] = safe_tostring(rawget(raw_list, i))
+            end
+        end
+        return lines
+    end
+
+    function target._repl_hooks()
+        local java_lines = {}
+        local native_lines = {}
+        local h = rawget(_G, "hook")
+        local h_list = type(h) == "table" and rawget(h, "list") or nil
+        if type(h_list) == "function" then
+            local ok, list = pcall(h_list)
+            if ok then
+                java_lines = collect_hook_lines(list)
+            end
+        end
+        local n = rawget(_G, "native")
+        local n_list = type(n) == "table" and rawget(n, "list") or nil
+        if type(n_list) == "function" then
+            local ok, list = pcall(n_list)
+            if ok then
+                native_lines = collect_hook_lines(list)
+            end
+        end
+        return json_encode({
+            java = json_array(java_lines),
+            native = json_array(native_lines),
+        })
+    end
+end
+
 install_java_resource_guards()
 install_resource_scope()
+install_repl_runtime()

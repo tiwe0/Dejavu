@@ -311,7 +311,7 @@ control channel into one command:
 ./dejavu plugin -p <process> skill <name>   # read per-plugin SKILL.md
 
 
-./dejavu repl -p <process>
+./dejavu repl -p <process> [--timeout SEC] [--wait SEC] [--no-color] [--history FILE]
 ./dejavu watch hooks/demo.lua -p <process>
 ./dejavu log [-p <process>] [--dump] [--clear]
 ./dejavu test -p <process> [--with-hang-test]

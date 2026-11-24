@@ -414,5 +414,385 @@ class ScriptValidationTest(unittest.TestCase):
             self.assertEqual(connection.sendall.call_count, 2)
 
 
+class ReplTests(unittest.TestCase):
+    def parse(self, *args):
+        with mock.patch.object(sys, "argv", ["dejavuctl", *args]):
+            return dejavuctl.parse_arguments()
+
+    def test_parse_repl_options(self):
+        arguments = self.parse("--repl", "-p", "com.demo.app", "--no-color", "--history", "/tmp/hist")
+        self.assertTrue(arguments.repl)
+        self.assertEqual(arguments.process_option, "com.demo.app")
+        self.assertTrue(arguments.no_color)
+        self.assertEqual(arguments.history, "/tmp/hist")
+
+    def test_lua_long_string_escapes_brackets_and_leading_newline(self):
+        self.assertEqual(dejavuctl.lua_long_string("hello"), "[[\nhello]]")
+        self.assertEqual(dejavuctl.lua_long_string("a]]b"), "[=[\na]]b]=]")
+        self.assertEqual(dejavuctl.lua_long_string("ends]"), "[=[\nends]]=]")
+        self.assertEqual(dejavuctl.lua_long_string("a\r\nb"), "[[\na\nb]]")
+
+    def test_derive_class_alias(self):
+        self.assertEqual(dejavuctl.derive_class_alias("java.lang.StringBuilder"), "StringBuilder")
+        self.assertEqual(
+            dejavuctl.derive_class_alias("android.app.ActivityThread$AppBindData"),
+            "AppBindData",
+        )
+        self.assertEqual(dejavuctl.derive_class_alias("42:com.demo.Helper"), "Helper")
+        with self.assertRaises(dejavuctl.ControlError):
+            dejavuctl.derive_class_alias("com.demo.end")
+
+    def test_split_inspect_args(self):
+        self.assertEqual(dejavuctl.split_inspect_args("app"), ("app", None))
+        self.assertEqual(dejavuctl.split_inspect_args("app getPackage"), ("app", "getPackage"))
+        self.assertEqual(
+            dejavuctl.split_inspect_args('java.use("java.lang.String") "sub"'),
+            ('java.use("java.lang.String")', "sub"),
+        )
+        self.assertEqual(dejavuctl.split_inspect_args("java.app()"), ("java.app()", None))
+
+    def test_run_repl_multiline_ctrl_c_and_dot_commands(self):
+        executed = []
+        session = mock.Mock()
+        session.process_name = "com.demo.app"
+        session.pid = 4321
+        session.reconnect_pending = False
+
+        def fake_execute(script):
+            text = script.decode("utf-8")
+            executed.append(text)
+            if "type(dejavu._repl_eval)" in text:
+                return dejavuctl.RPC_OK, b"true"
+            if "dejavu._repl_eval(" in text:
+                if "function f()\n  return 7\nend" in text:
+                    return dejavuctl.RPC_OK, b'{"ok":true,"incomplete":false,"stdout":"","values":[]}'
+                if "function f()" in text:
+                    return dejavuctl.RPC_OK, b'{"ok":false,"incomplete":true,"stdout":"","error":"eof"}'
+                if "1 +" in text:
+                    return dejavuctl.RPC_OK, b'{"ok":false,"incomplete":true,"stdout":"","error":"eof"}'
+                if "StringBuilder = java.use" in text:
+                    return (
+                        dejavuctl.RPC_OK,
+                        b'{"ok":true,"incomplete":false,"stdout":"","values":["<java.class java.lang.StringBuilder>"]}',
+                    )
+                if "from-file" in text:
+                    return (
+                        dejavuctl.RPC_OK,
+                        b'{"ok":true,"incomplete":false,"stdout":"loaded-ok","values":["123"]}',
+                    )
+                return (
+                    dejavuctl.RPC_OK,
+                    b'{"ok":true,"incomplete":false,"stdout":"hi","values":["42"]}',
+                )
+            if "dejavu._repl_gc()" in text:
+                return dejavuctl.RPC_OK, b'{"memory_kb":128.5,"live_java_refs":2}'
+            if "dejavu._repl_hooks()" in text:
+                return (
+                    dejavuctl.RPC_OK,
+                    b'{"java":["1\\tactive\\tcom.demo.A#foo()V"],"native":[]}',
+                )
+            if "_v.__inspect" in text:
+                return dejavuctl.RPC_OK, b"class com.demo.App\n  getPackageName()"
+            if text == "return 999":
+                return dejavuctl.RPC_OK, b"999"
+            raise AssertionError(f"unexpected script: {text!r}")
+
+        session.execute.side_effect = fake_execute
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lua_file = Path(tmpdir) / "snippet.lua"
+            lua_file.write_text("print('from-file')\nreturn 123\n", encoding="utf-8")
+            inputs = [
+                "1 +\n",
+                KeyboardInterrupt(),
+                "function f()\n",
+                "  return 7\n",
+                "end\n",
+                "f()\n",
+                ".5\n",
+                ".help\n",
+                ".use java.lang.StringBuilder\n",
+                ".inspect app getPackage\n",
+                f".load {lua_file}\n",
+                ".hooks\n",
+                ".gc\n",
+                ".reconnect\n",
+                ".raw return 999\n",
+                ".quit\n",
+            ]
+            input_iter = iter(inputs)
+
+            def fake_read(_prompt):
+                nxt = next(input_iter)
+                if isinstance(nxt, BaseException):
+                    raise nxt
+                return nxt
+
+            stdout_buf = io.StringIO()
+            stdout_buf.buffer = io.BytesIO()
+            stdout_buf.isatty = lambda: True
+            stderr_buf = io.StringIO()
+            with mock.patch.object(dejavuctl, "read_command", side_effect=fake_read), \
+                 mock.patch.object(dejavuctl, "readline", None), \
+                 mock.patch.object(sys, "stdin", new=mock.Mock(isatty=lambda: True)), \
+                 mock.patch.object(sys, "stdout", new=stdout_buf), \
+                 mock.patch.object(sys, "stderr", new=stderr_buf):
+                rc = dejavuctl.run_repl(session, no_color=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stderr_buf.getvalue(), "")
+        out = stdout_buf.getvalue()
+        self.assertIn("Dejavu REPL connected to com.demo.app (pid 4321)", out)
+        self.assertIn("hi", out)
+        self.assertIn("42", out)
+        self.assertIn("Dejavu Lua REPL commands:", out)
+        self.assertIn("StringBuilder = <java.class java.lang.StringBuilder>", out)
+        self.assertIn("getPackageName()", out)
+        self.assertIn("loaded-ok", out)
+        self.assertIn("123", out)
+        self.assertIn("Java hooks (1):", out)
+        self.assertIn("GC complete: 128.5 KB Lua memory, 2 live Java ref(s)", out)
+        self.assertIn("Reconnected to com.demo.app (pid 4321)", out)
+        self.assertEqual(stdout_buf.buffer.getvalue(), b"999\n")
+        session.reconnect.assert_called_once()
+
+    def test_non_tty_repl_does_not_swallow_keyboard_interrupt(self):
+        session = mock.Mock()
+        session.process_name = "com.demo.app"
+        session.pid = 4321
+        session.reconnect_pending = False
+        session.execute.return_value = (dejavuctl.RPC_OK, b"true")
+        with mock.patch.object(dejavuctl, "read_command", side_effect=KeyboardInterrupt()), \
+             mock.patch.object(sys, "stdin", new=mock.Mock(isatty=lambda: False)), \
+             mock.patch.object(sys, "stdout", new=io.StringIO()), \
+             mock.patch.object(sys, "stderr", new=io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                dejavuctl.run_repl(session, no_color=True)
+
+    def test_run_repl_fallback_mode_and_eof_avoids_duplicate_rpc(self):
+        session = mock.Mock()
+        session.process_name = "com.demo.legacy"
+        session.pid = 777
+        session.reconnect_pending = False
+        eval_calls = []
+
+        def fake_execute(script):
+            text = script.decode("utf-8")
+            if "type(dejavu._repl_eval)" in text:
+                return dejavuctl.RPC_OK, b"false"
+            eval_calls.append(text)
+            return dejavuctl.RPC_OK, b'{"ok":false,"incomplete":true,"stdout":"","error":"eof"}'
+
+        session.execute.side_effect = fake_execute
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with mock.patch.object(dejavuctl, "read_command", side_effect=["function broken()\n", EOFError()]), \
+             mock.patch.object(sys, "stdin", new=mock.Mock(isatty=lambda: False)), \
+             mock.patch.object(sys, "stdout", new=stdout_buf), \
+             mock.patch.object(sys, "stderr", new=stderr_buf):
+            rc = dejavuctl.run_repl(session, no_color=True)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(eval_calls), 1)
+        self.assertIn("eof", stderr_buf.getvalue())
+
+    def test_repl_completer_dot_commands_and_remote_candidates(self):
+        session = mock.Mock()
+        session.reconnect_pending = False
+        session.execute.return_value = (
+            dejavuctl.RPC_OK,
+            b'["app:getPackageManager","app:getPackageName"]',
+        )
+        runner = dejavuctl.ReplRunner(session, interactive=True)
+        runner.has_native_repl = True
+        completer = dejavuctl.ReplCompleter(runner)
+
+        fake_rl = mock.Mock()
+        fake_rl.get_line_buffer.return_value = ".ins"
+        with mock.patch.object(dejavuctl, "readline", fake_rl):
+            self.assertEqual(completer.complete(".ins", 0), ".inspect")
+            self.assertIsNone(completer.complete(".ins", 1))
+
+        fake_rl.get_line_buffer.return_value = "app:getP"
+        with mock.patch.object(dejavuctl, "readline", fake_rl):
+            self.assertEqual(completer.complete("app:getP", 0), "app:getPackageManager")
+            self.assertEqual(completer.complete("app:getP", 1), "app:getPackageName")
+            self.assertIsNone(completer.complete("app:getP", 2))
+
+        # Must never fail or call session.execute when reconnect_pending is True
+        session.execute.reset_mock()
+        session.reconnect_pending = True
+        with mock.patch.object(dejavuctl, "readline", fake_rl):
+            self.assertIsNone(completer.complete("app:getP", 0))
+        session.execute.assert_not_called()
+
+        # Dot-commands must not complete while inside a multiline continuation
+        runner.in_continuation = True
+        fake_rl.get_line_buffer.return_value = ".ins"
+        with mock.patch.object(dejavuctl, "readline", fake_rl):
+            self.assertIsNone(completer.complete(".ins", 0))
+
+    def test_repl_complete_uses_short_timeout_and_marks_reconnect_pending(self):
+        session = mock.Mock()
+        session.port = 12345
+        session.token = b"\x01" * 32
+        session.timeout = 40.0
+        session.reconnect_pending = False
+        runner = dejavuctl.ReplRunner(session, interactive=True)
+        runner.has_native_repl = True
+
+        with mock.patch.object(
+            dejavuctl, "execute_with_port", side_effect=socket.timeout("hung")
+        ) as exec_port:
+            self.assertEqual(runner.complete_remote("app:getP"), [])
+        self.assertTrue(session.reconnect_pending)
+        self.assertLessEqual(exec_port.call_args.args[5], dejavuctl.REPL_COMPLETE_TIMEOUT)
+        self.assertEqual(exec_port.call_args.args[6], 0.0)
+
+    def test_repl_style_prompt_control_bytes_and_dot_command_resilience(self):
+        # Never leak raw \x01/\x02 when readline is inactive or libedit
+        self.assertNotIn("\x01", dejavuctl.ReplStyle(enabled=True, readline_mode="none").prompt("p> "))
+        self.assertNotIn("\x01", dejavuctl.ReplStyle(enabled=True, readline_mode="libedit").prompt("p> "))
+        self.assertIn("\x01", dejavuctl.ReplStyle(enabled=True, readline_mode="gnu").prompt("p> "))
+
+        session = mock.Mock()
+        session.process_name = "com.demo.app"
+        session.pid = 99
+        session.reconnect_pending = False
+        responses = iter(
+            [
+                (dejavuctl.RPC_OK, b"true"),  # initial probe
+                (dejavuctl.RPC_OK, b"not-json"),  # .gc malformed JSON
+                (dejavuctl.RPC_OK, b'{"memory_kb":null,"live_java_refs":null}'),  # .gc nulls
+                (dejavuctl.RPC_OK, b"[]"),  # .hooks non-dict JSON
+            ]
+        )
+        session.execute.side_effect = lambda _script: next(responses)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_utf8 = Path(tmpdir) / "bad bin.lua"
+            bad_utf8.write_bytes(b"\xff\xfe\xfd")
+            inputs = [
+                f'.load "{bad_utf8}"\n',
+                ".gc\n",
+                ".gc\n",
+                ".hooks\n",
+                ".quit\n",
+            ]
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            with mock.patch.object(dejavuctl, "read_command", side_effect=inputs), \
+                 mock.patch.object(sys, "stdin", new=mock.Mock(isatty=lambda: False)), \
+                 mock.patch.object(sys, "stdout", new=stdout_buf), \
+                 mock.patch.object(sys, "stderr", new=stderr_buf):
+                rc = dejavuctl.run_repl(session, no_color=True)
+
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot decode", stderr_buf.getvalue())
+        self.assertIn("invalid REPL response payload", stderr_buf.getvalue())
+        self.assertIn("GC complete: 0.0 KB Lua memory, 0 live Java ref(s)", stdout_buf.getvalue())
+
+    def test_repl_safety_reserved_aliases_nul_load_control_session_quick_and_history_preserve(self):
+        # 1) .use rejects reserved core globals (both derived and explicit)
+        with self.assertRaises(dejavuctl.ControlError):
+            dejavuctl.derive_class_alias("com.example.dejavu")
+        self.assertEqual(dejavuctl.derive_class_alias("[Ljava.lang.String;"), "String")
+
+        # 2) ControlSession with port=None never triggers reconnect/refresh_metadata on Tab
+        real_session = dejavuctl.ControlSession(None, "com.demo.app", 40.0, 5.0)
+        real_session.port = None
+        real_session.token = None
+        real_session.reconnect_pending = False
+        runner = dejavuctl.ReplRunner(real_session, interactive=True)
+        runner.has_native_repl = True
+        with mock.patch.object(real_session, "refresh_metadata") as refresh:
+            self.assertEqual(runner.complete_remote("app:getP"), [])
+        refresh.assert_not_called()
+        self.assertTrue(real_session.reconnect_pending)
+
+        # 3) Failed ControlSession.reconnect() marks reconnect_pending = True
+        real_session.reconnect_pending = False
+        real_session.wait_seconds = 0.0
+        with mock.patch.object(real_session, "refresh_metadata", side_effect=dejavuctl.ControlError("down")):
+            with self.assertRaises(dejavuctl.ControlError):
+                real_session.reconnect()
+        self.assertTrue(real_session.reconnect_pending)
+
+        # 4) .load with embedded NUL byte and empty quotes does not crash REPL
+        session = mock.Mock()
+        session.process_name = "com.demo.app"
+        session.pid = 77
+        session.reconnect_pending = False
+        session.execute.return_value = (dejavuctl.RPC_OK, b"true")
+        stderr_buf = io.StringIO()
+        with mock.patch.object(
+            dejavuctl,
+            "read_command",
+            side_effect=[
+                '.use java.lang.String dejavu\n',
+                '.load ""\n',
+                '.load /tmp/bad\x00file.lua\n',
+                '.quit\n',
+            ],
+        ), \
+             mock.patch.object(sys, "stdin", new=mock.Mock(isatty=lambda: False)), \
+             mock.patch.object(sys, "stdout", new=io.StringIO()), \
+             mock.patch.object(sys, "stderr", new=stderr_buf):
+            rc = dejavuctl.run_repl(session, no_color=True)
+        self.assertEqual(rc, 1)
+        err_text = stderr_buf.getvalue()
+        self.assertIn("reserved Lua alias", err_text)
+        self.assertIn("usage: .load <file.lua>", err_text)
+        self.assertIn("cannot read", err_text)
+
+        # 5) configured_readline must not overwrite a foreign/unreadable history file on EINVAL
+        fake_rl = mock.Mock()
+        fake_rl.__doc__ = "Importing this module enables command line editing using libedit."
+        fake_rl.get_completer.return_value = None
+        fake_rl.get_completer_delims.return_value = " "
+        fake_rl.read_history_file.side_effect = OSError(22, "Invalid argument")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hist = Path(tmpdir) / "gnu_history"
+            hist.write_text("plain text history\n", encoding="utf-8")
+            with mock.patch.object(dejavuctl, "readline", fake_rl):
+                with dejavuctl.configured_readline(runner, history_path=str(hist)) as mode:
+                    self.assertEqual(mode, "libedit")
+        fake_rl.write_history_file.assert_not_called()
+
+    def test_maybe_reprobe_retries_after_initial_transport_failure_and_pid_change(self):
+        session = mock.Mock()
+        session.process_name = "com.demo.app"
+        session.pid = 100
+        session.reconnect_pending = False
+        calls = []
+
+        def fake_reconnect():
+            session.reconnect_pending = False
+            session.pid = 200
+
+        session.reconnect.side_effect = fake_reconnect
+
+        def fake_execute(script):
+            text = script.decode("utf-8")
+            calls.append((session.pid, text))
+            if len(calls) == 1:
+                raise dejavuctl.OutcomeUnknownError("initial drop")
+            if "type(dejavu._repl_eval)" in text:
+                return dejavuctl.RPC_OK, b"true"
+            return dejavuctl.RPC_OK, b'{"ok":true,"incomplete":false,"stdout":"","values":["7"]}'
+
+        session.execute.side_effect = fake_execute
+        runner = dejavuctl.ReplRunner(session, interactive=False)
+        self.assertFalse(runner.probe_native_repl())
+        self.assertFalse(runner.probe_succeeded)
+        self.assertTrue(session.reconnect_pending)
+
+        res = runner.eval_code("3 + 4")
+        self.assertTrue(res["ok"])
+        self.assertTrue(runner.has_native_repl)
+        self.assertEqual(runner.probed_pid, 200)
+        session.reconnect.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

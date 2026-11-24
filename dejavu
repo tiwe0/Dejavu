@@ -25,6 +25,7 @@ from pathlib import Path
 import re
 import selectors
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -577,6 +578,20 @@ def command_mcp(args: argparse.Namespace) -> int:
     )
 
 
+def _is_foreground_tty_pgrp() -> bool:
+    try:
+        pgrp = os.getpgrp()
+    except OSError:
+        return False
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            if stream is not None and stream.isatty() and os.tcgetpgrp(stream.fileno()) == pgrp:
+                return True
+        except (OSError, ValueError, AttributeError):
+            continue
+    return False
+
+
 def delegate_dejavuctl(args: argparse.Namespace, extra: list[str]) -> int:
     if not DEJAVUCTL.is_file():
         fail(f"dejavuctl not found: {DEJAVUCTL}")
@@ -584,8 +599,20 @@ def delegate_dejavuctl(args: argparse.Namespace, extra: list[str]) -> int:
     env["ADB"] = os.environ.get("ADB") or args.adb or "adb"
     if args.serial or os.environ.get("ADB_SERIAL"):
         env["ADB_SERIAL"] = args.serial or os.environ["ADB_SERIAL"]
-    result = subprocess.run([sys.executable, str(DEJAVUCTL), *extra], env=env)
-    return result.returncode
+    proc = subprocess.Popen([sys.executable, str(DEJAVUCTL), *extra], env=env)
+    while True:
+        try:
+            rc = proc.wait()
+            return 128 + (-rc) if rc < 0 else rc
+        except KeyboardInterrupt:
+            # In a foreground TTY process group, Ctrl-C already delivered SIGINT to
+            # dejavuctl; avoid double-signaling while letting it cancel a REPL block,
+            # save history, and clean up adb port forwards.
+            if not _is_foreground_tty_pgrp() and proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except (OSError, KeyboardInterrupt):
+                    pass
 
 
 def command_exec(args: argparse.Namespace) -> int:
@@ -598,7 +625,18 @@ def command_exec(args: argparse.Namespace) -> int:
 
 
 def command_repl(args: argparse.Namespace) -> int:
-    return delegate_dejavuctl(args, ["-p", args.process, "-i"])
+    extra = [
+        "-p",
+        args.process,
+        "-i",
+        f"--timeout={args.timeout}",
+        f"--wait={args.wait}",
+    ]
+    if args.no_color:
+        extra.append("--no-color")
+    if args.history:
+        extra.append(f"--history={Path(args.history).expanduser()}")
+    return delegate_dejavuctl(args, extra)
 
 
 def command_watch(args: argparse.Namespace) -> int:
@@ -1127,6 +1165,16 @@ def positive_timeout(value: str) -> float:
     return timeout
 
 
+def non_negative_wait(value: str) -> float:
+    try:
+        wait = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("wait must be a non-negative finite number") from error
+    if not math.isfinite(wait) or wait < 0:
+        raise argparse.ArgumentTypeError("wait must be a non-negative finite number")
+    return wait
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dejavu",
@@ -1213,6 +1261,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = subparsers.add_parser("repl", help="interactive Lua REPL in the target process")
     sub.add_argument("-p", "--process", default="bin.mt.plus")
+    sub.add_argument(
+        "--timeout", type=positive_timeout, default=40.0, metavar="SECONDS",
+        help="RPC exchange deadline in seconds (default: 40); does not cancel remote Lua",
+    )
+    sub.add_argument(
+        "--wait", type=non_negative_wait, default=5.0, metavar="SECONDS",
+        help="seconds to wait for the target RPC endpoint (default: 5)",
+    )
+    sub.add_argument("--no-color", action="store_true", help="disable ANSI colors in REPL output")
+    sub.add_argument("--history", metavar="FILE", default=None, help="custom REPL history file")
     sub.set_defaults(func=command_repl)
 
     sub = subparsers.add_parser("watch", help="re-execute a Lua file whenever it changes")

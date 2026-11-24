@@ -8,6 +8,10 @@ import math
 import os
 from pathlib import Path
 import re
+try:
+    import readline
+except ImportError:
+    readline = None
 import secrets
 import shlex
 import socket
@@ -438,6 +442,19 @@ class ControlSession:
             self.wait_seconds,
         )
 
+    def execute_quick(self, script, timeout):
+        if self.reconnect_pending or self.port is None or self.token is None:
+            return RPC_UNAVAILABLE, b"target Agent is not connected"
+        return execute_with_port(
+            self.port,
+            self.token,
+            RPC_EXECUTE_REQUEST,
+            RPC_EXECUTE_RESPONSE,
+            script,
+            min(self.timeout, timeout),
+            0.0,
+        )
+
     def reconnect(self):
         previous_pid = self.pid
         last_error = ControlError("Agent reconnect probe failed")
@@ -445,6 +462,7 @@ class ControlSession:
         deadline = time.monotonic() + self.wait_seconds
         single_attempt_only = self.wait_seconds <= 0
         self.close()
+        self.reconnect_pending = True
         while True:
             try:
                 self.refresh_metadata(
@@ -509,7 +527,7 @@ def parse_arguments():
         "-i",
         "--repl",
         action="store_true",
-        help="read and execute one line of Lua at a time until exit/quit/EOF",
+        help="start an interactive Lua REPL with multiline input, Tab completion, and dot-commands",
     )
     parser.add_argument(
         "--watch",
@@ -528,7 +546,18 @@ def parse_arguments():
     parser.add_argument("--wait", type=float, default=5.0, metavar="SECONDS")
     parser.add_argument(
         "--timeout", type=float, default=40.0, metavar="SECONDS",
-        help="RPC RPC exchange deadline in seconds (default: 40); does not cancel remote Lua",
+        help="RPC exchange deadline in seconds (default: 40); does not cancel remote Lua",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="disable ANSI colors in interactive REPL output",
+    )
+    parser.add_argument(
+        "--history",
+        metavar="FILE",
+        default=None,
+        help="history file path for interactive REPL (default: ~/.dejavu_repl_history)",
     )
     arguments = parser.parse_args()
     arguments.script = None
@@ -594,7 +623,7 @@ def load_script_snapshot(path_text):
                 before = stat_identity(os.fstat(source.fileno()))
                 script = source.read(MAX_PAYLOAD_SIZE + 1)
                 after = stat_identity(os.fstat(source.fileno()))
-        except OSError as error:
+        except (OSError, ValueError) as error:
             raise ControlError(f"cannot read {path_text}: {error}") from error
         if before == after:
             validate_script(script)
@@ -634,31 +663,789 @@ def execute_with_status_reconnect(session, script):
     return execute_with_reconnect(session, script)
 
 
-def run_repl(session):
-    had_error = False
-    while True:
-        try:
-            line = read_command("dejavu> ")
-        except EOFError:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            break
-        command = line.rstrip("\n")
-        if command.strip() in ("exit", "quit"):
-            break
-        if not command.strip():
+LUA_IDENT_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+JAVA_CLASS_PATTERN = re.compile(r"(?:\d+:)?[A-Za-z0-9_.$+\[\]/;]+\Z")
+LUA_KEYWORDS = frozenset(
+    {
+        "and", "break", "do", "else", "elseif", "end", "false", "for",
+        "function", "goto", "if", "in", "local", "nil", "not", "or",
+        "repeat", "return", "then", "true", "until", "while",
+    }
+)
+REPL_RESERVED_ALIASES = frozenset(
+    {
+        "_G", "dejavu", "hook", "java", "native", "plugin",
+    }
+)
+REPL_DOT_COMMANDS = (
+    ".clear",
+    ".exit",
+    ".gc",
+    ".help",
+    ".hooks",
+    ".inspect",
+    ".load",
+    ".quit",
+    ".raw",
+    ".reconnect",
+    ".use",
+)
+REPL_HISTORY_MAX = 1000
+REPL_COMPLETER_DELIMS = " \t\n;()[]{}+-*/%^#=<>~,'\""
+
+REPL_HELP_TEXT = """\
+Dejavu Lua REPL commands:
+  .help                    Show this help message
+  .use <class> [alias]     Bind <alias> = java.use("<class>") (auto-derives short alias)
+  .inspect <expr> [filter] Inspect Java class or object methods/fields
+  .load <file.lua>         Execute a local Lua file in the target session
+  .hooks                   List active Java and native hooks
+  .gc                      Run Lua GC and report memory + live Java refs
+  .reconnect               Rediscover target endpoint and verify Agent channel
+  .raw <lua>               Send raw Lua without REPL wrapping
+  .clear                   Clear the terminal screen
+  .exit / .quit            Leave the REPL (or press Ctrl-D)
+
+Tips:
+  - Expressions auto-return and pretty-print; print(...) output is captured inline.
+  - _ holds the last non-nil expression result.
+  - Incomplete blocks (function/if/for/tables) continue with "... > "; Ctrl-C cancels.
+  - Press Tab to complete globals, tables, Cls:method / Cls.field, and obj:method.
+  - Quick start:  app = java.app()   |   .use java.lang.StringBuilder   |   .inspect app
+"""
+
+
+def lua_quote(text):
+    escaped = (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+def lua_long_string(text):
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for level in range(0, 16):
+        eq = "=" * level
+        closing = f"]{eq}]"
+        if closing not in normalized and not normalized.endswith(f"]{eq}"):
+            # Lua strips a single leading newline after an opening long bracket.
+            return f"[{eq}[\n{normalized}]{eq}]"
+    return lua_quote(normalized)
+
+
+def derive_class_alias(class_name):
+    short = class_name.rsplit(":", 1)[-1]
+    short = short.rstrip(";")
+    short = short.rsplit(".", 1)[-1]
+    short = short.rsplit("/", 1)[-1]
+    short = short.rsplit("$", 1)[-1]
+    short = short.rstrip("[]")
+    if (
+        not short
+        or LUA_IDENT_PATTERN.fullmatch(short) is None
+        or short in LUA_KEYWORDS
+        or short in REPL_RESERVED_ALIASES
+    ):
+        raise ControlError(
+            f"cannot derive a safe Lua identifier alias from {class_name!r}; "
+            "specify an explicit alias: .use <class> <alias>"
+        )
+    return short
+
+
+def split_inspect_args(arg_text):
+    text = arg_text.strip()
+    if not text:
+        return None, None
+    depth = 0
+    quote = None
+    escaped = False
+    long_eq = None
+    split_index = None
+    index = 0
+    length = len(text)
+    while index < length:
+        ch = text[index]
+        if long_eq is not None:
+            closing = f"]{long_eq}]"
+            if text.startswith(closing, index):
+                index += len(closing)
+                long_eq = None
+                continue
+            index += 1
             continue
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            index += 1
+            continue
+        if ch == "[":
+            end_eq = index + 1
+            while end_eq < length and text[end_eq] == "=":
+                end_eq += 1
+            if end_eq < length and text[end_eq] == "[":
+                long_eq = "=" * (end_eq - index - 1)
+                index = end_eq + 1
+                continue
+            depth += 1
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch in ("(", "{"):
+            depth += 1
+        elif ch in (")", "]", "}"):
+            depth = max(0, depth - 1)
+        elif ch.isspace() and depth == 0:
+            split_index = index
+            break
+        index += 1
+    if split_index is None:
+        return text, None
+    expr = text[:split_index].strip()
+    filt_raw = text[split_index:].strip()
+    if not filt_raw:
+        return expr, None
+    try:
+        tokens = shlex.split(filt_raw)
+        filt = tokens[0] if len(tokens) == 1 else filt_raw
+    except ValueError:
+        filt = filt_raw
+    return expr, (filt or None)
+
+
+class ReplStyle:
+    def __init__(self, enabled=False, readline_mode="none"):
+        self.enabled = enabled
+        self.readline_mode = readline_mode
+
+    def _wrap(self, code, text):
+        if not self.enabled:
+            return text
+        return f"\x1b[{code}m{text}\x1b[0m"
+
+    def cyan(self, text):
+        return self._wrap("36", text)
+
+    def bold_cyan(self, text):
+        return self._wrap("1;36", text)
+
+    def green(self, text):
+        return self._wrap("32", text)
+
+    def dim(self, text):
+        return self._wrap("2", text)
+
+    def red(self, text):
+        return self._wrap("31", text)
+
+    def yellow(self, text):
+        return self._wrap("33", text)
+
+    def prompt(self, text):
+        # macOS libedit mishandles RL_PROMPT_START_IGNORE (\x01/\x02); only emit them for GNU readline.
+        if not self.enabled or self.readline_mode == "libedit":
+            return text
+        if self.readline_mode == "gnu":
+            return f"\x01\x1b[1;36m\x02{text}\x01\x1b[0m\x02"
+        return self.bold_cyan(text)
+
+    def cont_prompt(self, text):
+        if not self.enabled or self.readline_mode == "libedit":
+            return text
+        if self.readline_mode == "gnu":
+            return f"\x01\x1b[2m\x02{text}\x01\x1b[0m\x02"
+        return self.dim(text)
+
+
+def build_fallback_eval_script(code):
+    code_lit = lua_long_string(code)
+    return (
+        "local _c = " + code_lit + "\n"
+        "local _rg, _rs, _pc, _ts, _ty, _tc, _sf, _tp = rawget, rawset, pcall, tostring, type, table.concat, string.format, table.pack\n"
+        "local function _sts(v) local ok, s = _pc(_ts, v) return (ok and _ty(s) == 'string') and s or ('<' .. _ty(v) .. '>') end\n"
+        "local function _u8len(s, i)\n"
+        "  local b1 = s:byte(i) if not b1 then return 0 end if b1 < 128 then return 1 end\n"
+        "  local b2 = s:byte(i+1) if not b2 or b2 < 128 or b2 > 191 then return 0 end\n"
+        "  if b1 >= 194 and b1 <= 223 then return 2 end\n"
+        "  local b3 = s:byte(i+2) if not b3 or b3 < 128 or b3 > 191 then return 0 end\n"
+        "  if b1 >= 224 and b1 <= 239 then\n"
+        "    if (b1 == 224 and b2 < 160) or (b1 == 237 and b2 > 159) then return 0 end\n"
+        "    return 3\n"
+        "  end\n"
+        "  local b4 = s:byte(i+3) if not b4 or b4 < 128 or b4 > 191 then return 0 end\n"
+        "  if b1 >= 240 and b1 <= 244 then\n"
+        "    if (b1 == 240 and b2 < 144) or (b1 == 244 and b2 > 143) then return 0 end\n"
+        "    return 4\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n"
+        "local function _clip(s, m)\n"
+        "  if #s <= m then return s end\n"
+        "  local i, last = 1, 0\n"
+        "  while i <= m do local l = _u8len(s, i) local step = l > 0 and l or 1 if i + step - 1 > m then break end last = i + step - 1 i = i + step end\n"
+        "  return s:sub(1, last) .. '...'\n"
+        "end\n"
+        "local function _je(s)\n"
+        "  local out, i, n = {}, 1, #s\n"
+        "  while i <= n do\n"
+        "    local b = s:byte(i)\n"
+        "    if b == 92 then out[#out+1] = '\\\\\\\\'; i = i + 1\n"
+        "    elseif b == 34 then out[#out+1] = '\\\\\"'; i = i + 1\n"
+        "    elseif b == 10 then out[#out+1] = '\\\\n'; i = i + 1\n"
+        "    elseif b == 13 then out[#out+1] = '\\\\r'; i = i + 1\n"
+        "    elseif b == 9 then out[#out+1] = '\\\\t'; i = i + 1\n"
+        "    elseif b < 32 or b == 127 then out[#out+1] = _sf('\\\\u%04x', b); i = i + 1\n"
+        "    elseif b < 128 then out[#out+1] = s:sub(i, i); i = i + 1\n"
+        "    else\n"
+        "      local l = _u8len(s, i)\n"
+        "      if l > 0 then out[#out+1] = s:sub(i, i + l - 1); i = i + l\n"
+        "      else out[#out+1] = _sf('\\\\u%04x', b); i = i + 1 end\n"
+        "    end\n"
+        "  end\n"
+        "  return '\"' .. _tc(out) .. '\"'\n"
+        "end\n"
+        "local function _is_inc(e)\n"
+        "  if _ty(e) ~= 'string' or not e:match('<eof>%s*$') then return false end\n"
+        "  if e:find('unfinished string near <eof>', 1, true) then\n"
+        "    local b1 = _c:match('(\\\\+)$')\n"
+        "    if b1 and (#b1 % 2 == 1) then return true end\n"
+        "    local b2 = _c:match('(\\\\+)z%s*$')\n"
+        "    return b2 ~= nil and (#b2 % 2 == 1)\n"
+        "  end\n"
+        "  return true\n"
+        "end\n"
+        "local _fn, _e1 = load('return ' .. _c, '=repl', 't')\n"
+        "local _e2 = nil\n"
+        "if not _fn then _fn, _e2 = load(_c, '=repl', 't') end\n"
+        "if not _fn then\n"
+        "  local _e = _sts(_e2 or _e1)\n"
+        "  local _inc = _is_inc(_e2) or _is_inc(_e1)\n"
+        "  return '{\"ok\":false,\"incomplete\":' .. (_inc and 'true' or 'false') .. ',\"stdout\":\"\",\"error\":' .. _je(_e) .. '}'\n"
+        "end\n"
+        "local _out, _ob, _ot = {}, 0, false\n"
+        "local _op = _rg(_G, 'print')\n"
+        "local _rp = function(...)\n"
+        "  if _ot then return end\n"
+        "  local t = {} for i = 1, select('#', ...) do t[i] = _ts(select(i, ...)) end\n"
+        "  local l = _tc(t, '\\t')\n"
+        "  if #_out >= 512 or _ob + #l > 65536 then _ot = true; _out[#_out+1] = '... (stdout truncated)'; return end\n"
+        "  _out[#_out+1] = l; _ob = _ob + #l + 1\n"
+        "end\n"
+        "_rs(_G, 'print', _rp)\n"
+        "local _r = _tp(_pc(_fn))\n"
+        "if _rg(_G, 'print') == _rp then _rs(_G, 'print', _op) end\n"
+        "local _so = _tc(_out, '\\n')\n"
+        "if not _r[1] then return '{\"ok\":false,\"incomplete\":false,\"stdout\":' .. _je(_so) .. ',\"error\":' .. _je(_sts(_r[2])) .. '}' end\n"
+        "local _vs = {}\n"
+        "if _r.n >= 2 then\n"
+        "  if _r[2] ~= nil then _rs(_G, '_', _r[2]) end\n"
+        "  local _tv = _r.n - 1\n"
+        "  local _cap = math.min(_tv, 64)\n"
+        "  for i = 2, _cap + 1 do _vs[#_vs+1] = _je(_clip(_sts(_r[i]), 4096)) end\n"
+        "  if _tv > _cap then _vs[#_vs+1] = _je('... (+' .. _ts(_tv - _cap) .. ' more values)') end\n"
+        "end\n"
+        "return '{\"ok\":true,\"incomplete\":false,\"stdout\":' .. _je(_so) .. ',\"values\":[' .. _tc(_vs, ',') .. ']}'\n"
+    )
+
+
+class ReplCompleter:
+    def __init__(self, runner):
+        self.runner = runner
+        self._matches = []
+
+    def complete(self, text, state):
+        if state == 0:
+            self._matches = self.compute_matches(text)
+        if state < len(self._matches):
+            return self._matches[state]
+        return None
+
+    def compute_matches(self, text):
+        line_buffer = ""
+        if readline is not None:
+            try:
+                line_buffer = readline.get_line_buffer()
+            except Exception:
+                line_buffer = ""
+        stripped = line_buffer.lstrip()
+        if (
+            not self.runner.in_continuation
+            and stripped.startswith(".")
+            and " " not in stripped
+            and "\t" not in stripped
+        ):
+            return [cmd for cmd in REPL_DOT_COMMANDS if cmd.startswith(text)]
+        if not text:
+            return []
+        return self.runner.complete_remote(text)
+
+
+REPL_COMPLETE_TIMEOUT = 1.5
+
+
+class ReplRunner:
+    def __init__(self, session, interactive=False, style=None):
+        self.session = session
+        self.interactive = interactive
+        self.style = style or ReplStyle(enabled=False)
+        self.has_native_repl = False
+        self.probe_succeeded = False
+        self.probed_pid = None
+        self.in_continuation = False
+        self.had_error = False
+
+    def _emit_out(self, text):
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _emit_err(self, message):
+        self.had_error = True
+        sys.stderr.write(self.style.red(str(message)) + "\n")
+        sys.stderr.flush()
+
+    def _parse_json_dict(self, payload):
         try:
-            status, payload = execute_with_reconnect(session, command.encode("utf-8"))
-            if status == RPC_OK:
-                print_payload(payload)
+            data = json.loads(payload.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as error:
+            raise ControlError(f"invalid REPL response payload: {error}") from error
+        if not isinstance(data, dict):
+            raise ControlError("invalid REPL response payload")
+        return data
+
+    def probe_native_repl(self, raise_on_transport=False):
+        probe = b"return type(dejavu) == 'table' and type(dejavu._repl_eval) == 'function'"
+        try:
+            status, payload = execute_with_reconnect(self.session, probe)
+        except (ControlError, OSError, socket.error):
+            self.probe_succeeded = False
+            self.has_native_repl = False
+            if raise_on_transport:
+                raise
+            return False
+        if status == RPC_OK:
+            self.has_native_repl = payload.strip() == b"true"
+            self.probe_succeeded = True
+            self.probed_pid = getattr(self.session, "pid", None)
+            return self.has_native_repl
+        if status == RPC_EXECUTION_ERROR:
+            self.has_native_repl = False
+            self.probe_succeeded = True
+            self.probed_pid = getattr(self.session, "pid", None)
+            return False
+        self.probe_succeeded = False
+        self.has_native_repl = False
+        if raise_on_transport:
+            raise render_rpc_error(self.session.pid, status, payload)
+        return False
+
+    def _maybe_reprobe(self):
+        if getattr(self.session, "reconnect_pending", False):
+            self.session.reconnect()
+        current_pid = getattr(self.session, "pid", None)
+        if not self.probe_succeeded or (current_pid is not None and current_pid != self.probed_pid):
+            self.probe_native_repl(raise_on_transport=True)
+
+    def _dispatch_lua(self, lua_source):
+        script = lua_source.encode("utf-8")
+        validate_script(script)
+        status, payload = execute_with_reconnect(self.session, script)
+        if status != RPC_OK:
+            raise render_rpc_error(self.session.pid, status, payload)
+        return payload
+
+    def eval_code(self, code):
+        if "\0" in code:
+            raise ControlError("Lua script contains a NUL byte")
+        self._maybe_reprobe()
+        if self.has_native_repl:
+            lua_source = f"return dejavu._repl_eval({lua_long_string(code)})"
+        else:
+            lua_source = build_fallback_eval_script(code)
+        payload = self._dispatch_lua(lua_source)
+        return self._parse_json_dict(payload)
+
+    def complete_remote(self, text):
+        if not self.has_native_repl or getattr(self.session, "reconnect_pending", False):
+            return []
+        if "\0" in text or len(text) > 256:
+            return []
+        script = f"return dejavu._repl_complete({lua_quote(text)})".encode("utf-8")
+        try:
+            if isinstance(self.session, ControlSession):
+                status, payload = self.session.execute_quick(script, REPL_COMPLETE_TIMEOUT)
             else:
-                had_error = True
-                print_error(render_rpc_error(session.pid, status, payload))
+                port = getattr(self.session, "port", None)
+                token = getattr(self.session, "token", None)
+                if isinstance(port, int) and isinstance(token, (bytes, bytearray)):
+                    timeout = min(
+                        float(getattr(self.session, "timeout", REPL_COMPLETE_TIMEOUT)),
+                        REPL_COMPLETE_TIMEOUT,
+                    )
+                    status, payload = execute_with_port(
+                        port,
+                        token,
+                        RPC_EXECUTE_REQUEST,
+                        RPC_EXECUTE_RESPONSE,
+                        script,
+                        timeout,
+                        0.0,
+                    )
+                else:
+                    status, payload = self.session.execute(script)
+            if status == RPC_UNAVAILABLE:
+                self.session.reconnect_pending = True
+                return []
+            if status != RPC_OK:
+                return []
+            items = json.loads(payload.decode("utf-8", errors="replace"))
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, str)]
         except (ControlError, OSError, socket.error) as error:
-            had_error = True
-            print_error(error)
-    return 1 if had_error else 0
+            if isinstance(error, OutcomeUnknownError) or is_reconnectable_error(error):
+                self.session.reconnect_pending = True
+            return []
+        except Exception:
+            return []
+        return []
+
+    def render_eval_result(self, result):
+        stdout_text = result.get("stdout") or ""
+        if stdout_text:
+            self._emit_out(self.style.dim(stdout_text))
+        if not result.get("ok"):
+            self._emit_err(result.get("error") or "evaluation failed")
+            return False
+        values = result.get("values")
+        if isinstance(values, list) and values:
+            for item in values:
+                self._emit_out(self.style.green(str(item)))
+        return True
+
+    def handle_dot_command(self, line):
+        stripped = line.strip()
+        parts = stripped.split(None, 1)
+        cmd = parts[0]
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in (".exit", ".quit"):
+            return "exit"
+        if cmd in (".help", ".h", ".?"):
+            self._emit_out(REPL_HELP_TEXT.rstrip("\n"))
+            return "continue"
+        if cmd == ".clear":
+            if self.interactive:
+                sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.flush()
+            return "continue"
+        if cmd == ".reconnect":
+            self.session.reconnect()
+            self.probe_native_repl(raise_on_transport=True)
+            self._emit_out(
+                self.style.cyan(
+                    f"Reconnected to {self.session.process_name} (pid {self.session.pid})"
+                )
+            )
+            return "continue"
+        if cmd == ".gc":
+            self._maybe_reprobe()
+            if self.has_native_repl:
+                payload = self._dispatch_lua("return dejavu._repl_gc()")
+                info = self._parse_json_dict(payload)
+                try:
+                    mem_kb = float(info.get("memory_kb") or 0.0)
+                    refs = int(info.get("live_java_refs") or 0)
+                except (TypeError, ValueError) as error:
+                    raise ControlError(f"invalid GC stats payload: {error}") from error
+                self._emit_out(
+                    self.style.cyan(
+                        f"GC complete: {mem_kb:.1f} KB Lua memory, {refs} live Java ref(s)"
+                    )
+                )
+            else:
+                payload = self._dispatch_lua(
+                    "collectgarbage('collect'); return string.format('%.1f', collectgarbage('count'))"
+                )
+                mem_text = payload.decode("utf-8", errors="replace").strip()
+                self._emit_out(self.style.cyan(f"GC complete: {mem_text} KB Lua memory"))
+            return "continue"
+        if cmd == ".hooks":
+            self._maybe_reprobe()
+            if self.has_native_repl:
+                payload = self._dispatch_lua("return dejavu._repl_hooks()")
+                info = self._parse_json_dict(payload)
+                java_hooks = info.get("java") if isinstance(info.get("java"), list) else []
+                native_hooks = info.get("native") if isinstance(info.get("native"), list) else []
+            else:
+                j_payload = self._dispatch_lua("return (hook and hook.list and hook.list()) or ''")
+                n_payload = self._dispatch_lua(
+                    "return (native and native.list and native.list()) or ''"
+                )
+                java_hooks = [
+                    row for row in j_payload.decode("utf-8", errors="replace").splitlines() if row
+                ]
+                native_hooks = [
+                    row for row in n_payload.decode("utf-8", errors="replace").splitlines() if row
+                ]
+            lines = [self.style.bold_cyan(f"Java hooks ({len(java_hooks)}):")]
+            if java_hooks:
+                lines.extend(f"  {row}" for row in java_hooks)
+            else:
+                lines.append(self.style.dim("  (none)"))
+            lines.append(self.style.bold_cyan(f"Native hooks ({len(native_hooks)}):"))
+            if native_hooks:
+                lines.extend(f"  {row}" for row in native_hooks)
+            else:
+                lines.append(self.style.dim("  (none)"))
+            self._emit_out("\n".join(lines))
+            return "continue"
+        if cmd == ".use":
+            tokens = arg.split()
+            if not tokens or len(tokens) > 2:
+                self._emit_err("usage: .use <class.name> [alias]")
+                return "continue"
+            class_name = tokens[0]
+            if JAVA_CLASS_PATTERN.fullmatch(class_name) is None:
+                self._emit_err(f"invalid Java class name: {class_name!r}")
+                return "continue"
+            if len(tokens) == 2:
+                alias = tokens[1]
+                if (
+                    LUA_IDENT_PATTERN.fullmatch(alias) is None
+                    or alias in LUA_KEYWORDS
+                    or alias in REPL_RESERVED_ALIASES
+                ):
+                    self._emit_err(f"invalid or reserved Lua alias: {alias!r}")
+                    return "continue"
+            else:
+                alias = derive_class_alias(class_name)
+            code = f"{alias} = java.use({lua_quote(class_name)})\nreturn {alias}"
+            result = self.eval_code(code)
+            if result.get("ok"):
+                vals = result.get("values") or []
+                rendered = vals[0] if vals else f"<java.class {class_name}>"
+                self._emit_out(self.style.green(f"{alias} = {rendered}"))
+            else:
+                self.render_eval_result(result)
+            return "continue"
+        if cmd == ".inspect":
+            expr, filt = split_inspect_args(arg)
+            if not expr:
+                self._emit_err("usage: .inspect <expr> [filter]")
+                return "continue"
+            filter_arg = lua_quote(filt) if filt is not None else ""
+            inspect_lua = (
+                f"local _v = (\n{expr}\n)\n"
+                "assert(_v ~= nil, 'cannot inspect nil')\n"
+                "local _ok, _fn = pcall(function() return _v.__inspect end)\n"
+                "assert(_ok and type(_fn) == 'function', 'value does not support :__inspect()')\n"
+                f"return _fn(_v{', ' + filter_arg if filter_arg else ''})"
+            )
+            payload = self._dispatch_lua(inspect_lua)
+            self._emit_out(payload.decode("utf-8", errors="replace").rstrip("\n"))
+            return "continue"
+        if cmd == ".load":
+            if not arg:
+                self._emit_err("usage: .load <file.lua>")
+                return "continue"
+            raw_path = arg
+            if len(raw_path) >= 2 and raw_path[0] == raw_path[-1] and raw_path[0] in ("'", '"'):
+                raw_path = raw_path[1:-1]
+            if not raw_path:
+                self._emit_err("usage: .load <file.lua>")
+                return "continue"
+            file_path = str(Path(raw_path).expanduser())
+            script_bytes = load_script_file(file_path)
+            try:
+                code = script_bytes.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ControlError(f"cannot decode {file_path} as UTF-8: {error}") from error
+            result = self.eval_code(code)
+            if self.render_eval_result(result):
+                self._emit_out(self.style.dim(f"Loaded {file_path}"))
+            return "continue"
+        if cmd == ".raw":
+            if not arg:
+                self._emit_err("usage: .raw <lua>")
+                return "continue"
+            payload = self._dispatch_lua(arg)
+            print_payload(payload)
+            return "continue"
+
+        self._emit_err(f"unknown REPL command: {cmd} (type .help for available commands)")
+        return "continue"
+
+
+def resolve_history_path(history_path=None):
+    if history_path:
+        return Path(history_path).expanduser()
+    env_path = os.environ.get("DEJAVU_REPL_HISTORY")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".dejavu_repl_history"
+
+
+@contextmanager
+def configured_readline(runner, history_path=None):
+    if not runner.interactive or readline is None:
+        yield "none"
+        return
+    is_libedit = "libedit" in (getattr(readline, "__doc__", "") or "")
+    readline_mode = "libedit" if is_libedit else "gnu"
+    prev_completer = readline.get_completer()
+    prev_delims = readline.get_completer_delims()
+    completer = ReplCompleter(runner)
+    resolved_history = resolve_history_path(history_path)
+    history_writable = True
+    try:
+        readline.set_completer_delims(REPL_COMPLETER_DELIMS)
+        readline.set_completer(completer.complete)
+        if is_libedit:
+            readline.parse_and_bind("bind ^I rl_complete")
+        else:
+            readline.parse_and_bind("tab: complete")
+        readline.set_history_length(REPL_HISTORY_MAX)
+        try:
+            readline.read_history_file(str(resolved_history))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Do not overwrite an unreadable or foreign-format history file (e.g. GNU format on libedit).
+            history_writable = False
+        yield readline_mode
+    finally:
+        if history_writable:
+            try:
+                resolved_history.parent.mkdir(parents=True, exist_ok=True)
+                readline.write_history_file(str(resolved_history))
+                if resolved_history.is_file() and not resolved_history.is_symlink():
+                    os.chmod(resolved_history, 0o600)
+            except OSError:
+                pass
+        readline.set_completer(prev_completer)
+        readline.set_completer_delims(prev_delims)
+
+
+def run_repl(session, no_color=False, history_path=None):
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    color_enabled = (
+        interactive
+        and not no_color
+        and not os.environ.get("NO_COLOR")
+        and os.environ.get("TERM") != "dumb"
+    )
+    runner = ReplRunner(session, interactive=interactive)
+    with configured_readline(runner, history_path=history_path) as readline_mode:
+        runner.style = ReplStyle(enabled=color_enabled, readline_mode=readline_mode)
+        runner.probe_native_repl()
+
+        if interactive:
+            proc_label = getattr(session, "process_name", None) or "target"
+            pid_label = getattr(session, "pid", None)
+            pid_suffix = f" (pid {pid_label})" if pid_label else ""
+            runner._emit_out(
+                runner.style.bold_cyan(f"Dejavu REPL connected to {proc_label}{pid_suffix}")
+            )
+            runner._emit_out(
+                runner.style.dim("Type .help for commands, Tab to complete, Ctrl-D to exit.")
+            )
+            if not runner.probe_succeeded:
+                runner._emit_out(
+                    runner.style.yellow(
+                        "Warning: initial REPL capability probe failed; "
+                        "will retry automatically on next command (or run .reconnect)."
+                    )
+                )
+            elif not runner.has_native_repl:
+                runner._emit_out(
+                    runner.style.yellow(
+                        "Note: target agent lacks built-in REPL helpers; "
+                        "using fallback mode (redeploy agent for live Tab completion)."
+                    )
+                )
+
+        proc_name = getattr(session, "process_name", None)
+        base_prompt = f"dejavu({proc_name})> " if proc_name else "dejavu> "
+        cont_prompt = "... > "
+        buffer_lines = []
+        last_incomplete_result = None
+
+        while True:
+            runner.in_continuation = bool(buffer_lines)
+            if interactive:
+                prompt = (
+                    runner.style.cont_prompt(cont_prompt)
+                    if buffer_lines
+                    else runner.style.prompt(base_prompt)
+                )
+            else:
+                prompt = ""
+            try:
+                line = read_command(prompt)
+            except KeyboardInterrupt:
+                if not interactive:
+                    raise
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                if buffer_lines:
+                    buffer_lines.clear()
+                    last_incomplete_result = None
+                continue
+            except EOFError:
+                if buffer_lines:
+                    buffer_lines.clear()
+                    if last_incomplete_result is not None:
+                        runner.render_eval_result(last_incomplete_result)
+                        last_incomplete_result = None
+                if interactive:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                break
+
+            command = line.rstrip("\r\n")
+            if not buffer_lines:
+                stripped = command.strip()
+                if not stripped:
+                    continue
+                if stripped in ("exit", "quit"):
+                    break
+                if stripped.startswith(".") and (len(stripped) == 1 or not stripped[1].isdigit()):
+                    try:
+                        action = runner.handle_dot_command(stripped)
+                    except (ControlError, OSError, socket.error) as error:
+                        runner._emit_err(error)
+                        action = "continue"
+                    if action == "exit":
+                        break
+                    continue
+
+            buffer_lines.append(command)
+            source = "\n".join(buffer_lines)
+            try:
+                result = runner.eval_code(source)
+            except (ControlError, OSError, socket.error) as error:
+                buffer_lines.clear()
+                last_incomplete_result = None
+                runner._emit_err(error)
+                continue
+
+            if not result.get("ok") and result.get("incomplete"):
+                last_incomplete_result = result
+                continue
+
+            buffer_lines.clear()
+            last_incomplete_result = None
+            runner.render_eval_result(result)
+
+    return 0 if interactive else (1 if runner.had_error else 0)
 
 
 def run_watch(session, file_path):
@@ -725,7 +1512,11 @@ def main():
                 arguments.wait,
             ) as session:
                 if arguments.repl:
-                    return run_repl(session)
+                    return run_repl(
+                        session,
+                        no_color=arguments.no_color,
+                        history_path=arguments.history,
+                    )
                 return run_watch(session, arguments.watch)
     return run_single_command(arguments, process_name)
 
