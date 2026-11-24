@@ -44,7 +44,7 @@ int main() {
     registration_ok = true;
     assert(plugin->initialize(&host, &state, error, sizeof(error)) == DEJAVU_RPC_OK && state);
     assert(captured.route_count == 1 && std::string(captured.routes[0]) == "example.echo");
-    assert(captured.method_count == 3 && captured.endpoint == nullptr);
+    assert(captured.method_count == 4 && captured.endpoint == nullptr);
     const char params[] = "{\"value\":\"hello\"}";
     DejavuRpcRequest request{sizeof(request), "test", "example.echo", "echo", params, sizeof(params) - 1, 0, nullptr, nullptr};
     DejavuRpcResponse response{};
@@ -52,11 +52,16 @@ int main() {
     assert(response.ok == 1 && response.struct_size == sizeof(response));
     assert(response.payload_size == sizeof(params) - 1 && std::string(response.payload_json) == params);
     release(response.payload_json); response = {};
-    assert(captured.methods[1].callback(captured.context, &request, &response, error, sizeof(error)) == DEJAVU_RPC_OK);
-    assert(response.ok == 1 && std::string(response.payload_json).find("rpc_echo") != std::string::npos);
-    release(response.payload_json); response = {};
     assert(captured.methods[2].callback(captured.context, &request, &response, error, sizeof(error)) == DEJAVU_RPC_OK);
     assert(response.ok == 0 && std::string(response.payload_json).find("example.rejected") != std::string::npos);
+    release(response.payload_json); response = {};
+    assert(captured.methods[1].callback(captured.context, &request, &response, error, sizeof(error)) == DEJAVU_RPC_OK);
+    assert(response.ok == 1 && std::string(response.payload_json).find("rpc_echo") != std::string::npos);
+    assert(std::string(response.payload_json).find("\"requests\":1") != std::string::npos);
+    assert(std::string(response.payload_json).find("\"errors\":1") != std::string::npos);
+    release(response.payload_json); response = {};
+    assert(captured.methods[3].callback(captured.context, &request, &response, error, sizeof(error)) == DEJAVU_RPC_OK);
+    assert(response.ok == 1 && std::string(response.payload_json).find("\"pong\":true") != std::string::npos);
     release(response.payload_json); response = {};
     request.is_cancelled = is_cancelled;
     assert(captured.methods[0].callback(captured.context, &request, &response, error, sizeof(error)) == DEJAVU_RPC_ERROR);
@@ -64,5 +69,5 @@ int main() {
     plugin->on_unload_prepare(state);
     plugin->shutdown(state);
     assert(unregister_count == 1 && allocation_count == 0);
-    std::puts("PASS: RPC example ABI, missing-interface/registration failure, method table, JSON allocation ownership, cancellation and unload");
+    std::puts("PASS: RPC example ABI, missing-interface/registration failure, method table, ping/counters, JSON allocation ownership, cancellation and unload");
 }

@@ -41,6 +41,7 @@ class UnpackManager {
 
     bool initialize(const DejavuPluginHost *host, std::string *error);
     bool register_plugin_functions(const DejavuPluginHost *host, std::string *error);
+    bool register_rpc_service(const DejavuPluginHost *host, std::string *error);
     void shutdown();
     void enable_from_system_property();
     bool hook_invoke(std::string *error);
@@ -89,6 +90,21 @@ class UnpackManager {
     static int lua_dump_revision(dejavu_control_session *, void *, const dejavu_value *, size_t,
                                  dejavu_value *, char *, size_t);
 
+    static int rpc_status(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t);
+    static int rpc_enable(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t);
+    static int rpc_disable(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t);
+    static int rpc_hook_invoke(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *,
+                               size_t);
+    static int rpc_active_invoke_start(void *, const DejavuRpcRequest *, DejavuRpcResponse *,
+                                       char *, size_t);
+    static int rpc_active_invoke_status(void *, const DejavuRpcRequest *, DejavuRpcResponse *,
+                                        char *, size_t);
+    static int rpc_dump_revision(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *,
+                                 size_t);
+    static int rpc_flush(void *, const DejavuRpcRequest *, DejavuRpcResponse *, char *, size_t);
+    void unregister_rpc_service();
+    std::string status_json() const;
+
     bool enable(const std::string &directory, std::string *error);
     bool install_dlopen_hooks(std::string *error);
     bool install_art_hooks(std::string *error);
@@ -117,6 +133,10 @@ class UnpackManager {
 
     const DejavuPluginHost *host_ = nullptr;
     const DejavuHookInterface *hook_interface_ = nullptr;
+    const DejavuRpcInterface *rpc_interface_ = nullptr;
+    uint64_t rpc_service_ = 0;
+    std::string process_name_;
+    std::string rpc_route_;
     JavaVM *vm_ = nullptr;
     mutable std::mutex mutex_;
     std::vector<Image> images_;

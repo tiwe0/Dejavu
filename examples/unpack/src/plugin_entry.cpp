@@ -32,6 +32,12 @@ int plugin_initialize(const DejavuPluginHost *host, void **plugin_state, char *e
         delete manager;
         return -1;
     }
+    if (!manager->register_rpc_service(host, &message)) {
+        std::snprintf(error, error_size, "%s", message.c_str());
+        manager->shutdown();
+        delete manager;
+        return -1;
+    }
     manager->enable_from_system_property();
     *plugin_state = manager;
     return 0;
@@ -53,12 +59,12 @@ dejavu_plugin_entry(void) {
         DEJAVU_PLUGIN_ABI_VERSION,
         sizeof(DejavuPluginDescriptor),
         "unpack",
-        "1.0.0",
+        "1.1.0",
         0, // not unload-safe: this example does not remove its native hooks
         plugin_initialize,
         nullptr,
         plugin_shutdown,
-        DEJAVU_PLUGIN_CAP_HOOK,
+        DEJAVU_PLUGIN_CAP_HOOK | DEJAVU_PLUGIN_CAP_RPC,
         nullptr,
     };
     return &descriptor;

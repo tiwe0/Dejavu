@@ -74,10 +74,25 @@ implementation class instead of the JCA base class.
 ./dejavu exec -p <pkg> -e "hook.clear()"
 ```
 
+## Router RPC integration
+
+`algorithm` registers service `algorithm` on per-process route `algorithm.<process>`
+through the required host `rpc` v1 interface:
+
+- `status` -> JSON state (`active`, `hooks`, `events`, `bytes`, `buffered_events`, `route`, `pid`)
+- `start` -> `{"path"?: "...", "transport"?: 1|2|3, "endpoint"?: "..."}` (memory ring buffer by default)
+- `stop` -> stops hooks, closes file/stream, returns final status
+- `recent` -> `{"limit"?: 32, "clear"?: false}` returns up to 64 recent trace events
+- `clear` -> clears the in-memory ring buffer
+- `selftest` -> runs EVP MD5("abc") through hooked libcrypto and returns `digest` and `events`
+
 ## Notes
 
+- `algorithm.start()` or `algorithm.start("")` captures into the 128-event
+  memory ring buffer without requiring a file sink.
 - Output can contain keys, tokens and plaintext; treat logs as sensitive.
 - The native tracer covers BoringSSL/libcrypto primitives, not custom
   Flutter/Rust/Java-level algorithms; the Java tracer adds common JCA entry
   points.
-- The plugin is unload-safe: `on_unload_prepare` uninstalls its native hooks.
+- The plugin is unload-safe: `on_unload_prepare` unregisters Router RPC and
+  uninstalls its native hooks.

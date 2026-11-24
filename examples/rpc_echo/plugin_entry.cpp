@@ -1,14 +1,20 @@
 #include "dejavu_plugin.h"
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <string>
 
 namespace {
 struct State {
     const DejavuPluginHost *host;
     const DejavuRpcInterface *rpc;
     uint64_t service = 0;
+    std::atomic<unsigned long long> requests{0};
+    std::atomic<unsigned long long> errors{0};
 };
 
 int reply(State *state, DejavuRpcResponse *response, bool ok, const char *json, size_t size,
@@ -29,6 +35,7 @@ int reply(State *state, DejavuRpcResponse *response, bool ok, const char *json, 
 
 int echo(void *context, const DejavuRpcRequest *request, DejavuRpcResponse *response,
          char *error, size_t error_size) {
+    auto *state = static_cast<State *>(context);
     if (request->is_cancelled && request->is_cancelled(request->cancellation_context)) {
         std::snprintf(error, error_size, "request cancelled");
         return DEJAVU_RPC_ERROR;
@@ -37,20 +44,55 @@ int echo(void *context, const DejavuRpcRequest *request, DejavuRpcResponse *resp
         std::snprintf(error, error_size, "params missing");
         return DEJAVU_RPC_ERROR;
     }
-    return reply(static_cast<State *>(context), response, true, request->params_json,
-                 request->params_size, error, error_size);
+    state->requests.fetch_add(1, std::memory_order_relaxed);
+    return reply(state, response, true, request->params_json, request->params_size, error,
+                 error_size);
 }
 
 int status(void *context, const DejavuRpcRequest *, DejavuRpcResponse *response,
            char *error, size_t error_size) {
-    static const char json[] = "{\"service\":\"rpc_echo\",\"version\":1}";
-    return reply(static_cast<State *>(context), response, true, json, sizeof(json) - 1, error, error_size);
+    auto *state = static_cast<State *>(context);
+    char buf[256];
+    const int n = std::snprintf(
+        buf, sizeof(buf),
+        "{\"service\":\"rpc_echo\",\"version\":1,\"route\":\"example.echo\","
+        "\"requests\":%llu,\"errors\":%llu,\"pid\":%lu}",
+        state->requests.load(std::memory_order_relaxed),
+        state->errors.load(std::memory_order_relaxed),
+        static_cast<unsigned long>(getpid()));
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(buf)) {
+        std::snprintf(error, error_size, "unable to format status");
+        return DEJAVU_RPC_ERROR;
+    }
+    return reply(state, response, true, buf, static_cast<size_t>(n), error, error_size);
+}
+
+int ping(void *context, const DejavuRpcRequest *request, DejavuRpcResponse *response,
+         char *error, size_t error_size) {
+    auto *state = static_cast<State *>(context);
+    if (request && request->is_cancelled && request->is_cancelled(request->cancellation_context)) {
+        std::snprintf(error, error_size, "request cancelled");
+        return DEJAVU_RPC_ERROR;
+    }
+    char buf[192];
+    const int n = std::snprintf(
+        buf, sizeof(buf),
+        "{\"pong\":true,\"service\":\"rpc_echo\",\"route\":\"example.echo\",\"requests\":%llu}",
+        state->requests.load(std::memory_order_relaxed));
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(buf)) {
+        std::snprintf(error, error_size, "unable to format ping");
+        return DEJAVU_RPC_ERROR;
+    }
+    return reply(state, response, true, buf, static_cast<size_t>(n), error, error_size);
 }
 
 int fail(void *context, const DejavuRpcRequest *, DejavuRpcResponse *response,
          char *error, size_t error_size) {
-    static const char json[] = "{\"code\":\"example.rejected\",\"message\":\"Example business rejection\",\"retryable\":false}";
-    return reply(static_cast<State *>(context), response, false, json, sizeof(json) - 1, error, error_size);
+    auto *state = static_cast<State *>(context);
+    state->errors.fetch_add(1, std::memory_order_relaxed);
+    static const char json[] =
+        "{\"code\":\"example.rejected\",\"message\":\"Example business rejection\",\"retryable\":false}";
+    return reply(state, response, false, json, sizeof(json) - 1, error, error_size);
 }
 
 int initialize(const DejavuPluginHost *host, void **plugin_state, char *error, size_t error_size) {
@@ -71,7 +113,9 @@ int initialize(const DejavuPluginHost *host, void **plugin_state, char *error, s
     auto *state = new (std::nothrow) State{host, rpc};
     if (!state) { std::snprintf(error, error_size, "out of memory"); return DEJAVU_RPC_ERROR; }
     static const char *routes[] = {"example.echo"};
-    static const DejavuRpcMethod methods[] = {{"echo", echo}, {"status", status}, {"fail", fail}};
+    static const DejavuRpcMethod methods[] = {
+        {"echo", echo}, {"status", status}, {"fail", fail}, {"ping", ping},
+    };
     const DejavuRpcServiceDescriptor service = {
         sizeof(DejavuRpcServiceDescriptor), "rpc_echo", "example.rpc_echo", routes, 1,
         methods, sizeof(methods) / sizeof(methods[0]), state, nullptr,
@@ -98,7 +142,7 @@ void shutdown(void *plugin_state) { prepare(plugin_state); delete static_cast<St
 
 extern "C" __attribute__((visibility("default"))) const DejavuPluginDescriptor *dejavu_plugin_entry(void) {
     static const DejavuPluginDescriptor descriptor = {
-        DEJAVU_PLUGIN_ABI_VERSION, sizeof(DejavuPluginDescriptor), "rpc_echo", "1.0.0",
+        DEJAVU_PLUGIN_ABI_VERSION, sizeof(DejavuPluginDescriptor), "rpc_echo", "1.1.0",
         DEJAVU_PLUGIN_FLAG_UNLOAD_SAFE, initialize, nullptr, shutdown,
         DEJAVU_PLUGIN_CAP_RPC, prepare,
     };

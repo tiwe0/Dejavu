@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "capture",
   "name": "capture",
-  "version": "1.0.0",
-  "description": "TLS plaintext capture through explicit capture controls.",
+  "version": "1.1.0",
+  "description": "TLS plaintext capture with Lua controls, in-memory ring buffer, and Router RPC.",
   "kind": "native",
   "entry": "libdejavu_capture.so",
   "files": [

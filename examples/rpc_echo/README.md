@@ -2,13 +2,14 @@
 
 A native plugin example for the [business RPC contract](../../zygisk/docs/plugin-rpc.md).
 The plugin has no socket code, reconnect loop or wire-envelope parsing. It declares
-route `example.echo` and three callbacks:
+route `example.echo` and four callbacks:
 
 | Method | Result |
 | --- | --- |
-| `echo` | Returns the validated params JSON unchanged |
-| `status` | Returns the example service and version |
-| `fail` | Returns the documented `example.rejected` business error |
+| `echo` | Returns the validated params JSON unchanged and increments `requests` |
+| `ping` | Returns `{"pong":true,"service":"rpc_echo","route":"example.echo","requests":N}` |
+| `status` | Returns `service`, `version`, `route`, `requests`, `errors`, and `pid` |
+| `fail` | Increments `errors` and returns the documented `example.rejected` business error |
 
 The framework connects to `abstract:dejavu.router.plugins` by default, verifies the
 root daemon, dispatches callbacks and manages cancellation and unload safety.
@@ -18,24 +19,23 @@ The example stores no requests or responses.
 source out/tooling/env.sh
 examples/rpc_echo/test-host.sh
 examples/rpc_echo/build.sh
+examples/package.sh
 ```
 
-Build output is `out/plugins/rpc_echo/`. ZIP only the three declared runtime
-resources to import it in Manager:
+`examples/package.sh` writes a Manager-importable archive directly to
+`out/plugins/zips/rpc_echo.zip`. Import it in Manager via **Plugins → Import ZIP**,
+choose an authorized target's Scope, and load it into one process (loading the
+same fixed route into multiple processes intentionally triggers a route conflict).
 
-```sh
-(cd out/plugins/rpc_echo && zip -q ../rpc_echo.zip manifest.json libdejavu_rpc_echo.so SKILL.md)
-```
-
-Alternatively, install and trust the library through the existing native plugin workflow.
-Choose an authorized target's Scope and load the plugin into one process; loading
-the same fixed route into multiple processes intentionally causes a route conflict.
-
-Once the internal router is running and the plugin's control session is ready,
-its route is announced. A Hub request can use:
+Once Router is running (v1 or v2 + TLS) and the plugin is loaded, its route is
+announced. A Hub request can use:
 
 ```json
 {"type":"request","id":"echo-test","route":"example.echo","method":"echo","params":{"value":"hello"},"deadline_ms":2000}
+{"type":"request","id":"ping-test","route":"example.echo","method":"ping","params":{},"deadline_ms":2000}
 ```
 
-The result is `{"value":"hello"}`. No application account or credentials are needed.
+To bind `rpc_echo` to a dedicated Router v2 + TLS Hub, copy
+[`router.example.json`](router.example.json) to `router.json`, declare
+`"router": "router.json"` in `manifest.json`, and reload plugin configurations
+in Manager's Router page.

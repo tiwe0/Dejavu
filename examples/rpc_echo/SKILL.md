@@ -7,7 +7,8 @@ description: Minimal native business RPC example for verifying the Dejavu host r
 
 Read [the business RPC contract](../../zygisk/docs/plugin-rpc.md) when implementing
 another plugin. This example declares route `example.echo` and methods `echo`,
-`status` and `fail`; the framework owns all Unix socket transport and request state.
+`ping`, `status` and `fail`; the framework owns all Unix socket transport and
+request state.
 
 Build with `examples/rpc_echo/build.sh`, run the callback contract with
 `examples/rpc_echo/test-host.sh`, then load into one authorized test process.

@@ -1,43 +1,47 @@
 # Lua RPC Echo
 
 This source-only plugin demonstrates `rpc.register`, ordinary Lua table parameters
-and results, business errors, cancellation and retryable service cleanup. It
-implements Manager's existing `start`/`stop`/`status` package lifecycle. Requests
-and responses stay in memory; the example stores only an in-memory call count.
+and results, business errors, cancellation, Manager inline controls (`ui.json`),
+and retryable service cleanup. It implements Manager's `start`/`stop`/`status`
+lifecycle plus `actions` (`self_check`, `reset_stats`).
 
-Build a Manager-importable ZIP from the project root (no NDK required):
+Build a Manager-importable ZIP (no NDK required):
 
 ```sh
-mkdir -p out/plugins
-(cd examples/rpc_lua_echo && zip -q ../../out/plugins/rpc_lua_echo.zip manifest.json main.lua)
+mkdir -p out/plugins/zips
+(cd examples/rpc_lua_echo && zip -q ../../out/plugins/zips/rpc_lua_echo.zip manifest.json main.lua ui.json)
 ```
 
-Install the module containing Lua RPC support. In Manager, start and configure
-**Configuration → Router**, import the ZIP with **+**, and select **Settings** in
-this plugin's Scope. Start the target process and the Lua plugin. The registered
-route `example.lua.echo` appears in Router. Use only one process for this fixed
-example route; real account plugins should publish distinct routes per account
-and change them with `service:update_routes({...})`.
+Or run `./examples/package.sh` after native builds to generate all single-plugin
+ZIPs under `out/plugins/zips/`.
 
-The Hub sends one JSON line:
+In Manager:
+
+1. Start and configure **Configuration → Router** (Router v1 or v2 + TLS).
+2. Open **Plugins → Import ZIP** and pick `rpc_lua_echo.zip`.
+3. Select an authorized target in **Scope**, open the plugin's inline control
+   page, and tap **Start**. The route `example.lua.echo` appears in Router.
+
+Supported RPC methods:
+
+| Method | Result |
+| --- | --- |
+| `echo` | Returns `params` unchanged and increments `requests` |
+| `ping` | Returns `{pong = true, service = "rpc_lua_echo", route = ..., requests = N}` |
+| `status` | Returns `{service, version, requests, errors}` |
+| `reset_stats` | Resets in-memory `requests` and `errors` counters |
+| `fail` | Increments `errors` and returns `example.rejected` |
+
+Example Hub request:
 
 ```json
 {"type":"request","id":"lua-echo-1","route":"example.lua.echo","method":"echo","params":{"message":"hello","items":[1,true,null]},"deadline_ms":2000}
 ```
 
-The result equals `params`. `status` reports the service name and call count;
-`fail` returns `example.rejected`. Stop the plugin to withdraw its route. A busy
-stop retains the service and can be retried without losing its Lua callbacks.
-
-Read the [Lua RPC contract](../../zygisk/docs/plugin-rpc.md#lua-bindings) before
-adding application APIs. This example performs no account lookup or external
-business operation. It needs no native plugin and does not open a socket itself.
-
-The example uses the default Hub. To assign it a dedicated Hub, copy
-`router.example.json` to `router.json`, edit its host/port, add
-`"router": "router.json"` to the manifest and include `router.json` in `files`
-and the ZIP. Import the package, then reload plugin configurations in Manager's
-Router page. Its upstream appears as `rpc_lua_echo/main`; the Lua code and local
-Unix endpoint stay the same. Use Manager for device-local credentials and
-endpoint overrides. See the [routing configuration contract](../../router/plugin-config.md)
-for multiple upstreams and route assignments.
+The example uses the default Hub out of the box. To assign it a dedicated
+Router v2 + TLS Hub, copy [`router.example.json`](router.example.json) to
+`router.json`, edit `host`/`port`/`protocol`/`tls`/`tls_sni`, add
+`"router": "router.json"` to `manifest.json` and `"files"`, import the ZIP,
+and tap **Reload plugin configurations** in Manager's Router page. Configure
+`device_token` via Manager's device-local override. See
+[`router/plugin-config.md`](../../router/plugin-config.md).

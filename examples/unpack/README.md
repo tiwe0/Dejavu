@@ -59,3 +59,11 @@ fallback_classes='java.lang.Object'})` through `./dejavu exec`.
 The example intentionally stays small: class enumeration currently comes from
 dumped DEX files; hooking ART DexFile's internal class list is a future native
 primitive.
+
+## Router RPC integration
+
+`unpack` registers service `unpack` with per-process route `unpack.<process>`
+via the required host `rpc` v1 interface and exposes `status`, `enable`,
+`disable`, `hook_invoke`, `active_invoke_start`, `active_invoke_status`,
+`dump_revision`, and `flush`. See [`router.example.json`](router.example.json)
+for binding it to a dedicated Router v2 + TLS upstream.

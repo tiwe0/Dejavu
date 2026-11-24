@@ -23,6 +23,7 @@ add_library(dejavu_unpack SHARED
 target_include_directories(dejavu_unpack PRIVATE
     ${DEJAVU_ROOT}/include
     ${DEJAVU_ROOT}/zygisk/include
+    ${DEJAVU_ROOT}/examples/common
     src
 )
 target_compile_options(dejavu_unpack PRIVATE

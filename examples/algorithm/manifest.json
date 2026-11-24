@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "algorithm",
   "name": "algorithm",
-  "version": "1.0.0",
-  "description": "Native crypto tracing through explicit algorithm controls.",
+  "version": "1.1.0",
+  "description": "Native crypto tracing with Lua controls, in-memory ring buffer, and Router RPC.",
   "kind": "native",
   "entry": "libdejavu_algorithm.so",
   "files": [

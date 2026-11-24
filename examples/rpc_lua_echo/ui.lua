@@ -1,0 +1,39 @@
+return {
+    version = 2,
+    title = {
+        en = "Lua RPC Echo",
+        zh = "Lua RPC 回显",
+    },
+    preset = "controls",
+    rows = {
+        {
+            label = { en = "RPC Service", zh = "RPC 服务" },
+            value = { en = "rpc_lua_echo", zh = "rpc_lua_echo" },
+        },
+        {
+            label = { en = "Route", zh = "路由名" },
+            value = { en = "example.lua.echo", zh = "example.lua.echo" },
+        },
+        {
+            label = { en = "Methods", zh = "支持方法" },
+            value = { en = "echo, ping, status, reset_stats, fail", zh = "echo、ping、status、reset_stats、fail" },
+        },
+        {
+            label = { en = "Router", zh = "Router 联动" },
+            value = {
+                en = "Uses the default Hub unless router.json is declared (Router v1/v2 + TLS).",
+                zh = "默认走主 Hub；如需独立 Hub 可声明 router.json（支持 Router v1/v2 + TLS）。",
+            },
+        },
+    },
+    actions = {
+        {
+            id = "self_check",
+            label = { en = "Verify registration", zh = "检查注册状态" },
+        },
+        {
+            id = "reset_stats",
+            label = { en = "Reset counters", zh = "清零计数" },
+        },
+    },
+}

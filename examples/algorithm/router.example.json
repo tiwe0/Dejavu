@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "services": ["algorithm"],
+  "upstreams": [
+    {
+      "id": "main",
+      "host": "hub.example.com",
+      "port": 39010,
+      "protocol": "v2",
+      "tls": true,
+      "tls_sni": "hub.example.com"
+    }
+  ],
+  "default_upstream": "main"
+}

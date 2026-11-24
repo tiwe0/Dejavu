@@ -46,6 +46,19 @@ The strategy layer (manifest namespace → dumped DEX class parser → paced act
 invocation) lives in `examples/unpack/{manifest,dex,main}.lua` and is loaded as
 part of the example Lua script; it is not native code.
 
+## Router RPC integration
+
+`unpack` registers service `unpack` on per-process route `unpack.<process>`
+through the required host `rpc` v1 interface:
+
+- `status` / `active_invoke_status` -> structured JSON counters and `summary`
+- `enable` -> `{"dir": "/data/user_de/0/<pkg>/files/dejavu-unpack"}`
+- `disable` -> disables DEX capture
+- `hook_invoke` -> installs `ArtMethod::Invoke` hook
+- `active_invoke_start` -> `{"classes": "com.a.B,com.a.C", "delay_ms"?: 40}` (async)
+- `dump_revision` -> triggers discovered DEX revision dump
+- `flush` -> `{"timeout_ms"?: 5000}` (clamped to 15000 ms)
+
 ## Safety / troubleshooting
 
 - Prefer on-demand load after app startup; early ART hook installation during

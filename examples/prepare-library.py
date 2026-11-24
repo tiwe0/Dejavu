@@ -16,22 +16,40 @@ def copy_resource(source, destination):
         shutil.copyfile(source, destination)
 
 
+def validate_json_file(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"invalid JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"expected JSON object in {path}")
+    return data
+
+
 def prepare():
     packages = []
     names = ["hello", "capture", "algorithm", "unpack", "rpc_echo", "rpc_lua_echo"]
     for name in names:
         source = ROOT / "examples" / name
         destination = OUTPUT / name
-        manifest = json.loads((source / "manifest.json").read_text())
+        manifest = validate_json_file(source / "manifest.json")
+        if manifest.get("schemaVersion") != 1:
+            raise SystemExit(f"unsupported manifest schemaVersion in {source / 'manifest.json'}")
         # Validate every declared resource before publishing the manifest.
         resources = [(path, destination / path if manifest["kind"] == "native" and
                       path == manifest["entry"] else source / path) for path in manifest["files"]]
-        for _, path in resources:
+        for relative, path in resources:
             if not path.is_file():
                 raise SystemExit(f"missing plugin resource: {path}; build the plugin first")
+            if relative == manifest.get("ui") or relative == manifest.get("router"):
+                validate_json_file(path)
         for relative, path in resources:
             copy_resource(path, destination / relative)
         copy_resource(source / "manifest.json", destination / "manifest.json")
+        router_example = source / "router.example.json"
+        if router_example.is_file():
+            validate_json_file(router_example)
+            copy_resource(router_example, destination / "router.example.json")
         packages.append(destination)
 
     for identifier, filename, version, description in (

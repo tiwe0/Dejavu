@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "id": "rpc_lua_echo",
   "name": "Lua RPC Echo",
-  "version": "1.0.0",
-  "description": "Lua business RPC example using the framework Unix socket transport.",
+  "version": "1.1.0",
+  "description": "Lua business RPC example with Manager controls page and Router v1/v2 integration.",
   "kind": "lua",
   "entry": "main.lua",
-  "files": ["main.lua"]
+  "ui": "ui.json",
+  "files": ["main.lua", "ui.json"]
 }

@@ -35,8 +35,15 @@ default Hub, even if an undeclared `router.json` happens to exist beside it.
   "schemaVersion": 1,
   "services": ["example_business"],
   "upstreams": [
-    {"id": "main", "host": "hub.example.com", "port": 39010},
-    {"id": "secondary", "host": "other.example.com", "port": 39010}
+    {
+      "id": "main",
+      "host": "hub.example.com",
+      "port": 39010,
+      "protocol": "v2",
+      "tls": true,
+      "tls_sni": "hub.example.com"
+    },
+    {"id": "secondary", "host": "other.example.com", "port": 39010, "protocol": "v1"}
   ],
   "default_upstream": "main",
   "routes": {
@@ -44,6 +51,20 @@ default Hub, even if an undeclared `router.json` happens to exist beside it.
   }
 }
 ```
+
+Each upstream entry supports:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Local upstream ID (`[a-z][a-z0-9_-]{0,63}`) |
+| `host`, `port` | yes | Hub hostname/IP (`<=253` bytes) and port (`1..65535`) |
+| `device_id` | no | Overrides the default device ID (`<=128` bytes) |
+| `device_token` | no | Upstream credential (`<=4096` bytes; defaults to empty, never inherited) |
+| `protocol` | no | `"v1"` (default, TCP JSON Lines) or `"v2"` (binary framed Router v2) |
+| `tls` | no | Boolean; enables mbedTLS transport to the Hub |
+| `tls_ca_file` | no | Absolute path (`<=1024` bytes) to a PEM CA bundle for TLS verification |
+| `tls_sni` | no | Optional TLS SNI override (`<=253` bytes; defaults to `host`) |
+| `tls_insecure` | no | Boolean; skips certificate verification (testing only) |
 
 `services` binds the file to `rpc.register {name = "example_business", ...}`
 or native `DejavuRpcServiceDescriptor.service_name`, which the framework sends
@@ -119,4 +140,9 @@ late replies cannot complete requests on another connection.
 The local plugin listener remains a trusted-device interface. Service-name and
 route binding select routing policy; they are not cryptographic plugin identity
 or an authentication boundary between untrusted local plugins. Hub transport
-remains TCP JSON Lines; use a trusted network or an encrypted tunnel.
+supports both legacy TCP JSON Lines (`protocol: "v1"`) and binary-framed
+Router v2 (`protocol: "v2"`), with optional mbedTLS encryption (`tls: true`)
+and route telemetry / heartbeat liveness monitoring (`hub_protocol`, `hub_tls`,
+`hub_tls_version`, `last_error`, `last_rtt_ms`, `last_heartbeat_ack_ms`,
+`reconnect_count` in the control status snapshot). For plaintext v1 or
+non-TLS upstreams, use a trusted network or an encrypted tunnel.

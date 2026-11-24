@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "unpack",
   "name": "unpack",
-  "version": "1.0.0",
-  "description": "DEX capture and active invocation tools.",
+  "version": "1.1.0",
+  "description": "DEX capture and active invocation tools with Router RPC control.",
   "kind": "native",
   "entry": "libdejavu_unpack.so",
   "files": [

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "rpc_echo",
   "name": "RPC Echo",
-  "version": "1.0.0",
-  "description": "Business callback example using the framework Unix socket RPC service.",
+  "version": "1.1.0",
+  "description": "Native business RPC example with echo/status/ping/fail callbacks for Dejavu Router.",
   "kind": "native",
   "entry": "libdejavu_rpc_echo.so",
   "files": ["libdejavu_rpc_echo.so", "SKILL.md"]

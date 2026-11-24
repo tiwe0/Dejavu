@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "art_elf_resolver.h"
+#include "rpc_helper.h"
 
 extern "C" void dejavu_unpack_invoke_with_arg_array(void *soa, void *method, void *argument_array,
                                                     void *result, const char *error_message);
@@ -300,6 +301,8 @@ bool UnpackManager::initialize(const DejavuPluginHost *host, std::string *error)
     }
     host_ = host;
     vm_ = host->java_vm;
+    process_name_ = dejavu_example::current_process_name();
+    rpc_route_ = dejavu_example::make_process_route("unpack");
     if (host->get_interface != nullptr) {
         hook_interface_ = static_cast<const DejavuHookInterface *>(
             host->get_interface(host->host_context, "hook", DEJAVU_HOOK_INTERFACE_VERSION));
@@ -314,6 +317,7 @@ bool UnpackManager::initialize(const DejavuPluginHost *host, std::string *error)
 }
 
 void UnpackManager::shutdown() {
+    unregister_rpc_service();
     enabled_.store(false);
     stop_writer();
     if (g_unpack == this) {
@@ -1844,4 +1848,252 @@ int UnpackManager::lua_dump_revision(dejavu_control_session *, void *context, co
     result->string_value = copy;
     result->string_size = status.size();
     return DEJAVU_OK;
+}
+
+void UnpackManager::unregister_rpc_service() {
+    if (rpc_interface_ != nullptr && rpc_service_ != 0 &&
+        rpc_interface_->unregister_service != nullptr && host_ != nullptr) {
+        char rpc_error[128] = {};
+        rpc_interface_->unregister_service(host_->host_context, rpc_service_, rpc_error,
+                                           sizeof(rpc_error));
+        rpc_service_ = 0;
+    }
+}
+
+bool UnpackManager::register_rpc_service(const DejavuPluginHost *host, std::string *error) {
+    if (host == nullptr || host->get_interface == nullptr) {
+        *error = "unpack plugin requires RPC interface v1";
+        return false;
+    }
+    const auto *rpc = static_cast<const DejavuRpcInterface *>(
+        host->get_interface(host->host_context, "rpc", DEJAVU_RPC_INTERFACE_VERSION));
+    if (rpc == nullptr || rpc->version != DEJAVU_RPC_INTERFACE_VERSION ||
+        rpc->struct_size < sizeof(*rpc) || rpc->register_service == nullptr ||
+        rpc->unregister_service == nullptr) {
+        *error = "unpack plugin requires RPC interface v1";
+        return false;
+    }
+    rpc_interface_ = rpc;
+    const char *routes[] = {rpc_route_.c_str()};
+    static const DejavuRpcMethod methods[] = {
+        {"status", UnpackManager::rpc_status},
+        {"enable", UnpackManager::rpc_enable},
+        {"disable", UnpackManager::rpc_disable},
+        {"hook_invoke", UnpackManager::rpc_hook_invoke},
+        {"active_invoke_start", UnpackManager::rpc_active_invoke_start},
+        {"active_invoke_status", UnpackManager::rpc_active_invoke_status},
+        {"dump_revision", UnpackManager::rpc_dump_revision},
+        {"flush", UnpackManager::rpc_flush},
+    };
+    const DejavuRpcServiceDescriptor descriptor = {
+        sizeof(DejavuRpcServiceDescriptor),
+        "unpack",
+        process_name_.c_str(),
+        routes,
+        1,
+        methods,
+        sizeof(methods) / sizeof(methods[0]),
+        this,
+        nullptr,
+    };
+    char rpc_error[256] = {};
+    if (rpc->register_service(host->host_context, &descriptor, &rpc_service_, rpc_error,
+                              sizeof(rpc_error)) != DEJAVU_RPC_OK) {
+        rpc_service_ = 0;
+        *error = rpc_error[0] != '\0' ? rpc_error : "unpack RPC registration failed";
+        return false;
+    }
+    return true;
+}
+
+std::string UnpackManager::status_json() const {
+    const std::string summary = status();
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t pending_files = 0;
+    size_t pending_bytes = 0;
+    {
+        std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+        pending_files = queue_.size();
+        pending_bytes = pending_bytes_;
+    }
+    unsigned long long active_done = 0;
+    unsigned long long active_total = 0;
+    {
+        std::lock_guard<std::mutex> active_lock(active_mutex_);
+        active_done = active_done_;
+        active_total = active_total_;
+    }
+    std::string json = "{\"service\":\"unpack\",\"version\":\"1.1.0\",\"enabled\":";
+    json += enabled_.load() ? "true" : "false";
+    json += ",\"route\":\"" + dejavu_example::json_escape(rpc_route_) + "\"";
+    json += ",\"process\":\"" + dejavu_example::json_escape(process_name_) + "\"";
+    json += ",\"pid\":" + std::to_string(static_cast<unsigned long>(getpid()));
+    json += ",\"dir\":\"" + dejavu_example::json_escape(directory_) + "\"";
+    json += ",\"dlopen_hooked\":";
+    json += dlopen_hooked_ ? "true" : "false";
+    json += ",\"dlopen_events\":" + std::to_string(dlopen_events_);
+    json += ",\"art_hooked\":";
+    json += art_hooked_ ? "true" : "false";
+    json += ",\"invoke_hooked\":";
+    json += invoke_hooked_ ? "true" : "false";
+    json += ",\"dumped\":" + std::to_string(dumped_count_ + written_files_);
+    json += ",\"written_files\":" + std::to_string(written_files_);
+    json += ",\"pending_files\":" + std::to_string(pending_files);
+    json += ",\"pending_bytes\":" + std::to_string(pending_bytes);
+    json += ",\"revision_dumps\":" + std::to_string(revision_dumps_);
+    json += ",\"active_running\":";
+    json += active_running_.load() ? "true" : "false";
+    json += ",\"active_done\":" + std::to_string(active_done);
+    json += ",\"active_total\":" + std::to_string(active_total);
+    json += ",\"active_errors\":" + std::to_string(active_errors_.load());
+    json += ",\"summary\":\"" + dejavu_example::json_escape(summary) + "\"}";
+    return json;
+}
+
+int UnpackManager::rpc_status(void *context, const DejavuRpcRequest *request,
+                              DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_enable(void *context, const DejavuRpcRequest *request,
+                              DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    std::string dir;
+    if (request != nullptr && request->params_json != nullptr && request->params_size > 0) {
+        dejavu_example::json_get_string(request->params_json, request->params_size, "dir", &dir);
+    }
+    if (dir.empty()) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.invalid_argument",
+                                               "enable requires a non-empty dir string", false,
+                                               error, error_size);
+    }
+    std::string message;
+    if (!manager->enable(dir, &message)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.enable_failed",
+                                               message, false, error, error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_disable(void *context, const DejavuRpcRequest *request,
+                               DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    manager->enabled_.store(false);
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_hook_invoke(void *context, const DejavuRpcRequest *request,
+                                   DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    std::string message;
+    if (!manager->hook_invoke(&message)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response,
+                                               "unpack.hook_invoke_failed", message, false, error,
+                                               error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_active_invoke_start(void *context, const DejavuRpcRequest *request,
+                                           DejavuRpcResponse *response, char *error,
+                                           size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    std::string classes;
+    int64_t delay_ms = 40;
+    if (request != nullptr && request->params_json != nullptr && request->params_size > 0) {
+        dejavu_example::json_get_string(request->params_json, request->params_size, "classes",
+                                        &classes);
+        dejavu_example::json_get_int64(request->params_json, request->params_size, "delay_ms",
+                                       &delay_ms);
+    }
+    if (classes.empty() || delay_ms < 0 || delay_ms > 5000) {
+        return dejavu_example::rpc_reply_error(
+            manager->host_, response, "unpack.invalid_argument",
+            "active_invoke_start requires non-empty classes string and delay_ms in 0..5000", false,
+            error, error_size);
+    }
+    std::string status_out;
+    std::string message;
+    if (!manager->start_active_invoke(classes, static_cast<unsigned long long>(delay_ms),
+                                      &status_out, &message)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response,
+                                               "unpack.active_invoke_failed", message, false, error,
+                                               error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_active_invoke_status(void *context, const DejavuRpcRequest *request,
+                                            DejavuRpcResponse *response, char *error,
+                                            size_t error_size) {
+    return rpc_status(context, request, response, error, error_size);
+}
+
+int UnpackManager::rpc_dump_revision(void *context, const DejavuRpcRequest *request,
+                                     DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    std::string message;
+    if (!manager->dump_discovered_revision(&message)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response,
+                                               "unpack.dump_revision_failed", message, false, error,
+                                               error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
+}
+
+int UnpackManager::rpc_flush(void *context, const DejavuRpcRequest *request,
+                             DejavuRpcResponse *response, char *error, size_t error_size) {
+    auto *manager = static_cast<UnpackManager *>(context);
+    if (dejavu_example::rpc_is_cancelled(request)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.cancelled",
+                                               "Request cancelled", false, error, error_size);
+    }
+    int64_t timeout_ms = 5000;
+    if (request != nullptr && request->params_json != nullptr && request->params_size > 0) {
+        dejavu_example::json_get_int64(request->params_json, request->params_size, "timeout_ms",
+                                       &timeout_ms);
+    }
+    if (timeout_ms < 0) {
+        timeout_ms = 0;
+    } else if (timeout_ms > 15000) {
+        timeout_ms = 15000;
+    }
+    std::string message;
+    if (!manager->flush(static_cast<unsigned long long>(timeout_ms), &message)) {
+        return dejavu_example::rpc_reply_error(manager->host_, response, "unpack.flush_failed",
+                                               message, true, error, error_size);
+    }
+    return dejavu_example::rpc_reply(manager->host_, response, true, manager->status_json(), error,
+                                     error_size);
 }

@@ -2,8 +2,17 @@
   "schemaVersion": 1,
   "services": ["rpc_lua_echo"],
   "upstreams": [
-    {"id": "main", "host": "127.0.0.1", "port": 39010}
+    {
+      "id": "main",
+      "host": "hub.example.com",
+      "port": 39010,
+      "protocol": "v2",
+      "tls": true,
+      "tls_sni": "hub.example.com"
+    }
   ],
   "default_upstream": "main",
-  "routes": {"example.lua.echo": "main"}
+  "routes": {
+    "example.lua.echo": "main"
+  }
 }

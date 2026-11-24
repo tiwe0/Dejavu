@@ -79,14 +79,24 @@ Remove the capture file afterwards; it may contain cookies/tokens or personal
 data. The plugin only captures first 900 bytes per SSL call and does not
 decode HTTP/2, gzip or binary frames.
 
+## Router RPC integration
+
+`capture` registers service `capture` on per-process route `capture.<process>`
+through the required host `rpc` v1 interface:
+
+- `status` -> JSON counters, active state, route, PID, buffered/dropped counts
+- `start` -> `{"path"?: "...", "transport"?: 1|2|3, "endpoint"?: "..."}` (memory ring buffer by default)
+- `stop` -> uninstalls hooks, closes file/stream, returns final status
+- `recent` -> `{"limit"?: 32, "clear"?: false}` returns up to 64 recent records (`seq`, `dir`, `length`, `preview`)
+- `clear` -> clears the in-memory ring buffer
+- `probe` -> `{"transport": 1|2|3, "endpoint": "host:port"}`
+
 ## Agent notes
 
-- `capture.start(path)` opens a writable file sink. Use `/dev/null` to discard
-  file output when streaming. The current record callback returns early if
-  that descriptor is closed, so an empty path skips records and counters even
-  when the stream connects. [Record callback](plugin_entry.cpp)
-- `capture.status()` reports `out=<calls>/<bytes>B in=<calls>/<bytes>B`;
+- `capture.start()` or `capture.start("")` records into the 128-record memory
+  ring buffer (and optional stream) without requiring a file sink.
+- `capture.status()` reports `out=<calls>/<bytes>B in=<calls>/<bytes>B buffered=<count>`;
 - `capture.stop()` uninstalls hooks, closes the file and stream;
 - `capture.probe(transport, endpoint)` sends a one-record test;
-- `plugin.unload` calls `on_unload_prepare` and the host attempts to remove any
-  remaining tracked hooks. Failed cleanup leaves the module loaded for retry.
+- `plugin.unload` calls `on_unload_prepare` (unregistering Router RPC and
+  removing hooks) and the host attempts any remaining tracked-hook cleanup.
