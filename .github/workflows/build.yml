@@ -11,7 +11,7 @@ on:
 jobs:
   build-host:
     name: Build and Test (Host)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +50,7 @@ jobs:
 
   build-android:
     name: Build Android arm64 (API 26 baseline)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ANDROID_API: 26
     
@@ -95,7 +95,7 @@ jobs:
 
   build-manager:
     name: Build Dejavu app
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-zygisk-module, version-check]
     outputs:
       release_signed: ${{ steps.package-app.outputs.release_signed }}
@@ -207,7 +207,7 @@ jobs:
 
   build-android-compat:
     name: Compatibility Build (API ${{ matrix.android_api }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -254,7 +254,7 @@ jobs:
 
   version-check:
     name: Detect version bump
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       changed: ${{ steps.version.outputs.changed }}
       version: ${{ steps.version.outputs.version }}
@@ -299,7 +299,7 @@ jobs:
 
   build-zygisk-module:
     name: Build Zygisk Module (API 26 baseline)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-android
     env:
       ANDROID_API: 26
@@ -412,7 +412,7 @@ jobs:
          github.ref == 'refs/heads/main' &&
          needs.version-check.outputs.changed == 'true')
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [version-check, build-host, build-android, build-android-compat, build-manager, build-zygisk-module, code-quality]
     concurrency:
       group: dejavu-release-${{ needs.version-check.outputs.tag }}
@@ -506,7 +506,7 @@ jobs:
 
   code-quality:
     name: Code Quality Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -568,7 +568,7 @@ jobs:
 
   build-summary:
     name: Build Summary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [version-check, build-host, build-android, build-android-compat, build-manager, build-zygisk-module, code-quality]
     if: always()
     
