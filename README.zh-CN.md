@@ -307,7 +307,7 @@ zip，以及包含示例插件 `.so`、SKILL、JIT 源码和 unpack CLI 的
 - `include/dejavu.h` 中的 `dejavu_version()` / `DEJAVU_VERSION_*` 是**核心库
   ABI 版本**（当前 `0.1.0`），公共 C ABI 变化时才递增。
 - `zygisk/module/module.prop` 和 release tag（`vX.Y.Z`）是 **应用与 Zygisk 模块包
-  版本**（当前 `0.9.8`）。应用从模块元数据读取版本号和 versionCode，并内置对应
+  版本**（当前 `0.9.9`）。应用从模块元数据读取版本号和 versionCode，并内置对应
   版本的 ZIP；该版本与核心库 ABI 独立。
 - CI 对 `main` 的 push 会构建测试；`module.prop` 版本变化会发布正式版本，
   匹配的 `v*` tag 发布正式版本，手动 `workflow_dispatch` 发布预发布版本。
