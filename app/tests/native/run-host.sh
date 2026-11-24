@@ -11,10 +11,11 @@ for tool in chown chcon restorecon sha256sum getprop setprop base64 mv flock; do
     chmod 700 "${TEST_DIR}/bin/${tool}"
 done
 "${KOTLINC:-kotlinc}" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginArtifact.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginLibrary.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginLibraryScan.kt" \
-    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginManifest.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginRouterConfig.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \

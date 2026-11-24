@@ -1,30 +1,39 @@
 package cafe.ivory.dejavu.ui.theme
 
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import cafe.ivory.dejavu.ManagerAppearance
 import cafe.ivory.dejavu.ManagerPalette
 import cafe.ivory.dejavu.ManagerThemeMode
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.font.Font
 import cafe.ivory.dejavu.R
+
+private val LightSignal = Color(0xFF248A52)
+private val DarkSignal = Color(0xFF4BD685)
+
+private val LocalSignalColor = compositionLocalOf { LightSignal }
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFFA0D5B9),
@@ -37,6 +46,8 @@ private val DarkColors = darkColorScheme(
     onSecondaryContainer = Color(0xFFD6F2DF),
     tertiary = Color(0xFFC8B98E),
     onTertiary = Color(0xFF201B0F),
+    tertiaryContainer = Color(0xFF493E1E),
+    onTertiaryContainer = Color(0xFFE9DBB0),
     background = Color(0xFF131814),
     onBackground = Color(0xFFE4E5E3),
     surface = Color(0xFF1A211B),
@@ -51,6 +62,8 @@ private val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF3E4B41),
     error = Color(0xFFE8A19A),
     onError = Color(0xFF3B0905),
+    errorContainer = Color(0xFF4A211E),
+    onErrorContainer = Color(0xFFF8D5D2),
 )
 
 private val LightColors = lightColorScheme(
@@ -64,6 +77,8 @@ private val LightColors = lightColorScheme(
     onSecondaryContainer = Color(0xFF15442D),
     tertiary = Color(0xFF6E5D26),
     onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFF4E6BE),
+    onTertiaryContainer = Color(0xFF251E08),
     background = Color(0xFFF6F3EA),
     onBackground = Color(0xFF18231D),
     surface = Color(0xFFFCFAF5),
@@ -78,6 +93,8 @@ private val LightColors = lightColorScheme(
     outlineVariant = Color(0xFFDEDCD3),
     error = Color(0xFF9B332E),
     onError = Color.White,
+    errorContainer = Color(0xFFF9E5E3),
+    onErrorContainer = Color(0xFF691B17),
 )
 
 private data class PaletteAccent(
@@ -87,6 +104,13 @@ private data class PaletteAccent(
     val darkContainer: Color,
     val darkText: Color,
 )
+
+@Composable
+internal fun ManagerThemeMode.isDark(): Boolean = when (this) {
+    ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
+    ManagerThemeMode.LIGHT -> false
+    ManagerThemeMode.DARK -> true
+}
 
 /** Static palette colors, also used to preview themes without changing app settings. */
 fun managerColorScheme(palette: ManagerPalette, dark: Boolean): ColorScheme {
@@ -112,6 +136,11 @@ fun managerColorScheme(palette: ManagerPalette, dark: Boolean): ColorScheme {
     val neutralTint = if (dark) accent.dark else accent.light
     fun neutral(value: Long, amount: Float = 0.035f) = lerp(Color(value), neutralTint, amount)
     val base = if (dark) DarkColors else LightColors
+    // Keep warm amber tertiary distinct for warning logs and palette preview contrast.
+    val tertiary = if (palette == ManagerPalette.AMBER) secondary else base.tertiary
+    val onTertiary = if (palette == ManagerPalette.AMBER) (if (dark) Color(0xFF1B2530) else Color.White) else base.onTertiary
+    val tertiaryContainer = if (palette == ManagerPalette.AMBER) secondaryContainer else base.tertiaryContainer
+    val onTertiaryContainer = if (palette == ManagerPalette.AMBER) onContainer else base.onTertiaryContainer
     return base.copy(
         primary = primary,
         onPrimary = if (dark) accent.darkText else Color.White,
@@ -122,10 +151,10 @@ fun managerColorScheme(palette: ManagerPalette, dark: Boolean): ColorScheme {
         onSecondary = if (dark) Color(0xFF1B2530) else Color.White,
         secondaryContainer = secondaryContainer,
         onSecondaryContainer = onContainer,
-        tertiary = secondary,
-        onTertiary = if (dark) Color(0xFF1B2530) else Color.White,
-        tertiaryContainer = secondaryContainer,
-        onTertiaryContainer = onContainer,
+        tertiary = tertiary,
+        onTertiary = onTertiary,
+        tertiaryContainer = tertiaryContainer,
+        onTertiaryContainer = onTertiaryContainer,
         background = background,
         onBackground = onSurface,
         surface = surface,
@@ -158,11 +187,11 @@ fun managerDisplayColorScheme(palette: ManagerPalette, dark: Boolean): ColorSche
 }
 
 private val AppShapes = Shapes(
-    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
-    small = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
-    medium = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(6.dp),
+    medium = RoundedCornerShape(10.dp),
+    large = RoundedCornerShape(12.dp),
+    extraLarge = RoundedCornerShape(16.dp),
 )
 
 private val AppTypography = Typography().run {
@@ -173,12 +202,12 @@ private val AppTypography = Typography().run {
     )
 }
 
-/** Signal color reserved for live state (running plugin, healthy chain link). */
+/** Signal color reserved for live state (running plugin, healthy chain link); animated with the theme. */
 val ColorScheme.signal: Color
-    get() = if (background.luminance() < 0.5f) Color(0xFF7FD3A0) else Color(0xFF2E9A5E)
+    @Composable get() = LocalSignalColor.current
 
 /**
- * Bundled JetBrains Mono (SIL OFL 1.1). Some vendor ROMs replace the system monospace face
+ * Bundled JetBrains Mono NL (SIL OFL 1.1). Some vendor ROMs replace the system monospace face
  * with their UI font, so identifiers would otherwise lose their technical texture.
  */
 val DejavuMono = FontFamily(
@@ -193,44 +222,65 @@ val Typography.mono: TextStyle
 
 @Composable
 fun DejavuTheme(appearance: ManagerAppearance = ManagerAppearance(), content: @Composable () -> Unit) {
-    val dark = when (appearance.mode) {
-        ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ManagerThemeMode.LIGHT -> false
-        ManagerThemeMode.DARK -> true
+    val dark = appearance.mode.isDark()
+    val targetScheme = managerDisplayColorScheme(appearance.palette, dark)
+    val animatedSignal = animateColorAsState(
+        targetValue = if (dark) DarkSignal else LightSignal,
+        animationSpec = tween(280),
+        label = "signal",
+    ).value
+    CompositionLocalProvider(LocalSignalColor provides animatedSignal) {
+        MaterialTheme(
+            colorScheme = animateColorScheme(targetScheme),
+            typography = AppTypography,
+            shapes = AppShapes,
+            content = content,
+        )
     }
-    MaterialTheme(
-        colorScheme = animateColorScheme(managerDisplayColorScheme(appearance.palette, dark)),
-        typography = AppTypography,
-        shapes = AppShapes,
-        content = content,
-    )
 }
 
-/** Cross-fades palette and light/dark switches instead of snapping every surface at once. */
+/** Cross-fades palette and light/dark switches across every Material 3 role so nothing snaps. */
 @Composable
 private fun animateColorScheme(target: ColorScheme): ColorScheme {
-    val spec = androidx.compose.animation.core.tween<Color>(380)
+    val spec = tween<Color>(280)
     @Composable fun a(color: Color, label: String) =
-        androidx.compose.animation.animateColorAsState(color, spec, label = label).value
+        animateColorAsState(color, spec, label = label).value
     return target.copy(
         primary = a(target.primary, "primary"),
         onPrimary = a(target.onPrimary, "onPrimary"),
         primaryContainer = a(target.primaryContainer, "primaryContainer"),
         onPrimaryContainer = a(target.onPrimaryContainer, "onPrimaryContainer"),
+        inversePrimary = a(target.inversePrimary, "inversePrimary"),
         secondary = a(target.secondary, "secondary"),
+        onSecondary = a(target.onSecondary, "onSecondary"),
         secondaryContainer = a(target.secondaryContainer, "secondaryContainer"),
         onSecondaryContainer = a(target.onSecondaryContainer, "onSecondaryContainer"),
+        tertiary = a(target.tertiary, "tertiary"),
+        onTertiary = a(target.onTertiary, "onTertiary"),
+        tertiaryContainer = a(target.tertiaryContainer, "tertiaryContainer"),
+        onTertiaryContainer = a(target.onTertiaryContainer, "onTertiaryContainer"),
         background = a(target.background, "background"),
         onBackground = a(target.onBackground, "onBackground"),
         surface = a(target.surface, "surface"),
         onSurface = a(target.onSurface, "onSurface"),
         surfaceVariant = a(target.surfaceVariant, "surfaceVariant"),
         onSurfaceVariant = a(target.onSurfaceVariant, "onSurfaceVariant"),
+        surfaceTint = a(target.surfaceTint, "surfaceTint"),
+        inverseSurface = a(target.inverseSurface, "inverseSurface"),
+        inverseOnSurface = a(target.inverseOnSurface, "inverseOnSurface"),
+        error = a(target.error, "error"),
+        onError = a(target.onError, "onError"),
+        errorContainer = a(target.errorContainer, "errorContainer"),
+        onErrorContainer = a(target.onErrorContainer, "onErrorContainer"),
+        outline = a(target.outline, "outline"),
+        outlineVariant = a(target.outlineVariant, "outlineVariant"),
+        scrim = a(target.scrim, "scrim"),
+        surfaceBright = a(target.surfaceBright, "surfaceBright"),
+        surfaceDim = a(target.surfaceDim, "surfaceDim"),
+        surfaceContainerLowest = a(target.surfaceContainerLowest, "surfaceContainerLowest"),
         surfaceContainerLow = a(target.surfaceContainerLow, "surfaceContainerLow"),
         surfaceContainer = a(target.surfaceContainer, "surfaceContainer"),
         surfaceContainerHigh = a(target.surfaceContainerHigh, "surfaceContainerHigh"),
         surfaceContainerHighest = a(target.surfaceContainerHighest, "surfaceContainerHighest"),
-        outline = a(target.outline, "outline"),
-        outlineVariant = a(target.outlineVariant, "outlineVariant"),
     )
 }

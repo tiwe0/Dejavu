@@ -4,21 +4,41 @@
     <string name="chain_root">Root</string>
     <string name="chain_helper">Helper</string>
     <string name="chain_missing">Missing</string>
+    <string name="chain_state_ok">Healthy</string>
+    <string name="chain_state_pending">Pending</string>
+    <string name="chain_state_broken">Needs attention</string>
     <string name="chain_install_module">Install the framework module</string>
     <string name="chain_open_module">Open module management</string>
+    <string name="chain_reboot_pending_action">Restart required · open module management</string>
     <string name="chain_recheck_helper">Helper offline · check again</string>
+
     <string name="injecting_title">Injection scope</string>
-    <string name="injecting_summary">%1$d processes · %2$d plugins</string>
+    <plurals name="count_processes">
+        <item quantity="one">%1$d process</item>
+        <item quantity="other">%1$d processes</item>
+    </plurals>
+    <plurals name="count_plugins">
+        <item quantity="one">%1$d plugin</item>
+        <item quantity="other">%1$d plugins</item>
+    </plurals>
     <string name="injecting_empty_title">No plugin scopes yet</string>
     <string name="injecting_empty_detail">Open a plugin and choose target apps in Scope. Processes appear here grouped by target.</string>
     <string name="injecting_open_plugins">Open plugins</string>
     <string name="injecting_manual_targets">Manual targets</string>
     <string name="injecting_manual_detail">Injected without a plugin scope</string>
     <string name="injecting_unknown_plugin">Plugin no longer imported</string>
-    <string name="plugin_row_scope">%1$d processes</string>
+    <string name="manual_target_remove_title">Remove manual target?</string>
+    <string name="manual_target_remove_body">Remove %1$s from the injection list? Restart the app for the change to take effect.</string>
+    <string name="manual_target_remove_confirm">Remove</string>
+    <string name="manual_target_remove_desc">Remove %1$s</string>
+    <string name="manual_target_removed">Removed %1$s. Restart the app to apply.</string>
+
+    <plurals name="plugin_row_scope">
+        <item quantity="one">%1$d process</item>
+        <item quantity="other">%1$d processes</item>
+    </plurals>
     <string name="plugin_row_no_scope">No scope yet</string>
     <string name="plugin_import_zip">Import ZIP</string>
-    <string name="configuration_about">About</string>
     <string name="detail_runtime_hint_unknown">Check the selected process to read its state.</string>
     <string name="detail_session">Session %1$s</string>
 </resources>

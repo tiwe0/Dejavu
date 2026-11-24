@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="router_title">Router</string>
     <string name="router_summary">Independent daemon, Hub connection and routing rules</string>
@@ -29,7 +30,10 @@
     <string name="router_connection">Hub connection</string>
     <string name="router_hub_online">Hub connected</string>
     <string name="router_hub_offline">Hub disconnected</string>
-    <string name="router_counters">%1$d plugins · %2$d pending requests</string>
+    <plurals name="count_pending_jobs">
+        <item quantity="one">%1$d pending job</item>
+        <item quantity="other">%1$d pending jobs</item>
+    </plurals>
     <string name="router_configure">Connection settings</string>
     <string name="router_routes">Routes</string>
     <string name="router_rules_hint">Live routes and application wake rules. Configure plugin scopes separately.</string>

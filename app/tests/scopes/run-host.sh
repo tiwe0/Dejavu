@@ -11,6 +11,8 @@ for tool in chown sha256sum mv flock; do
     chmod 700 "${TEST_DIR}/bin/${tool}"
 done
 "${KOTLINC:-kotlinc}" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginScopeStore.kt" \
     "${APP_DIR}/tests/scopes/RootShell.kt" \
     "${APP_DIR}/tests/scopes/PluginScopeStoreTest.kt" \

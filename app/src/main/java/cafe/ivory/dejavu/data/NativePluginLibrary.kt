@@ -5,22 +5,26 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /** Root-owned source library. Scanning and importing never execute plugin code. */
-class NativePluginLibrary(context: Context) {
+class NativePluginLibrary(
+    context: Context,
+    private val shell: ShellExecutor = RootShell,
+) {
     private val resolver = context.applicationContext.contentResolver
     @Volatile var lastScanErrors: List<String> = emptyList()
         private set
 
-    fun list(): List<NativePluginArtifact> = synchronized(lock) {
-        list(PluginLibraryScan.read())
+    fun list(): List<NativePluginArtifact> = synchronized(pluginStorageLock) {
+        list(PluginLibraryScan.read(shell))
     }
 
-    internal fun list(scan: PluginLibraryScan): List<NativePluginArtifact> = synchronized(lock) {
+    internal fun list(scan: PluginLibraryScan): List<NativePluginArtifact> = synchronized(pluginStorageLock) {
         val errors = scan.errors.toMutableList()
         val candidates = scan.manifests.filter { it.manifest.kind != "lua" }.mapNotNull { stored ->
             val manifest = stored.manifest
@@ -55,7 +59,7 @@ class NativePluginLibrary(context: Context) {
             }
         }
         val results = try {
-            runPluginScanChecks(checks)
+            runPluginScanChecks(checks, shell)
         } catch (error: Exception) {
             lastScanErrors = errors + "Unable to scan native resources: ${error.message}"
             return@synchronized emptyList()
@@ -88,7 +92,7 @@ class NativePluginLibrary(context: Context) {
         val canonical = documents(uri).singleOrNull { it.name == "manifest.json" }
             ?: throw IOException("Missing manifest.json in the selected plugin folder")
         require(!canonical.directory) { "manifest.json must be a file" }
-        val manifest = NativePluginManifest.parse(decodePluginUtf8(readDocument(canonical.uri, 16 * 1024)))
+        val manifest = PluginPackageManifest.parse(decodePluginUtf8(readDocument(canonical.uri, 16 * 1024)))
         return manifest.kind == "lua"
     }
 
@@ -106,7 +110,7 @@ class NativePluginLibrary(context: Context) {
         targetDirectory(process)?.let { "$it/.dejavu/${artifact.deploymentName}" }
 
     /** Copy to the selected process's readable files directory and pin its hash. */
-    fun deploy(process: String, artifact: NativePluginArtifact): String = synchronized(lock) {
+    fun deploy(process: String, artifact: NativePluginArtifact): String = synchronized(pluginStorageLock) {
         withTrustLock { deployLocked(process, artifact) }
     }
 
@@ -114,7 +118,7 @@ class NativePluginLibrary(context: Context) {
         val id = requireNotNull(artifact.id) { "Native plugins require a manifest.json folder" }
         validatePluginId(id)
         val sourceDirectory = "$DEFAULT_PLUGIN_DIRECTORY/$id"
-        val manifest = NativePluginManifest.parse(readManifest("$sourceDirectory/manifest.json"))
+        val manifest = PluginPackageManifest.parse(readManifest("$sourceDirectory/manifest.json"))
         require(manifestArtifact(sourceDirectory, manifest) == artifact) { "Native plugin manifest changed; rescan the library" }
         validateStored(artifact)
         val base = targetDirectory(process) ?: throw IOException("Unable to find the target app's files directory")
@@ -189,12 +193,12 @@ class NativePluginLibrary(context: Context) {
                     fi
                 """.trimIndent())
             }
-            RootShell.run("rm -rf ${q(stage)}")
+            shell.run("rm -rf ${q(stage)}")
         }
     }
 
     private fun <T> withTrustLock(action: () -> T): T {
-        val process = RootShell.start("""
+        val process = shell.start("""
             set -e
             umask 077
             [ ! -L /data ] && [ ! -L /data/adb ] && [ ! -L /data/adb/dejavu ]
@@ -253,7 +257,7 @@ class NativePluginLibrary(context: Context) {
         canReplace: (String) -> Boolean,
     ): List<NativePluginArtifact> {
         require(!document.directory) { "manifest.json must be a file" }
-        val manifest = NativePluginManifest.parse(decodePluginUtf8(readDocument(document.uri, 16 * 1024)))
+        val manifest = PluginPackageManifest.parse(decodePluginUtf8(readDocument(document.uri, 16 * 1024)))
         require(manifest.kind == "native" || manifest.kind == "jit") { "Import this folder as a Lua package" }
         val resources = linkedMapOf<String, ByteArray>()
         var remaining = 64 * 1024 * 1024 - manifest.toJson().toByteArray(Charsets.UTF_8).size
@@ -269,7 +273,7 @@ class NativePluginLibrary(context: Context) {
 
     /** Validates ZIP resources before staging any change to the installed library. */
     fun importPackage(
-        manifest: NativePluginManifest,
+        manifest: PluginPackageManifest,
         resources: Map<String, ByteArray>,
         canReplace: (String) -> Boolean = { true },
     ): List<NativePluginArtifact> {
@@ -292,7 +296,7 @@ class NativePluginLibrary(context: Context) {
         val imported = artifact("$destination/${manifest.entry}").copy(
             name = manifest.name, id = manifest.id, version = manifest.version, description = manifest.description,
         )
-        synchronized(lock) {
+        synchronized(pluginStorageLock) {
             checkReplacement(destination, manifest, canReplace)
             store(destination, files) { checkReplacement(destination, manifest, canReplace) }
         }
@@ -301,13 +305,13 @@ class NativePluginLibrary(context: Context) {
 
     private fun checkReplacement(
         destination: String,
-        manifest: NativePluginManifest,
+        manifest: PluginPackageManifest,
         canReplace: (String) -> Boolean,
     ) {
         require(canReplace(manifest.id)) { "Stop this plugin before replacing its imported sources" }
         val existing = root("if [ -e ${q(destination)} ] || [ -L ${q(destination)} ]; then printf existing; fi")
         if (existing.isNotEmpty()) {
-            val previous = NativePluginManifest.parse(readManifest("$destination/manifest.json"))
+            val previous = PluginPackageManifest.parse(readManifest("$destination/manifest.json"))
             require(previous.id == manifest.id) { "Existing plugin identifier does not match its directory" }
             require(previous.kind == manifest.kind) {
                 "Cannot replace a ${previous.kind} plugin with ${manifest.kind}; use a different plugin identifier"
@@ -359,7 +363,7 @@ class NativePluginLibrary(context: Context) {
     } ?: throw IOException("Unable to open a plugin resource")
 
     private fun validateStored(artifact: NativePluginArtifact) {
-        val check = RootShell.run("""
+        val check = shell.run("""
             ${directoryGuard(artifact.path.substringBeforeLast('/'))} &&
             [ ! -L ${q(artifact.path)} ] && [ -f ${q(artifact.path)} ] &&
             [ "${'$'}(wc -c < ${q(artifact.path)})" -gt 0 ] &&
@@ -375,14 +379,14 @@ class NativePluginLibrary(context: Context) {
         val id = requireNotNull(artifact.id) { "Native plugins require a manifest.json folder" }
         validatePluginId(id)
         val directory = "$DEFAULT_PLUGIN_DIRECTORY/$id"
-        val manifest = NativePluginManifest.parse(readManifest("$directory/manifest.json"))
+        val manifest = PluginPackageManifest.parse(readManifest("$directory/manifest.json"))
         require(manifest.kind in listOf("native", "jit") && manifest.id == id &&
             "$directory/${manifest.entry}" == path) { "Native plugin manifest changed; rescan the library" }
         val candidates = listOf(manifest.entry + ".SKILL.md", manifest.entry.substringBeforeLast('/', "").let {
             if (it.isEmpty()) "SKILL.md" else "$it/SKILL.md"
         }, "SKILL.md").distinct().filter { it in manifest.files }.map { "$directory/$it" }
         for (candidate in candidates) {
-            val result = RootShell.run("[ ! -L ${q(candidate)} ] && [ -f ${q(candidate)} ] && [ \"${'$'}(wc -c < ${q(candidate)})\" -le 262144 ]")
+            val result = shell.run("[ ! -L ${q(candidate)} ] && [ -f ${q(candidate)} ] && [ \"${'$'}(wc -c < ${q(candidate)})\" -le 262144 ]")
             if (result.exitCode == 0) return candidate
         }
         return null
@@ -400,10 +404,10 @@ class NativePluginLibrary(context: Context) {
             [ ! -L ${q(path)} ] && [ -f ${q(path)} ] &&
             [ "${'$'}(wc -c < ${q(path)})" -le 16384 ] && base64 ${q(path)}
         """.trimIndent())
-        return decodePluginUtf8(java.util.Base64.getDecoder().decode(encoded.filterNot { it == '\r' || it == '\n' }))
+        return decodePluginUtf8(Base64.getDecoder().decode(encoded.filterNot { it == '\r' || it == '\n' }))
     }
 
-    private fun manifestArtifact(directory: String, manifest: NativePluginManifest): NativePluginArtifact {
+    private fun manifestArtifact(directory: String, manifest: PluginPackageManifest): NativePluginArtifact {
         require(manifest.kind == "native" || manifest.kind == "jit") { "Unsupported native plugin kind" }
         val checks = manifest.files.joinToString("\n") { path ->
             path.split('/').forEach(::validateName)
@@ -486,27 +490,28 @@ class NativePluginLibrary(context: Context) {
                 mv ${q(stage)} ${q(destination)}
                 trap - EXIT
             """.trimIndent())
-            RootShell.run("rm -rf ${q(backup)}")
+            shell.run("rm -rf ${q(backup)}")
         } finally {
-            RootShell.run("rm -rf ${q(stage)}")
+            shell.run("rm -rf ${q(stage)}")
         }
     }
 
     private fun root(command: String, input: ByteArray? = null): String {
-        val result = if (input == null) RootShell.run(command) else RootShell.run(command, input)
+        val result = if (input == null) shell.run(command) else shell.run(command, input)
         if (result.exitCode != 0) throw IOException("Native plugin operation failed: ${result.output.trim()}")
         return result.output.trim()
     }
 
+    private fun q(value: String) = shell.quote(value)
+    private fun directoryGuard(path: String): String = pluginDirectoryGuard(path, shell::quote)
+
     companion object {
-        private val lock = Any()
         private const val SLOTS = 16
         private const val ALLOWED = "debug.dejavu.plugins.allowed"
         private const val HASH = "debug.dejavu.plugins.sha256"
         private const val SKILL_HASH = "debug.dejavu.plugins.skill.sha256"
         private const val TRUST_LOCK = "/data/adb/dejavu/.plugin-trust.lock"
         private const val LOCK_READY = "DEJAVU_PLUGIN_TRUST_LOCK_READY"
-        private fun q(value: String) = RootShell.quote(value)
         private fun validateName(name: String) {
             require(name.length in 1..120 && name.matches(Regex("[A-Za-z0-9_][A-Za-z0-9_.-]*"))) { "Unsafe plugin filename: $name" }
         }
@@ -535,12 +540,6 @@ class NativePluginLibrary(context: Context) {
             require(process.matches(Regex("[A-Za-z0-9_.]+(?::[A-Za-z0-9_.-]+)?"))) { "Invalid target process" }
             val pkg = process.substringBefore(':')
             return listOf("/data/user_de/0/$pkg/files", "/data/user/0/$pkg/files", "/data/data/$pkg/files")
-        }
-        private fun directoryGuard(path: String): String = path.split('/').filter { it.isNotEmpty() }.let { parts ->
-            parts.indices.joinToString(" && ") { index ->
-                val directory = "/" + parts.take(index + 1).joinToString("/")
-                "[ -d ${q(directory)} ] && [ ! -L ${q(directory)} ]"
-            }
         }
     }
 }

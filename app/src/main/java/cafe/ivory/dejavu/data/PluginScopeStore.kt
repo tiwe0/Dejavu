@@ -2,24 +2,26 @@ package cafe.ivory.dejavu.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.Base64
 
 data class PluginScopesSnapshot(val scopes: Map<String, List<String>>, val targets: List<String>)
 
 /** Scope ownership and the native target union share one atomic configuration file. */
-class PluginScopeStore {
+class PluginScopeStore(private val shell: ShellExecutor = RootShell) {
     fun read(): PluginScopesSnapshot = load().snapshot()
 
     fun setScope(id: String, targets: List<String>): PluginScopesSnapshot {
         require(id.matches(Regex("[a-z][a-z0-9_-]{0,63}"))) { "Invalid plugin ID" }
         val normalized = normalize(targets)
-        return update { old -> old.copy(scopes = old.scopes.toMutableMap().apply {
-            if (normalized.isEmpty()) remove(id) else put(id, normalized)
-        }) }
+        return update { old ->
+            old.copy(scopes = old.scopes.toMutableMap().apply {
+                if (normalized.isEmpty()) remove(id) else put(id, normalized)
+            })
+        }
     }
 
-    fun addManualTarget(process: String): PluginScopesSnapshot = update { it.copy(manual = normalize(it.manual + process)) }
     fun removeManualTarget(process: String): PluginScopesSnapshot {
         normalize(listOf(process))
         return update { it.copy(manual = it.manual - process) }
@@ -38,11 +40,12 @@ class PluginScopeStore {
     }
 
     private fun load(): State {
-        val result = RootShell.run("set -e\n$GUARD || exit 1\n[ -f '$PATH' ] && [ ! -L '$PATH' ] || exit 1\n[ \"\$(wc -c < '$PATH')\" -le $MAX_BYTES ]\nbase64 < '$PATH'")
+        val guard = pluginDirectoryGuard(DIRECTORY, shell::quote)
+        val result = shell.run("set -e\n$guard || exit 1\n[ -f '$PATH' ] && [ ! -L '$PATH' ] || exit 1\n[ \"\$(wc -c < '$PATH')\" -le $MAX_BYTES ]\nbase64 < '$PATH'")
         check(result.exitCode == 0) { "Cannot read plugin scopes: ${result.output.trim()}" }
         val bytes = Base64.getMimeDecoder().decode(result.output.trim())
         require(bytes.size <= MAX_BYTES) { "Target configuration exceeds 16 KiB" }
-        val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+        val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
         val lines = text.lineSequence().map(String::trim).toList()
         val effective = normalize(lines.filter { it.isNotEmpty() && !it.startsWith('#') })
         val headers = lines.filter { it.startsWith("# dejavu-plugin-scopes-") }
@@ -62,6 +65,7 @@ class PluginScopeStore {
     }
 
     private fun update(transform: (State) -> State): PluginScopesSnapshot {
+        val guard = pluginDirectoryGuard(DIRECTORY, shell::quote)
         repeat(4) {
             val previous = load()
             val updated = transform(previous)
@@ -70,7 +74,7 @@ class PluginScopeStore {
             val command = """
                 set -e
                 umask 077
-                $GUARD || exit 1
+                $guard || exit 1
                 chmod 700 '$DIRECTORY'
                 [ ! -L '$LOCK' ] && { [ ! -e '$LOCK' ] || [ -f '$LOCK' ]; } || exit 1
                 exec 9>'$LOCK'
@@ -87,7 +91,7 @@ class PluginScopeStore {
                 chown 0:0 "${'$'}stage"
                 mv -f "${'$'}stage" '$PATH'
             """.trimIndent()
-            val result = RootShell.run(command, bytes)
+            val result = shell.run(command, bytes)
             if (result.exitCode == 0) return updated.snapshot()
             check(result.exitCode == 73) { "Cannot save plugin scopes: ${result.output.trim()}" }
             Thread.sleep(25L * (it + 1))
@@ -96,17 +100,11 @@ class PluginScopeStore {
     }
 
     companion object {
-        private const val DIRECTORY = "/data/adb/modules/dejavu_zygisk/config"
+        private const val DIRECTORY = "$MODULE_DIR/config"
         private const val PATH = "$DIRECTORY/targets.txt"
         private const val LOCK = "$DIRECTORY/.targets.lock"
         private const val PREFIX = "# dejavu-plugin-scopes-v1 "
         private const val MAX_BYTES = 16 * 1024
-        private val GUARD = DIRECTORY.split('/').filter(String::isNotEmpty).let { parts ->
-            parts.indices.joinToString(" && ") { index ->
-                val path = "/" + parts.take(index + 1).joinToString("/")
-                "[ -d '$path' ] && [ ! -L '$path' ]"
-            }
-        }
         private fun normalize(targets: List<String>): List<String> = targets.onEach {
             require(it.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) { "Invalid target process: $it" }
         }.distinct().sorted()

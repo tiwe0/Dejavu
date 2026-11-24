@@ -15,60 +15,13 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-data class ShellResult(val exitCode: Int, val output: String)
-
-/** Cancels the current read-only RPC resource and rejects subsequent stages. */
-internal class RpcCancellation {
-    private val lock = Any()
-    private var cancelled = false
-    private var shutdown: (() -> Unit)? = null
-
-    fun cancel() {
-        val action = synchronized(lock) {
-            if (cancelled) return
-            cancelled = true
-            shutdown.also { shutdown = null }
-        }
-        action?.let { runCatching(it) }
-    }
-
-    fun throwIfCancelled() {
-        if (synchronized(lock) { cancelled }) throw CancellationException("RPC status request was cancelled")
-    }
-
-    fun <T> withResource(close: () -> Unit, action: () -> T): T {
-        val alreadyCancelled = synchronized(lock) {
-            if (cancelled) true else {
-                check(shutdown == null) { "RPC resources must be used sequentially" }
-                shutdown = close
-                false
-            }
-        }
-        if (alreadyCancelled) {
-            runCatching(close)
-            throwIfCancelled()
-        }
-        try {
-            throwIfCancelled()
-            val result = action()
-            throwIfCancelled()
-            return result
-        } catch (error: Exception) {
-            throwIfCancelled()
-            throw error
-        } finally {
-            synchronized(lock) { if (shutdown === close) shutdown = null }
-        }
-    }
-}
-
 /** Tiny root-shell bridge. The app itself runs as an ordinary app UID. */
-object RootShell {
-    fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+object RootShell : ShellExecutor {
+    override fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     internal fun commandArguments(
         command: String,
-        canExecute: (String) -> Boolean = { java.io.File(it).canExecute() },
+        canExecute: (String) -> Boolean = { File(it).canExecute() },
     ): List<String> {
         val su = listOf(
             "/system/bin/su",
@@ -80,9 +33,26 @@ object RootShell {
         return listOf(su, "-M", "-c", command)
     }
 
-    fun start(command: String): Process = ProcessBuilder(commandArguments(command))
+    override fun start(command: String): Process = ProcessBuilder(commandArguments(command))
         .redirectErrorStream(true)
         .start()
+
+    override fun <T> exchangeBinary(
+        command: String,
+        timeoutMillis: Long,
+        cancellation: RpcCancellation?,
+        exchange: (InputStream, OutputStream) -> T,
+    ): T = exchangeBinary(
+        command = command,
+        timeoutMillis = timeoutMillis,
+        cancellation = cancellation,
+        startProcess = {
+            ProcessBuilder(commandArguments(it))
+                .redirectError(File("/dev/null"))
+                .start()
+        },
+        exchange = exchange,
+    )
 
     internal fun <T> exchangeBinary(
         command: String,
@@ -136,7 +106,7 @@ object RootShell {
 
     // The app cannot signal a root child. The shell reaps its own logcat
     // when the app closes stdin, including when the app process exits.
-    internal fun startLogcat(arguments: String): Process = start(
+    override fun startLogcat(arguments: String): Process = start(
         """
         logcat $arguments &
         exec 1>&- 2>&-
@@ -146,15 +116,21 @@ object RootShell {
         """.trimIndent(),
     )
 
-    internal fun stopLogcat(process: Process?) {
+    override fun stopLogcat(process: Process?) {
         runCatching { process?.outputStream?.close() }
     }
 
-    fun run(command: String, timeoutSeconds: Long = 20): ShellResult =
+    override fun run(command: String, timeoutSeconds: Long): ShellResult =
         runWithInput(command, null, timeoutSeconds)
 
-    fun run(command: String, input: ByteArray, timeoutSeconds: Long = 20): ShellResult =
+    override fun run(command: String, input: ByteArray, timeoutSeconds: Long): ShellResult =
         runWithInput(command, input, timeoutSeconds)
+
+    override fun runCancellable(
+        command: String,
+        cancellation: RpcCancellation,
+        timeoutSeconds: Long,
+    ): ShellResult = runCancellable(command, cancellation, timeoutSeconds, ::start)
 
     internal fun runCancellable(
         command: String,
@@ -258,23 +234,4 @@ object RootShell {
         }
         return ShellResult(if (finished) process.exitValue() else 124, text)
     }
-
-    fun getProp(name: String): String {
-        val result = run("getprop ${quote(name)}")
-        return if (result.exitCode == 0) result.output.trim().lineSequence().firstOrNull().orEmpty()
-        else ""
-    }
-
-    fun readFile(path: String): String? {
-        val result = run("cat ${quote(path)}")
-        return if (result.exitCode == 0) result.output else null
-    }
-
-    fun writeFile(path: String, contents: String): Boolean {
-        val escaped = contents
-        val command = "printf %s ${quote(escaped)} > ${quote(path)}"
-        return run(command).exitCode == 0
-    }
-
-    fun isRoot(): Boolean = run("id").output.contains("uid=0")
 }

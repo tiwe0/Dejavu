@@ -9,13 +9,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -37,46 +34,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cafe.ivory.dejavu.R
-import cafe.ivory.dejavu.ui.theme.DejavuMono
-import cafe.ivory.dejavu.ui.theme.signal
 import cafe.ivory.dejavu.data.InstalledApp
+import cafe.ivory.dejavu.ui.theme.mono
 
 @Composable
-fun StatusPill(
-    label: String,
-    active: Boolean,
+fun SectionTitle(
+    title: String,
     modifier: Modifier = Modifier,
-    activeColor: Color = MaterialTheme.colorScheme.signal,
+    subtitle: String? = null,
 ) {
-    Row(
-        modifier = modifier.padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(if (active) activeColor else MaterialTheme.colorScheme.outline),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (active) MaterialTheme.colorScheme.onSurface
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-fun SectionTitle(title: String, subtitle: String? = null, modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
         Text(
             title,
@@ -114,7 +87,7 @@ fun EmptyState(
             detail,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -128,7 +101,7 @@ fun MonoText(
     Text(
         text,
         modifier = modifier,
-        style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono),
+        style = MaterialTheme.typography.mono,
         color = color,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
@@ -142,40 +115,52 @@ fun TargetMenu(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
     label: String? = null,
-    onPickApp: (() -> Unit)? = null,
-    apps: List<InstalledApp> = emptyList(),
+    appsByPackage: Map<String, InstalledApp> = emptyMap(),
     enabled: Boolean = true,
 ) {
     val resolvedLabel = label ?: stringResource(R.string.target_process)
-    val app = apps.firstOrNull { it.packageName == selected?.substringBefore(':') }
+    val selectedPkg = selected?.substringBefore(':')
+    val app = selectedPkg?.let { appsByPackage[it] }
     var expanded by remember { mutableStateOf(false) }
     Box(modifier) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             onClick = { expanded = true },
             enabled = enabled,
-            shape = MaterialTheme.shapes.medium,
+            shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surface,
             border = CardDefaults.outlinedCardBorder(),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                modifier = Modifier
+                    .heightIn(min = 56.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (selected != null) ProcessIcon(app)
-                Column(modifier = Modifier.weight(1f)) {
+                if (selected != null) ProcessIcon(selectedPkg)
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     Text(
-                        app?.label ?: resolvedLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
+                        resolvedLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (app != null) {
+                        Text(
+                            app.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     Text(
-                        selected ?: stringResource(R.string.not_selected),
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = DejavuMono),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        selected ?: stringResource(R.string.target_not_selected),
+                        style = MaterialTheme.typography.mono,
+                        color = if (app != null || selected == null) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -191,18 +176,19 @@ fun TargetMenu(
                 )
             }
             targets.forEach { target ->
-                val targetApp = apps.firstOrNull { it.packageName == target.substringBefore(':') }
+                val targetPkg = target.substringBefore(':')
+                val targetApp = appsByPackage[targetPkg]
                 DropdownMenuItem(
                     text = {
                         Column {
                             targetApp?.let { Text(it.label, fontWeight = FontWeight.Medium) }
-                            Text(target, style = MaterialTheme.typography.bodySmall)
+                            Text(target, style = MaterialTheme.typography.mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
-                    leadingIcon = { ProcessIcon(targetApp) },
+                    leadingIcon = { ProcessIcon(targetPkg) },
                     trailingIcon = {
                         if (target == selected) {
-                            Icon(Icons.Rounded.CheckCircle, contentDescription = null)
+                            Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         }
                     },
                     onClick = {
@@ -211,28 +197,20 @@ fun TargetMenu(
                     },
                 )
             }
-            if (onPickApp != null) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.choose_app)) },
-                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                    onClick = {
-                        expanded = false
-                        onPickApp()
-                    },
-                )
-            }
         }
     }
 }
 
 @Composable
-internal fun ProcessIcon(app: InstalledApp?, modifier: Modifier = Modifier) {
-    val bitmap = app?.icon
-    if (bitmap != null) {
-        Image(bitmap.asImageBitmap(), contentDescription = null, modifier = modifier.size(32.dp))
+internal fun ProcessIcon(packageName: String?, modifier: Modifier = Modifier) {
+    val icon = rememberAppIcon(packageName)
+    if (icon != null) {
+        Image(icon, contentDescription = null, modifier = modifier.size(32.dp))
     } else {
         Box(
-            modifier = modifier.size(32.dp).clip(MaterialTheme.shapes.small)
+            modifier = modifier
+                .size(32.dp)
+                .clip(MaterialTheme.shapes.small)
                 .background(MaterialTheme.colorScheme.secondaryContainer),
             contentAlignment = Alignment.Center,
         ) {
@@ -242,41 +220,6 @@ internal fun ProcessIcon(app: InstalledApp?, modifier: Modifier = Modifier) {
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
-        }
-    }
-}
-
-@Composable
-fun StatusLine(
-    icon: Boolean,
-    title: String,
-    detail: String,
-    modifier: Modifier = Modifier,
-    positive: Boolean = true,
-) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(
-            imageVector = if (positive) Icons.Rounded.CheckCircle else Icons.Rounded.Info,
-            contentDescription = null,
-            tint = if (positive) MaterialTheme.colorScheme.secondary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (icon) {
-            Spacer(Modifier.width(0.dp))
         }
     }
 }
@@ -305,8 +248,8 @@ fun NoticeBanner(text: String, modifier: Modifier = Modifier) {
 fun ErrorBanner(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
     ) {
         Row(
@@ -316,6 +259,50 @@ fun ErrorBanner(text: String, modifier: Modifier = Modifier) {
         ) {
             Icon(Icons.Rounded.ErrorOutline, contentDescription = null)
             Text(text, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+internal fun ManagerGroup(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surface,
+        border = CardDefaults.outlinedCardBorder(),
+    ) {
+        Column { content() }
+    }
+}
+
+@Composable
+internal fun ManagerLinkRow(
+    icon: ImageVector,
+    label: String,
+    detail: String,
+    trailingIcon: ImageVector,
+    onClick: () -> Unit,
+) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
+        Row(
+            modifier = Modifier.heightIn(min = 60.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(label, style = MaterialTheme.typography.titleSmall)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(
+                trailingIcon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

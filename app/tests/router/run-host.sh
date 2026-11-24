@@ -13,6 +13,8 @@ VIEWMODEL_AAR=${VIEWMODEL_AAR:-${VIEWMODEL_CANDIDATES[0]}}
 unzip -p "$VIEWMODEL_AAR" classes.jar > "${TEST_DIR}/viewmodel.jar"
 CLASSPATH="${JSON_JAR}:${COROUTINES_JAR}:${TEST_DIR}/viewmodel.jar"
 "${KOTLINC:-kotlinc}" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RootShell.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RouterClient.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RouterUiState.kt" \

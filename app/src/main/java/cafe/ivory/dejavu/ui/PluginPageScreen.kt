@@ -2,6 +2,8 @@ package cafe.ivory.dejavu.ui
 
 import android.view.WindowManager
 import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -80,9 +82,11 @@ internal fun PluginPageScreen(
     val session = plugin.session.takeIf {
         plugin.runState == DirectoryPluginState.RUNNING && (preset == null || !targetOffline)
     }
-    var portDraft by remember(id, target) { mutableStateOf("0") }
-    var appliedPort by remember(id, target, preset != null) {
-        mutableIntStateOf(if (preset == null) 0 else preferredPort)
+    var portDraft by rememberSaveable(id, target) {
+        mutableStateOf(if (preferredPort > 0) preferredPort.toString() else "0")
+    }
+    var appliedPort by rememberSaveable(id, target, preset != null) {
+        mutableIntStateOf(preferredPort)
     }
     var reconnect by remember(id, target) { mutableIntStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -185,7 +189,7 @@ internal fun PluginPageScreen(
                 }
             }
         }
-        runtimeError?.let { error -> item { ErrorBanner(error) } }
+        runtimeError?.let { error -> item { if (targetOffline) NoticeBanner(error) else ErrorBanner(error) } }
         plugin.error?.let { error -> item { ErrorBanner(error) } }
         for (block in page.blocks) {
             when (block) {
@@ -193,9 +197,10 @@ internal fun PluginPageScreen(
                     Text(block.text.localized(), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 PluginPageBlock.Status -> item {
-                    StatusPill(
+                    LiveStatus(
                         label = stringResource(plugin.runState.labelRes),
-                        active = plugin.runState == DirectoryPluginState.RUNNING,
+                        live = plugin.runState == DirectoryPluginState.RUNNING,
+                        error = plugin.runState == DirectoryPluginState.ERROR,
                     )
                 }
                 is PluginPageBlock.Button -> item {
@@ -207,24 +212,41 @@ internal fun PluginPageScreen(
                         "call" -> inScope && session != null && block.call != null && (!usesSocket || currentEvents?.connected == true)
                         else -> false
                     }
-                    Button(
-                        onClick = {
-                            if (target != null) {
-                                when (block.action) {
-                                    "check" -> onCheck()
-                                    "start" -> onStart(target, id)
-                                    "stop" -> onStop(target, id)
-                                    "call" -> block.call?.let { onCall(target, id, it) }
-                                    else -> Unit
-                                }
+                    val enabled = target != null && !busy && available
+                    val onClick = {
+                        if (target != null) {
+                            when (block.action) {
+                                "check" -> onCheck()
+                                "start" -> onStart(target, id)
+                                "stop" -> onStop(target, id)
+                                "call" -> block.call?.let { onCall(target, id, it) }
+                                else -> Unit
                             }
-                        },
-                        enabled = target != null && !busy && available,
-                        colors = if (block.action == "start") ButtonDefaults.buttonColors()
-                        else ButtonDefaults.filledTonalButtonColors(),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    ) {
-                        Text(block.label.localized())
+                        }
+                    }
+                    if (block.action == "stop") {
+                        OutlinedButton(
+                            onClick = onClick,
+                            enabled = enabled,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            border = BorderStroke(
+                                1.dp,
+                                if (enabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+                            ),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) {
+                            Text(block.label.localized())
+                        }
+                    } else {
+                        Button(
+                            onClick = onClick,
+                            enabled = enabled,
+                            colors = if (block.action == "start") ButtonDefaults.buttonColors()
+                            else ButtonDefaults.filledTonalButtonColors(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) {
+                            Text(block.label.localized())
+                        }
                     }
                 }
                 is PluginPageBlock.Input -> item {
@@ -252,6 +274,7 @@ internal fun PluginPageScreen(
                             onClick = {
                                 validPort?.let {
                                     appliedPort = it
+                                    onSetPreferredPort(it)
                                     if (session != null) {
                                         closeEvents()
                                         reconnect++
@@ -266,7 +289,7 @@ internal fun PluginPageScreen(
                 }
                 is PluginPageBlock.Events -> {
                     item { PluginPageEventStatus(currentEvents, waitingForStart = session == null) }
-                    items(currentEvents?.events.orEmpty().takeLast(block.limit).asReversed()) { event ->
+                    items(currentEvents?.events.orEmpty().takeLast(block.limit).asReversed(), key = { it.id }) { event ->
                         PluginEventCard(event)
                     }
                 }
@@ -282,7 +305,7 @@ private fun PluginPageEventStatus(events: PackageEventsUi?, waitingForStart: Boo
             title = stringResource(R.string.package_live_events),
             subtitle = stringResource(R.string.package_events_memory_only),
         )
-        StatusPill(
+        LiveStatus(
             label = stringResource(
                 when {
                     waitingForStart -> R.string.package_page_events_start_first
@@ -291,7 +314,8 @@ private fun PluginPageEventStatus(events: PackageEventsUi?, waitingForStart: Boo
                     else -> R.string.package_events_connecting
                 },
             ),
-            active = events?.connected == true,
+            live = events?.connected == true,
+            error = events?.error != null,
         )
         events?.listenPort?.let { port ->
             Text(stringResource(R.string.package_page_listen_address, port), style = MaterialTheme.typography.bodySmall)

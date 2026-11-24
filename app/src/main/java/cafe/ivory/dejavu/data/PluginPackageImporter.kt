@@ -8,21 +8,22 @@ import java.io.IOException
 import java.util.Base64
 import java.util.UUID
 
-const val DEFAULT_PLUGIN_DIRECTORY = "/data/adb/dejavu/plugins"
-
 /** Imports declared source resources. No package code executes during import. */
-class PluginPackageImporter(context: Context) {
+class PluginPackageImporter(
+    context: Context,
+    private val shell: ShellExecutor = RootShell,
+) {
     private val resolver = context.applicationContext.contentResolver
 
     @Volatile
     var lastScanErrors: List<String> = emptyList()
         private set
 
-    fun list(): List<ImportedPluginPackage> = synchronized(storageLock) {
-        list(PluginLibraryScan.read())
+    fun list(): List<ImportedPluginPackage> = synchronized(pluginStorageLock) {
+        list(PluginLibraryScan.read(shell))
     }
 
-    internal fun list(scan: PluginLibraryScan): List<ImportedPluginPackage> = synchronized(storageLock) {
+    internal fun list(scan: PluginLibraryScan): List<ImportedPluginPackage> = synchronized(pluginStorageLock) {
         val errors = scan.errors.toMutableList()
         val manifests = scan.manifests.filter { it.manifest.kind == "lua" }
         val checks = manifests.associate { stored ->
@@ -40,7 +41,7 @@ class PluginPackageImporter(context: Context) {
             }
         }
         val results = try {
-            runPluginScanChecks(checks)
+            runPluginScanChecks(checks, shell)
         } catch (error: Exception) {
             lastScanErrors = errors + "Unable to scan Lua resources: ${error.message}"
             return@synchronized emptyList()
@@ -103,7 +104,7 @@ class PluginPackageImporter(context: Context) {
         pkg.validate()
         // Validate the generated transport size before touching an existing import.
         LuaPackageScripts.start(pkg, "0000000000000000")
-        synchronized(storageLock) {
+        synchronized(pluginStorageLock) {
             checkReplacement(pkg.manifest.id, canReplace)
             store(pkg, canReplace)
         }
@@ -113,7 +114,7 @@ class PluginPackageImporter(context: Context) {
     private fun checkReplacement(id: String, canReplace: (String) -> Boolean) {
         require(canReplace(id)) { "Stop this plugin before replacing its imported sources" }
         val directory = "$DEFAULT_PLUGIN_DIRECTORY/$id"
-        val exists = RootShell.run("if [ -e ${q(directory)} ] || [ -L ${q(directory)} ]; then printf existing; fi")
+        val exists = shell.run("if [ -e ${q(directory)} ] || [ -L ${q(directory)} ]; then printf existing; fi")
         check(exists.exitCode == 0) { "Unable to inspect the existing plugin" }
         if (exists.output.isNotEmpty()) {
             val previous = PluginPackageManifest.parse(decodePluginUtf8(
@@ -172,7 +173,7 @@ class PluginPackageImporter(context: Context) {
 
     private fun readRootFile(path: String, limit: Int): ByteArray {
         val parent = path.substringBeforeLast('/')
-        val result = RootShell.run("""
+        val result = shell.run("""
             ${directoryGuard(parent)} &&
             [ ! -L ${q(path)} ] && [ -f ${q(path)} ] &&
             [ "${'$'}(wc -c < ${q(path)})" -le $limit ] && base64 ${q(path)}
@@ -229,30 +230,20 @@ class PluginPackageImporter(context: Context) {
             """.trimIndent())
             // The replacement has committed. A backup cleanup error must not be
             // reported as a failed import after the new package is installed.
-            val cleanup = RootShell.run("rm -rf ${q(backup)}")
+            val cleanup = shell.run("rm -rf ${q(backup)}")
             if (cleanup.exitCode != 0) {
                 lastScanErrors = listOf("Imported $id, but could not remove its previous backup")
             }
         } finally {
-            RootShell.run("rm -rf ${q(stage)}")
+            shell.run("rm -rf ${q(stage)}")
         }
     }
 
     private fun checkRoot(command: String, input: ByteArray? = null) {
-        val result = if (input == null) RootShell.run(command) else RootShell.run(command, input)
+        val result = if (input == null) shell.run(command) else shell.run(command, input)
         if (result.exitCode != 0) throw IOException("Unable to store plugin package: ${result.output.trim()}")
     }
 
-    companion object {
-        private val storageLock = Any()
-        private fun q(value: String) = RootShell.quote(value)
-
-        private fun directoryGuard(path: String): String {
-            val components = path.split('/').filter { it.isNotEmpty() }
-            return components.indices.joinToString(" && ") { index ->
-                val directory = "/" + components.take(index + 1).joinToString("/")
-                "[ -d ${q(directory)} ] && [ ! -L ${q(directory)} ]"
-            }
-        }
-    }
+    private fun q(value: String) = shell.quote(value)
+    private fun directoryGuard(path: String): String = pluginDirectoryGuard(path, shell::quote)
 }

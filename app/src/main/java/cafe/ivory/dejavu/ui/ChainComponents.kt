@@ -1,16 +1,18 @@
 package cafe.ivory.dejavu.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +30,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,37 +43,58 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.ui.theme.mono
 import cafe.ivory.dejavu.ui.theme.signal
+
+internal enum class ChainNodeState { Healthy, Pending, Broken }
 
 /** One link of the injection chain: module → root → helper. */
 internal data class ChainLink(
     val label: String,
     val detail: String,
-    val ok: Boolean,
+    val state: ChainNodeState,
     val actionLabel: String? = null,
     val onAction: (() -> Unit)? = null,
     val onClick: (() -> Unit)? = null,
 )
 
 /**
- * Horizontal chain of status nodes. Healthy links are joined by a solid line; the segment
- * leading into a broken link turns dashed so the break is visible without reading.
+ * Horizontal chain of status nodes. Healthy links are joined by a solid line; segments into a
+ * pending or broken link turn dashed so the break is visible without reading. Respects RTL.
  */
 @Composable
-internal fun InjectionChain(links: List<ChainLink>, modifier: Modifier = Modifier, refreshing: Boolean = false) {
+internal fun InjectionChain(
+    links: List<ChainLink>,
+    modifier: Modifier = Modifier,
+    refreshing: Boolean = false,
+) {
+    if (links.isEmpty()) return
     val colors = MaterialTheme.colorScheme
-    val broken = links.firstOrNull { !it.ok }
+    val attention = links.firstOrNull { it.state != ChainNodeState.Healthy }
+    // Cache the latest actionable link so AnimatedVisibility can smoothly shrink/fade out on recovery.
+    var lastActionable by remember { mutableStateOf<ChainLink?>(null) }
+    if (attention?.actionLabel != null && attention.onAction != null) {
+        lastActionable = attention
+    }
     // Nodes go dim while status is being re-read, then light up one after another along the chain.
     val reveal = remember { Animatable(links.size.toFloat()) }
-    LaunchedEffect(refreshing) {
+    LaunchedEffect(refreshing, links.size) {
         if (refreshing) reveal.animateTo(0f, tween(160))
         else reveal.animateTo(links.size.toFloat(), tween(140 * links.size, easing = LinearEasing))
     }
@@ -76,38 +104,69 @@ internal fun InjectionChain(links: List<ChainLink>, modifier: Modifier = Modifie
         color = colors.surface,
         border = CardDefaults.outlinedCardBorder(),
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.fillMaxWidth().height(14.dp)) {
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(Modifier.fillMaxWidth().height(16.dp)) {
                 val okColor = colors.signal
+                val pendingColor = colors.tertiary
                 val idle = colors.outlineVariant
                 val errorColor = colors.error
-                Canvas(Modifier.fillMaxWidth().height(14.dp)) {
+                Canvas(Modifier.fillMaxWidth().height(16.dp)) {
                     val progress = reveal.value
                     val slot = size.width / links.size
                     val y = size.height / 2
+                    val isRtl = layoutDirection == LayoutDirection.Rtl
+                    val pad = 9.dp.toPx()
+                    fun nodeX(index: Int): Float {
+                        val ltrX = slot * index + slot / 2
+                        return if (isRtl) size.width - ltrX else ltrX
+                    }
                     for (index in 1 until links.size) {
-                        val start = slot * (index - 1) + slot / 2 + 9.dp.toPx()
-                        val end = slot * index + slot / 2 - 9.dp.toPx()
-                        val intact = links[index - 1].ok && links[index].ok
+                        val x0 = nodeX(index - 1)
+                        val x1 = nodeX(index)
+                        val dir = if (x1 >= x0) 1f else -1f
+                        val start = x0 + dir * pad
+                        val end = x1 - dir * pad
+                        if ((end - start) * dir <= 0f) continue
+                        val intact = links[index - 1].state == ChainNodeState.Healthy &&
+                            links[index].state == ChainNodeState.Healthy
                         val lit = (progress - index + 0.5f).coerceIn(0f, 1f)
                         drawLine(
                             color = idle,
-                            start = Offset(start, y), end = Offset(end, y),
-                            strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round,
+                            start = Offset(start, y),
+                            end = Offset(end, y),
+                            strokeWidth = 2.dp.toPx(),
+                            cap = StrokeCap.Round,
                             pathEffect = if (intact) null else PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx())),
                         )
-                        if (intact && lit > 0f) drawLine(
-                            color = okColor.copy(alpha = 0.7f),
-                            start = Offset(start, y), end = Offset(start + (end - start) * lit, y),
-                            strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round,
-                        )
+                        if (intact && lit > 0f) {
+                            drawLine(
+                                color = okColor.copy(alpha = 0.7f),
+                                start = Offset(start, y),
+                                end = Offset(start + (end - start) * lit, y),
+                                strokeWidth = 2.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                        }
                     }
                     links.forEachIndexed { index, link ->
-                        val center = Offset(slot * index + slot / 2, y)
+                        val center = Offset(nodeX(index), y)
                         val lit = (progress - index).coerceIn(0f, 1f)
-                        val target = if (link.ok) okColor else errorColor
+                        val target = when (link.state) {
+                            ChainNodeState.Healthy -> okColor
+                            ChainNodeState.Pending -> pendingColor
+                            ChainNodeState.Broken -> errorColor
+                        }
                         drawCircle(lerp(idle, target, lit), radius = 5.dp.toPx(), center = center)
-                        if (link.ok && lit > 0f) drawCircle(okColor.copy(alpha = 0.18f * lit), radius = 7.dp.toPx() * (0.7f + 0.3f * lit), center = center)
+                        if (link.state == ChainNodeState.Healthy && lit > 0f) {
+                            drawCircle(
+                                okColor.copy(alpha = 0.18f * lit),
+                                radius = 7.dp.toPx() * (0.7f + 0.3f * lit),
+                                center = center,
+                            )
+                        }
                     }
                 }
             }
@@ -116,20 +175,35 @@ internal fun InjectionChain(links: List<ChainLink>, modifier: Modifier = Modifie
                     ChainLabel(link, Modifier.weight(1f))
                 }
             }
-            androidx.compose.animation.AnimatedVisibility(
-                visible = !refreshing && broken?.actionLabel != null && broken.onAction != null,
-                enter = androidx.compose.animation.expandVertically(Motion.drawer()) + androidx.compose.animation.fadeIn(tween(Motion.FADE_IN, delayMillis = 80)),
-                exit = androidx.compose.animation.shrinkVertically(tween(Motion.EXIT)) + androidx.compose.animation.fadeOut(tween(Motion.FADE_OUT)),
+            val showAction = !refreshing && attention?.actionLabel != null && attention.onAction != null
+            AnimatedVisibility(
+                visible = showAction,
+                enter = expandVertically(Motion.drawer()) + fadeIn(tween(Motion.FADE_IN, delayMillis = 80)),
+                exit = shrinkVertically(tween(Motion.EXIT)) + fadeOut(tween(Motion.FADE_OUT)),
             ) {
-                if (broken?.actionLabel != null && broken.onAction != null) Surface(
-                    onClick = broken.onAction,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    color = colors.errorContainer.copy(alpha = 0.55f),
-                    contentColor = colors.onErrorContainer,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(broken.actionLabel, style = MaterialTheme.typography.labelLarge)
+                val active = lastActionable
+                if (active?.actionLabel != null && active.onAction != null) {
+                    val isPending = active.state == ChainNodeState.Pending
+                    Surface(
+                        onClick = active.onAction,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .semantics { role = Role.Button },
+                        shape = MaterialTheme.shapes.large,
+                        color = if (isPending) colors.tertiaryContainer else colors.errorContainer,
+                        contentColor = if (isPending) colors.onTertiaryContainer else colors.onErrorContainer,
+                    ) {
+                        Box(
+                            Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                active.actionLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                     }
                 }
             }
@@ -140,29 +214,58 @@ internal fun InjectionChain(links: List<ChainLink>, modifier: Modifier = Modifie
 @Composable
 private fun ChainLabel(link: ChainLink, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
-    val description = "${link.label}: ${link.detail}"
+    val stateText = stringResource(
+        when (link.state) {
+            ChainNodeState.Healthy -> R.string.chain_state_ok
+            ChainNodeState.Pending -> R.string.chain_state_pending
+            ChainNodeState.Broken -> R.string.chain_state_broken
+        },
+    )
+    val description = "${link.label}, $stateText: ${link.detail}"
+    val labelColor = when (link.state) {
+        ChainNodeState.Healthy -> colors.onSurface
+        ChainNodeState.Pending -> colors.tertiary
+        ChainNodeState.Broken -> colors.error
+    }
+    val detailColor = when (link.state) {
+        ChainNodeState.Healthy -> colors.onSurfaceVariant
+        ChainNodeState.Pending -> colors.tertiary
+        ChainNodeState.Broken -> colors.error
+    }
     val content: @Composable () -> Unit = {
         Column(
-            Modifier.padding(horizontal = 2.dp, vertical = 2.dp).clearAndSetSemantics { contentDescription = description },
+            Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 4.dp, vertical = 4.dp)
+                .clearAndSetSemantics { contentDescription = description },
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
         ) {
             Text(
                 link.label,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (link.ok) colors.onSurface else colors.error,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                color = labelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
             )
             Text(
                 link.detail,
                 style = MaterialTheme.typography.mono,
-                color = if (link.ok) colors.onSurfaceVariant else colors.error,
-                maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                color = detailColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
             )
         }
     }
     if (link.onClick != null) {
-        Surface(onClick = link.onClick, modifier = modifier, shape = MaterialTheme.shapes.small, color = Color.Transparent) {
+        Surface(
+            onClick = link.onClick,
+            modifier = modifier.semantics { role = Role.Button },
+            shape = MaterialTheme.shapes.small,
+            color = Color.Transparent,
+        ) {
             content()
         }
     } else {
@@ -182,6 +285,7 @@ internal fun TypeTag(text: String, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.mono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
     )
 }
 
@@ -217,9 +321,13 @@ internal fun monogram(name: String): String {
     }
 }
 
-/** Live status: a dot plus text. Only the running state uses the signal color and pulses. */
+/** Animated status dot; pauses its infinite pulse when the host lifecycle is backgrounded. */
 @Composable
-internal fun LiveStatus(label: String, live: Boolean, modifier: Modifier = Modifier, error: Boolean = false) {
+internal fun StatusDot(
+    live: Boolean,
+    modifier: Modifier = Modifier,
+    error: Boolean = false,
+) {
     val colors = MaterialTheme.colorScheme
     val dotColor by animateColorAsState(
         when {
@@ -230,33 +338,57 @@ internal fun LiveStatus(label: String, live: Boolean, modifier: Modifier = Modif
         animationSpec = tween(220),
         label = "status-dot",
     )
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var started by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, _ ->
+            started = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    Box(modifier.size(12.dp), contentAlignment = Alignment.Center) {
+        if (live && started) {
+            val pulse = rememberInfiniteTransition(label = "pulse")
+            val scale by pulse.animateFloat(
+                initialValue = 0.6f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Reverse),
+                label = "pulse-scale",
+            )
+            Canvas(Modifier.size(12.dp)) {
+                drawCircle(dotColor.copy(alpha = 0.25f * (1.6f - scale)), radius = size.minDimension / 2 * scale)
+            }
+        }
+        Box(Modifier.size(7.dp).clip(CircleShape).background(dotColor))
+    }
+}
+
+/** Live status: a dot plus text. Only the running state uses the signal color and pulses. */
+@Composable
+internal fun LiveStatus(
+    label: String,
+    live: Boolean,
+    modifier: Modifier = Modifier,
+    error: Boolean = false,
+) {
+    val colors = MaterialTheme.colorScheme
     Row(
         modifier = modifier.semantics(mergeDescendants = true) {},
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (label.isNotEmpty()) 6.dp else 0.dp),
     ) {
-        Box(Modifier.size(12.dp), contentAlignment = Alignment.Center) {
-            if (live) {
-                val pulse = rememberInfiniteTransition(label = "pulse")
-                val scale by pulse.animateFloat(
-                    initialValue = 0.6f, targetValue = 1f,
-                    animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Reverse),
-                    label = "pulse-scale",
-                )
-                Canvas(Modifier.size(12.dp)) {
-                    drawCircle(dotColor.copy(alpha = 0.25f * (1.6f - scale)), radius = size.minDimension / 2 * scale)
-                }
-            }
-            Box(Modifier.size(7.dp).clip(CircleShape).background(dotColor))
+        StatusDot(live = live, error = error)
+        if (label.isNotEmpty()) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = when {
+                    error -> colors.error
+                    live -> colors.onSurface
+                    else -> colors.onSurfaceVariant
+                },
+            )
         }
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = when {
-                error -> colors.error
-                live -> colors.onSurface
-                else -> colors.onSurfaceVariant
-            },
-        )
     }
 }

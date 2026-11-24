@@ -22,11 +22,10 @@ fun main(args: Array<String>) {
     check(select("com.example", sequenceOf("com.example.123.tmp.rpc")) == null)
     check(select("com.example:worker", sequenceOf("com.example:worker.9.rpc"))?.pid == 9)
 
-    val plugin = PluginInfo("demo", "1", true, false, "0x0", false, "/demo.so")
-    val initial = ConsoleUiState(
+    val plugin = PluginInfo("demo", "1", true, false, false, "/demo.so")
+    val initial = PluginsUiState(
         selectedTarget = "app.a",
         pluginsLoading = true,
-        pluginsRaw = "old plugin response",
         plugins = listOf(plugin),
         nativeLibrary = listOf(NativeLibraryPluginUi(
             NativePluginArtifact("/data/adb/dejavu/plugins/demo.so", "demo", false), plugin, true,
@@ -34,31 +33,28 @@ fun main(args: Array<String>) {
         )),
         nativeRuntimeKnown = true,
         nativePluginActionPath = "/data/adb/dejavu/plugins/demo.so",
-        targets = listOf("app.a", "app.b"),
     )
     val changed = initial.withSelectedTarget("app.b")
     check(changed.selectedTarget == "app.b")
-    check(changed.plugins.isEmpty() && changed.pluginsRaw.isEmpty() && !changed.pluginsLoading)
+    check(changed.plugins.isEmpty() && !changed.pluginsLoading)
     check(changed.nativeLibrary.single().runtime == null && !changed.nativeLibrary.single().runtimeKnown)
     check(changed.nativeLibrary.single().error == null)
     check(!changed.nativeRuntimeKnown && changed.nativePluginActionPath == null)
-    check(changed.targets == initial.targets)
     check(initial.withSelectedTarget("app.a") == initial)
     check(initial.withSelectedTarget(null).plugins.isEmpty())
     val imported = ImportedPluginPackage(
         PluginPackageManifest("example", "Example", "1", entry = "entry.lua", files = listOf("entry.lua")),
         mapOf("entry.lua" to "return {}"),
     )
-    val scanning = initial.copy(loading = false, pluginDirectoryLoading = true, nativePluginActionPath = null)
+    val scanning = initial.copy(pluginDirectoryLoading = true, nativePluginActionPath = null)
         .withDirectoryPackages(listOf(imported))
     check(scanning.directoryPlugins.single().plugin == imported)
     check(scanning.directoryPlugins.single().runState == DirectoryPluginState.UNKNOWN)
-    check(!scanning.pluginOperationInProgress) // background reads allow cards, tabs and back navigation
-    check(!scanning.copy(loading = true).pluginOperationInProgress)
-    check(scanning.copy(pluginImporting = true).pluginOperationInProgress)
-    check(scanning.copy(pluginActionId = "example").pluginOperationInProgress)
-    check(scanning.copy(nativePluginActionPath = "/plugin.so").pluginOperationInProgress)
-    check(scanning.copy(scopeSavingId = "example").pluginOperationInProgress)
+    check(!scanning.operationInProgress(null)) // background reads allow cards, tabs and back navigation
+    check(scanning.copy(pluginImporting = true).operationInProgress(null))
+    check(scanning.copy(pluginActionId = "example").operationInProgress(null))
+    check(scanning.copy(nativePluginActionPath = "/plugin.so").operationInProgress(null))
+    check(scanning.operationInProgress("example"))
     val snapshot = mapOf("example" to PackageRuntimeSnapshot(DirectoryPluginState.RUNNING, "0123456789abcdef"))
     val runtimeFirst = initial.copy(directoryRuntimeSnapshot = snapshot)
         .withDirectoryPackages(listOf(imported))
@@ -75,8 +71,11 @@ fun main(args: Array<String>) {
     check(switchedDuringScan.directoryRuntimeSnapshot == null)
     check(switchedDuringScan.directoryPlugins.single().runState == DirectoryPluginState.UNKNOWN)
     check(switchedDuringScan.directoryPlugins.single().session == null)
+    val firstEvent = LivePluginEvent("test", "body", "now")
+    val secondEvent = LivePluginEvent("test", "body", "now")
+    check(secondEvent.id > firstEvent.id)
     val viewer = PackageEventsUi(
-        "example", "Example", "app.a", events = listOf(LivePluginEvent("test", "body", "now")),
+        "example", "Example", "app.a", events = listOf(firstEvent, secondEvent),
         session = "0123456789abcdef",
     )
     check(viewer.matches("app.a", "example", "0123456789abcdef"))
@@ -108,19 +107,15 @@ fun main(args: Array<String>) {
         listOf("/sbin/su", "-M", "-c", command))
     check(RootShell.commandArguments(command) { true }.first() == "/system/bin/su")
     check(RootShell.commandArguments(command) { false } == listOf("su", "-M", "-c", command))
-    val scoped = initial.copy(
-        loading = false, activePluginId = "example",
-        pluginScopes = mapOf("example" to listOf("app.a", "app.b"), "other" to listOf("app.b")),
-    )
-    check(scoped.canOperatePlugin("example", "app.a"))
-    check(!scoped.canOperatePlugin("other", "app.a"))
-    check(!scoped.canOperatePlugin("example", "app.c"))
-    check(!scoped.canOperatePlugin("example", "app.b")) // selecting a scope is distinct from selecting the current RPC target
-    check(scoped.withSelectedTarget("app.b").canOperatePlugin("example", "app.b"))
-    check(!scoped.copy(scopeSavingId = "example").canOperatePlugin("example", "app.a"))
-    check(scoped.copy(loading = true).canOperatePlugin("example", "app.a")) // read-only refresh must not suppress listener reconnection
-    check(!scoped.copy(pluginScopes = emptyMap()).canOperatePlugin("example", "app.a"))
-    check(scoped.withSelectedTarget(null).pluginScopes == scoped.pluginScopes)
+    val scopes = mapOf("example" to listOf("app.a", "app.b"), "other" to listOf("app.b"))
+    val scoped = initial.copy(activePluginId = "example", nativePluginActionPath = null)
+    check(scoped.canOperatePlugin("example", "app.a", scopes, null))
+    check(!scoped.canOperatePlugin("other", "app.a", scopes, null))
+    check(!scoped.canOperatePlugin("example", "app.c", scopes, null))
+    check(!scoped.canOperatePlugin("example", "app.b", scopes, null)) // selecting a scope is distinct from selecting the current RPC target
+    check(scoped.withSelectedTarget("app.b").canOperatePlugin("example", "app.b", scopes, null))
+    check(!scoped.canOperatePlugin("example", "app.a", scopes, "example"))
+    check(!scoped.canOperatePlugin("example", "app.a", emptyMap(), null))
     println("OK: exact RPC endpoint, selection reset and su resolution")
     runRpcRegressionTests()
     runPluginPackageRegressionTests()

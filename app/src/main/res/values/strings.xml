@@ -1,72 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">dejavu</string>
+    <string name="app_name">Dejavu</string>
 
-    <string name="tab_home">Overview</string>
-    <string name="tab_targets">Scope</string>
+    <string name="tab_overview">Overview</string>
     <string name="tab_plugins">Plugins</string>
-    <string name="tab_logs">Logs</string>
 
-    <string name="title_home">dejavu</string>
-    <string name="title_targets">Scope</string>
     <string name="title_plugins">Plugins</string>
     <string name="title_logs">Live logs</string>
 
-    <string name="status_root">ROOT</string>
-    <string name="status_helper">HELPER</string>
-    <string name="status_target">TARGET</string>
     <string name="status_loaded">LOADED</string>
-    <string name="status_idle">IDLE</string>
     <string name="status_running">RUNNING</string>
-    <string name="status_offline">OFFLINE</string>
 
-    <string name="hero_kicker">DEJAVU</string>
-    <string name="hero_title">Control plane</string>
-    <string name="hero_subtitle">A focused console for targets, plugins and native algorithm tracing.</string>
-
-    <string name="module_title">Module</string>
-    <string name="module_subtitle">Zygisk runtime and module package</string>
-    <string name="module_installed">Installed</string>
-    <string name="module_version_format">Dejavu Zygisk · %1$s</string>
-    <string name="module_missing_hint">Install the framework included with this app.</string>
-    <string name="root_shell_available">su -c available</string>
     <string name="refresh_status">Refresh status</string>
-
-    <string name="helper_title">Root helper</string>
-    <string name="helper_subtitle">Temporary execute-only page unlock for native hooks</string>
-    <string name="helper_pid_detail">pid %1$s · token is per-start and published by the service</string>
 
     <string name="choose_target">Choose target</string>
     <string name="target_process">Target process</string>
-    <string name="not_selected">Not selected</string>
+    <string name="target_not_selected">Not selected</string>
     <string name="no_targets_configured">No targets configured</string>
-    <string name="restart">Restart</string>
 
-    <string name="quick_actions_title">Quick actions</string>
-    <string name="quick_actions_subtitle">Jump straight into a workflow</string>
-    <string name="quick_plugins_detail">Inspect &amp; unload</string>
-    <string name="quick_logs_detail">Dejavu tags</string>
-    <string name="quick_capture_detail">Open templates</string>
-    <string name="footer">Dejavu Console · on-device control plane</string>
-
-    <string name="targets_intro_title">Target process allowlist</string>
-    <string name="targets_intro_subtitle">Select the process to use for plugin and Lua actions.</string>
-    <string name="targets_intro_body">Restart the affected process after changing the allowlist.</string>
-    <string name="target_process_example">com.example.app</string>
-    <string name="add">Add</string>
-    <string name="targets_empty_title">No targets yet</string>
-    <string name="targets_empty_detail">Choose an app above, then relaunch it so the agent can attach.</string>
-    <string name="restart_target_desc">Restart target</string>
-    <string name="remove_target_desc">Remove target</string>
-    <string name="select_target_desc">Select target</string>
-
-    <string name="plugins_no_status_title">No plugin status</string>
-    <string name="plugins_no_status_detail">Select a running target and refresh. The RPC endpoint is created by the in-app agent.</string>
-    <string name="load_plugin">Load plugin</string>
     <string name="load">Load</string>
     <string name="cancel">Cancel</string>
-    <string name="plugin_path_label">/data/user_de/0/…/libplugin.so</string>
-    <string name="plugin_caps_format">caps %1$s</string>
-    <string name="skill">Skill</string>
     <string name="unload">Unload</string>
     <string name="skill_md">SKILL.md</string>
 
@@ -75,63 +28,49 @@
     <string name="logs_stop">Stop</string>
     <string name="logs_clear">Clear</string>
     <string name="logs_empty_running_title">Waiting for Dejavu logs</string>
+    <string name="logs_empty_running_detail">Listening to DejavuZygisk, DejavuAgent, DejavuPlugin, DejavuHook and DejavuNative logcat streams.</string>
     <string name="logs_empty_title">Live logcat</string>
     <string name="logs_empty_detail">Starts a logcat stream for DejavuZygisk, DejavuAgent, DejavuPlugin, DejavuHook and DejavuNative.</string>
-
+    <string name="logs_auto_scroll">Auto-scroll</string>
+    <plurals name="logs_lines">
+        <item quantity="one">%1$d line</item>
+        <item quantity="other">%1$d lines</item>
+    </plurals>
+    <string name="logs_no_matches">No matching lines</string>
+    <string name="logs_filter_empty_detail">Clear the filter or wait for new Dejavu log lines.</string>
 
     <string name="msg_invalid_process">Invalid process name</string>
-    <string name="msg_added_target">Added %1$s</string>
     <string name="msg_unable_write_targets">Unable to write targets (root required)</string>
-    <string name="msg_removed_target">Removed %1$s</string>
-    <string name="msg_restarted_target">Restarted %1$s</string>
-    <string name="msg_restart_failed">Restart failed: %1$s</string>
-    <string name="msg_select_target">Select a target first</string>
     <string name="msg_plugin_list_failed">Plugin list failed: %1$s</string>
     <string name="msg_unload_failed">Unload failed: %1$s</string>
     <string name="msg_load_failed">Load failed: %1$s</string>
-    <string name="msg_plugin_call_failed">Plugin call failed: %1$s</string>
     <string name="msg_logcat_failed">Unable to start logcat: %1$s</string>
-    <string name="msg_error_prefix">ERROR: %1$s</string>
-    <string name="capture_title">Capture</string>
-    <string name="unknown">(unknown)</string>
     <string name="msg_skill_load_failed">Unable to load skill</string>
+
     <string name="language">Language</string>
     <string name="language_title">App language</string>
     <string name="language_system">Follow system</string>
     <string name="language_english">English</string>
     <string name="language_chinese">简体中文</string>
-    <string name="overview_title">Overview</string>
-    <string name="overview_subtitle">Runtime status of the module and control channel</string>
-    <string name="overview_helper">Root helper</string>
+
     <string name="overview_root_granted">Granted</string>
-    <string name="quick_targets_detail">Manage allowlist</string>
-    <string name="msg_invalid_plugin_path">Use an absolute device path ending in .so or .c</string>
-    <string name="action_remove">Remove</string>
     <string name="action_skill">Skill</string>
-    <string name="action_more">More actions</string>
-    <string name="dialog_remove_target_title">Remove target?</string>
-    <string name="dialog_remove_target_body">%1$s will no longer be injected by the agent.</string>
     <string name="dialog_unload_plugin_title">Unload plugin?</string>
     <string name="dialog_unload_plugin_body">%1$s will be unloaded from the selected target.</string>
-    <string name="plugins_count">%1$d loaded</string>
-    <string name="plugins_empty_action">Refresh plugins</string>
-    <string name="logs_auto_scroll">Auto-scroll</string>
-    <string name="logs_lines">%1$d lines</string>
-    <string name="logs_no_matches">No matching lines</string>
-    <string name="logs_filter_empty_detail">Clear the filter or wait for new Dejavu log lines.</string>
-    <string name="add_target">Add target</string>
+
     <string name="permission_title">Permission</string>
     <string name="root_required_title">Root access required</string>
-    <string name="root_required_body">dejavu needs root to install the framework, manage plugins and open the authenticated RPC channel.</string>
+    <string name="root_required_body">Dejavu needs root to install the framework, manage plugins and open the authenticated RPC channel.</string>
     <string name="request_root">Request root access</string>
     <string name="request_root_again">Request again</string>
-    <string name="open_manager">Open KernelSU</string>
+    <string name="open_manager">Open root manager</string>
+    <string name="open_root_manager_named">Open %1$s</string>
     <string name="root_steps_title">How to authorize</string>
     <string name="root_step_1">Open APatch, KernelSU or Magisk.</string>
-    <string name="root_step_2">Open Superuser and find dejavu.</string>
+    <string name="root_step_2">Open Superuser and find Dejavu.</string>
     <string name="root_step_3">Choose Allow, return here and request again.</string>
     <string name="root_retry_hint">Already granted root? Request again after returning to the app.</string>
-    <string name="choose_app">Choose app</string>
+
     <string name="search_apps">Search apps</string>
     <string name="no_apps">No apps found</string>
 </resources>

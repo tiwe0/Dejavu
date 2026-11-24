@@ -1,13 +1,14 @@
 package cafe.ivory.dejavu.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -15,10 +16,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -34,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -42,6 +45,7 @@ import cafe.ivory.dejavu.R
 import cafe.ivory.dejavu.data.RouterRoute
 import cafe.ivory.dejavu.data.RouterUiState
 import cafe.ivory.dejavu.data.RouterUpstream
+import cafe.ivory.dejavu.ui.theme.mono
 
 @Composable
 internal fun RouterScreen(
@@ -68,39 +72,67 @@ internal fun RouterScreen(
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SectionTitle(stringResource(R.string.router_service), stringResource(R.string.router_independent))
+                SectionTitle(title = stringResource(R.string.router_service), subtitle = stringResource(R.string.router_independent))
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (state.loading || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        LiveStatus(stringResource(when {
-                            !state.healthKnown && state.failure != null -> R.string.router_unknown
-                            state.service == null -> R.string.router_loading
-                            !state.service.installed -> R.string.router_unavailable
-                            running -> R.string.router_running
-                            else -> R.string.router_stopped
-                        }), running && state.healthKnown)
+                        LiveStatus(
+                            label = stringResource(
+                                when {
+                                    !state.healthKnown && state.failure != null -> R.string.router_unknown
+                                    state.service == null -> R.string.router_loading
+                                    !state.service.installed -> R.string.router_unavailable
+                                    running -> R.string.router_running
+                                    else -> R.string.router_stopped
+                                },
+                            ),
+                            live = running && state.healthKnown,
+                            error = !state.healthKnown && state.failure != null,
+                        )
                         if (state.service?.installed == false) Text(stringResource(R.string.router_install_hint), style = MaterialTheme.typography.bodySmall)
                         if (state.service?.installed == true) {
                             Text(stringResource(if (state.service.enabled) R.string.router_boot_enabled else R.string.router_boot_disabled), style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
-                                Button(onClick = { onSetRunning(!running) }, enabled = !state.busy && !state.loading && (state.healthKnown || running)) {
-                                    Text(stringResource(if (running) R.string.router_stop else R.string.router_start))
+                                val toggleEnabled = !state.busy && !state.loading && (state.healthKnown || running)
+                                if (running) {
+                                    OutlinedButton(
+                                        onClick = { onSetRunning(false) },
+                                        enabled = toggleEnabled,
+                                        modifier = Modifier.heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (toggleEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+                                        ),
+                                    ) { Text(stringResource(R.string.router_stop)) }
+                                    OutlinedButton(
+                                        onClick = { onReconnect(null) },
+                                        enabled = canManage,
+                                        modifier = Modifier.heightIn(min = 48.dp),
+                                    ) { Text(stringResource(R.string.router_reconnect_all)) }
+                                } else {
+                                    Button(
+                                        onClick = { onSetRunning(true) },
+                                        enabled = toggleEnabled,
+                                        modifier = Modifier.heightIn(min = 48.dp),
+                                    ) { Text(stringResource(R.string.router_start)) }
                                 }
-                                if (running) OutlinedButton(onClick = { onReconnect(null) }, enabled = canManage) { Text(stringResource(R.string.router_reconnect_all)) }
                             }
                         }
                     }
                 }
-                if (state.failure != null) Text(stringResource(R.string.router_error), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                if (state.failure != null) ErrorBanner(stringResource(R.string.router_error))
             }
         }
         if (snapshot != null && running) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SectionTitle(stringResource(R.string.router_connections), stringResource(R.string.router_upstreams_hint))
+                    SectionTitle(title = stringResource(R.string.router_connections), subtitle = stringResource(R.string.router_upstreams_hint))
                     ManagerGroup {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(stringResource(R.string.router_counters, snapshot.pluginCount, snapshot.pendingJobs), style = MaterialTheme.typography.bodySmall)
+                            val pluginCount = pluralStringResource(R.plurals.count_plugins, snapshot.pluginCount, snapshot.pluginCount)
+                            val pendingCount = pluralStringResource(R.plurals.count_pending_jobs, snapshot.pendingJobs, snapshot.pendingJobs)
+                            Text("$pluginCount · $pendingCount", style = MaterialTheme.typography.bodySmall)
                             if (snapshot.pluginSocket.isNotBlank()) MonoText(stringResource(R.string.router_plugin_socket, snapshot.pluginSocket))
                             if (snapshot.listenTcp) Text(stringResource(R.string.router_compatibility_port, snapshot.listenPort), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = onReloadPlugins, enabled = canManage) { Text(stringResource(R.string.router_reload_plugins)) }
@@ -112,15 +144,27 @@ internal fun RouterScreen(
                 ManagerGroup {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (upstream.isDefault) stringResource(R.string.router_default_hub) else upstream.id,
-                                style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                            LiveStatus(stringResource(if (upstream.connected) R.string.router_hub_online else R.string.router_hub_offline), upstream.connected)
+                            Text(
+                                if (upstream.isDefault) stringResource(R.string.router_default_hub) else upstream.id,
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            LiveStatus(
+                                stringResource(if (upstream.connected) R.string.router_hub_online else R.string.router_hub_offline),
+                                upstream.connected,
+                            )
                         }
                         if (upstream.host.isNotBlank()) MonoText("${upstream.host}:${upstream.port}")
                         if (!upstream.isDefault) {
-                            Text(stringResource(R.string.router_source, upstream.source), style = MaterialTheme.typography.bodySmall)
-                            Text(stringResource(if (upstream.overridden) R.string.router_local_override else R.string.router_plugin_defaults),
-                                style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                stringResource(R.string.router_source, upstream.source),
+                                style = MaterialTheme.typography.mono,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                stringResource(if (upstream.overridden) R.string.router_local_override else R.string.router_plugin_defaults),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { connectionEditor = upstream }, enabled = canManage) { Text(stringResource(R.string.router_configure)) }
@@ -134,7 +178,11 @@ internal fun RouterScreen(
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    SectionTitle(stringResource(R.string.router_routes), stringResource(R.string.router_rules_hint), Modifier.weight(1f))
+                    SectionTitle(
+                        title = stringResource(R.string.router_routes),
+                        modifier = Modifier.weight(1f),
+                        subtitle = stringResource(R.string.router_rules_hint),
+                    )
                     IconButton(onClick = { editing = RouterRoute("") }, enabled = canManage) {
                         Icon(Icons.Rounded.Add, stringResource(R.string.router_add_route))
                     }

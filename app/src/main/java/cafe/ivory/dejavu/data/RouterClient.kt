@@ -103,7 +103,7 @@ internal class RouterClient(
     private val generation = AtomicLong()
     private val rootRead = AtomicReference<RpcCancellation?>()
     @Volatile private var endpoint: RouterEndpoint? = null
-    private val control = "/data/adb/modules/dejavu_zygisk/router-control.sh"
+    private val control = "$MODULE_DIR/router-control.sh"
 
     fun cancelRead() {
         generation.incrementAndGet()

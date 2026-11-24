@@ -41,6 +41,8 @@ object ManagerAppearanceStore {
         return ManagerAppearance.fromStored(preferences.getString(PALETTE, null), preferences.getString(MODE, null))
     }
 
+    // Keep free of core-ktx so app/tests/appearance/run-host.sh compiles with plain kotlinc.
+    @Suppress("UseKtx")
     fun save(context: Context, appearance: ManagerAppearance) {
         context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
             .putString(PALETTE, appearance.palette.key)

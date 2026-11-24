@@ -4,21 +4,38 @@
     <string name="chain_root">Root</string>
     <string name="chain_helper">辅助服务</string>
     <string name="chain_missing">未检测到</string>
+    <string name="chain_state_ok">正常</string>
+    <string name="chain_state_pending">待处理</string>
+    <string name="chain_state_broken">异常</string>
     <string name="chain_install_module">安装框架模块</string>
     <string name="chain_open_module">打开模块管理</string>
+    <string name="chain_reboot_pending_action">重启后生效 · 打开模块管理</string>
     <string name="chain_recheck_helper">辅助服务离线 · 重新检查</string>
+
     <string name="injecting_title">注入作用域</string>
-    <string name="injecting_summary">%1$d 个进程 · %2$d 个插件</string>
+    <plurals name="count_processes">
+        <item quantity="other">%1$d 个进程</item>
+    </plurals>
+    <plurals name="count_plugins">
+        <item quantity="other">%1$d 个插件</item>
+    </plurals>
     <string name="injecting_empty_title">还没有配置作用域</string>
     <string name="injecting_empty_detail">打开插件，在“作用域”中选择目标应用。配置后这里会按进程分组显示。</string>
     <string name="injecting_open_plugins">前往插件</string>
     <string name="injecting_manual_targets">手动目标</string>
     <string name="injecting_manual_detail">未通过插件作用域注入</string>
     <string name="injecting_unknown_plugin">插件已不在库中</string>
-    <string name="plugin_row_scope">%1$d 个进程</string>
+    <string name="manual_target_remove_title">移除手动目标？</string>
+    <string name="manual_target_remove_body">将 %1$s 从注入列表移除？重启对应应用后生效。</string>
+    <string name="manual_target_remove_confirm">移除</string>
+    <string name="manual_target_remove_desc">移除 %1$s</string>
+    <string name="manual_target_removed">已移除 %1$s，重启应用后生效。</string>
+
+    <plurals name="plugin_row_scope">
+        <item quantity="other">%1$d 个进程</item>
+    </plurals>
     <string name="plugin_row_no_scope">未配置作用域</string>
     <string name="plugin_import_zip">导入 ZIP</string>
-    <string name="configuration_about">关于</string>
     <string name="detail_runtime_hint_unknown">检查所选进程以读取运行状态。</string>
     <string name="detail_session">会话 %1$s</string>
 </resources>

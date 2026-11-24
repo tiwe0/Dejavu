@@ -11,7 +11,9 @@ if [[ ! -f "${JSON_JAR}" ]]; then
 fi
 
 "${KOTLINC:-kotlinc}" \
-    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ConsoleUiState.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginsUiState.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/NativePluginArtifact.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackageUiState.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
@@ -26,7 +28,6 @@ fi
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/DejavuRpc.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RpcDeadline.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/RootShell.kt" \
-    "${APP_DIR}/tests/stubs/android/graphics/Bitmap.kt" \
     "${APP_DIR}/tests/stubs/android/net/LocalSocket.kt" \
     "${APP_DIR}/tests/RpcRegressionTest.kt" \
     "${APP_DIR}/tests/ConsoleRegressionTest.kt" \

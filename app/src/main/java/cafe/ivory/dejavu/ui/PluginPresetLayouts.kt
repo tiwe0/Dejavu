@@ -2,7 +2,6 @@ package cafe.ivory.dejavu.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,8 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -97,6 +96,10 @@ internal fun PluginPresetLayout(
     val running = !targetOffline && plugin.runState == DirectoryPluginState.RUNNING && plugin.session != null
     val canRunAction = inScope && target != null && running && !busy && (!usesSocket || events?.connected == true)
     var showSettings by remember(plugin.plugin.manifest.id, target, usesSocket) { mutableStateOf(false) }
+    val liveEvents = remember(events?.events, monitor?.eventLimit) {
+        if (monitor == null) emptyList()
+        else events?.events.orEmpty().takeLast(monitor.eventLimit).asReversed()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -116,7 +119,6 @@ internal fun PluginPresetLayout(
                     )
                 }
             }
-            val liveEvents = events?.events.orEmpty().takeLast(monitor.eventLimit).asReversed()
             item {
                 MonitorHeading(
                     running = running,
@@ -130,7 +132,7 @@ internal fun PluginPresetLayout(
                     modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
                 )
             }
-            itemsIndexed(liveEvents) { index, event ->
+            itemsIndexed(liveEvents, key = { _, event -> event.id }) { index, event ->
                 MonitorEventRow(event, first = index == 0, last = index == liveEvents.lastIndex)
             }
         } else if (preset is PluginPagePreset.Controls) {
@@ -240,6 +242,11 @@ private fun RuntimePanel(
                         enabled = canToggle,
                         modifier = Modifier.heightIn(min = 48.dp),
                         shape = MaterialTheme.shapes.medium,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        border = BorderStroke(
+                            1.dp,
+                            if (canToggle) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+                        ),
                     ) {
                         Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
                         Text(stringResource(if (state == DirectoryPluginState.ERROR) R.string.package_retry_stop
@@ -538,11 +545,5 @@ private fun PresetBadge(label: String, active: Boolean, modifier: Modifier = Mod
 
 @Composable
 private fun PresetCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        content = content,
-    )
+    ManagerGroup(modifier = modifier, content = content)
 }

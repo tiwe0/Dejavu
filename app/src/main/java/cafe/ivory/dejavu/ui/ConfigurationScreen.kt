@@ -3,7 +3,6 @@ package cafe.ivory.dejavu.ui
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,33 +18,38 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.AltRoute
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.AltRoute
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Brightness6
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -57,7 +61,10 @@ import cafe.ivory.dejavu.ManagerAppearance
 import cafe.ivory.dejavu.ManagerPalette
 import cafe.ivory.dejavu.ManagerThemeMode
 import cafe.ivory.dejavu.R
+import cafe.ivory.dejavu.ui.theme.isDark
 import cafe.ivory.dejavu.ui.theme.managerDisplayColorScheme
+
+private const val PROJECT_URL = "https://github.com/tiwe0/Dejavu"
 
 private enum class AppearancePanel { Mode, Palette }
 
@@ -71,12 +78,10 @@ internal fun ConfigurationScreen(
     onOpenInstaller: () -> Unit,
     onLinkUnavailable: (String) -> Unit,
 ) {
-    val dark = when (appearance.mode) {
-        ManagerThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ManagerThemeMode.LIGHT -> false
-        ManagerThemeMode.DARK -> true
+    val dark = appearance.mode.isDark()
+    val palettes = remember {
+        ManagerPalette.entries.filter { it != ManagerPalette.SYSTEM || Build.VERSION.SDK_INT >= 31 }
     }
-    val palettes = ManagerPalette.entries.filter { it != ManagerPalette.SYSTEM || Build.VERSION.SDK_INT >= 31 }
     var panel by remember { mutableStateOf<AppearancePanel?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -126,7 +131,7 @@ internal fun ConfigurationScreen(
                     )
                     HorizontalDivider()
                     ManagerLinkRow(
-                        Icons.Rounded.AltRoute,
+                        Icons.AutoMirrored.Rounded.AltRoute,
                         stringResource(R.string.router_title),
                         stringResource(R.string.router_summary),
                         Icons.AutoMirrored.Rounded.KeyboardArrowRight,
@@ -140,22 +145,27 @@ internal fun ConfigurationScreen(
     if (panel != null) {
         ModalBottomSheet(onDismissRequest = { panel = null }) {
             Column(
-                Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SectionTitle(stringResource(
-                    if (panel == AppearancePanel.Mode) R.string.configuration_appearance else R.string.configuration_colors,
-                ), stringResource(R.string.configuration_colors_hint))
+                SectionTitle(
+                    title = stringResource(
+                        if (panel == AppearancePanel.Mode) R.string.configuration_appearance else R.string.configuration_colors,
+                    ),
+                    subtitle = stringResource(R.string.configuration_colors_hint),
+                )
                 if (panel == AppearancePanel.Mode) {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                         ManagerThemeMode.entries.forEach { mode ->
                             FilterChip(
                                 selected = appearance.mode == mode,
-                                onClick = {
-                                    onAppearanceChange(appearance.copy(mode = mode))
-                                    panel = null
-                                },
+                                onClick = { onAppearanceChange(appearance.copy(mode = mode)) },
                                 label = { Text(stringResource(mode.labelRes)) },
                                 leadingIcon = if (appearance.mode == mode) {
                                     { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
@@ -171,11 +181,10 @@ internal fun ConfigurationScreen(
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     row.forEach { palette ->
                                         PaletteOption(
-                                            palette = palette, dark = dark, active = appearance.palette == palette,
-                                            onSelect = {
-                                                onAppearanceChange(appearance.copy(palette = palette))
-                                                panel = null
-                                            },
+                                            palette = palette,
+                                            dark = dark,
+                                            active = appearance.palette == palette,
+                                            onSelect = { onAppearanceChange(appearance.copy(palette = palette)) },
                                             modifier = Modifier.weight(1f),
                                         )
                                     }
@@ -190,6 +199,43 @@ internal fun ConfigurationScreen(
     }
 }
 
+@Composable
+private fun ProjectReferences(onLinkUnavailable: (String) -> Unit) {
+    val uriHandler = LocalUriHandler.current
+    val unavailable = stringResource(R.string.overview_link_unavailable)
+    fun open(url: String) {
+        try {
+            uriHandler.openUri(url)
+        } catch (_: IllegalArgumentException) {
+            onLinkUnavailable(unavailable)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle(stringResource(R.string.configuration_about))
+        ManagerGroup {
+            ManagerLinkRow(
+                Icons.Rounded.Code,
+                stringResource(R.string.overview_source),
+                "tiwe0/Dejavu",
+                Icons.AutoMirrored.Rounded.OpenInNew,
+            ) { open(PROJECT_URL) }
+            HorizontalDivider()
+            ManagerLinkRow(
+                Icons.Rounded.AccountTree,
+                stringResource(R.string.overview_references),
+                stringResource(R.string.overview_reference_components),
+                Icons.AutoMirrored.Rounded.OpenInNew,
+            ) { open("$PROJECT_URL/blob/main/THIRD_PARTY_NOTICES.md") }
+            HorizontalDivider()
+            ManagerLinkRow(
+                Icons.Rounded.Gavel,
+                stringResource(R.string.overview_license),
+                stringResource(R.string.overview_copyright),
+                Icons.AutoMirrored.Rounded.OpenInNew,
+            ) { open("$PROJECT_URL/blob/main/LICENSE") }
+        }
+    }
+}
 
 @Composable
 private fun PaletteOption(
@@ -205,24 +251,38 @@ private fun PaletteOption(
         modifier = modifier.semantics { role = Role.RadioButton; selected = active },
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(if (active) 2.dp else 1.dp,
-            if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(
+            if (active) 2.dp else 1.dp,
+            if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+        ),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Surface(color = scheme.background, shape = MaterialTheme.shapes.medium) {
-                Row(Modifier.fillMaxWidth().height(52.dp).padding(10.dp),
+                Row(
+                    Modifier.fillMaxWidth().height(52.dp).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     Box(Modifier.size(30.dp).background(scheme.primary, CircleShape))
                     Box(Modifier.size(24.dp).background(scheme.primaryContainer, CircleShape))
                     Box(Modifier.size(18.dp).background(scheme.tertiary, CircleShape))
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(palette.labelRes), modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
-                if (active) Icon(Icons.Rounded.Check, contentDescription = stringResource(R.string.configuration_selected),
-                    modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Text(
+                    stringResource(palette.labelRes),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                )
+                if (active) {
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }

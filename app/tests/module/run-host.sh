@@ -6,6 +6,8 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-module-tests.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 [[ -f "$JSON_JAR" ]] || { echo 'Set JSON_JAR to the host-test org.json jar' >&2; exit 1; }
 "${KOTLINC:-kotlinc}" \
+    "$APP_DIR/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "$APP_DIR/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
     "$APP_DIR/src/main/java/cafe/ivory/dejavu/data/RootShell.kt" \
     "$APP_DIR/src/main/java/cafe/ivory/dejavu/data/ModuleInstaller.kt" \
     "$APP_DIR/tests/module/ModuleInstallerTest.kt" \

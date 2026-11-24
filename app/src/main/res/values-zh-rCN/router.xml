@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="router_title">路由</string>
     <string name="router_summary">独立守护进程、Hub 连接与路由规则</string>
@@ -29,7 +30,9 @@
     <string name="router_connection">Hub 连接</string>
     <string name="router_hub_online">Hub 已连接</string>
     <string name="router_hub_offline">Hub 未连接</string>
-    <string name="router_counters">%1$d 个插件 · %2$d 个待处理请求</string>
+    <plurals name="count_pending_jobs">
+        <item quantity="other">%1$d 个待处理请求</item>
+    </plurals>
     <string name="router_configure">连接设置</string>
     <string name="router_routes">路由</string>
     <string name="router_rules_hint">在线路由与应用唤醒规则；插件作用域需单独配置。</string>

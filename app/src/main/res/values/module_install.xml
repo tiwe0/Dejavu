@@ -1,9 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="module_install_title">Installation</string>
     <string name="module_install_summary">Install or update the built-in framework</string>
-    <string name="module_install_open">Manage installation</string>
     <string name="module_install_action">Install %1$s</string>
     <string name="module_install_reinstall">Reinstall %1$s</string>
+    <string name="module_install_up_to_date">Up to date</string>
     <string name="module_install_progress">Installing framework…</string>
     <string name="module_install_progress_hint">Installation is still running. This page refreshes the status automatically.</string>
     <string name="module_install_ready">Ready to install</string>
@@ -25,7 +26,7 @@
     <string name="module_install_zygisk">Zygisk provider</string>
     <string name="module_install_zygisk_detected">Provider module detected</string>
     <string name="module_install_zygisk_missing">Requires an enabled Zygisk provider</string>
-    <string name="module_install_zygisk_hint">dejavu requires Zygisk. This app installs the Dejavu framework; enable a Zygisk provider in your root manager.</string>
+    <string name="module_install_zygisk_hint">Dejavu requires Zygisk. This app installs the Dejavu framework; enable a Zygisk provider in your root manager.</string>
     <string name="module_install_configuration_hint">Target scopes and plugin configuration are preserved during upgrades.</string>
     <string name="module_install_logs">Installation output</string>
     <string name="module_install_failed">Installation could not be completed</string>

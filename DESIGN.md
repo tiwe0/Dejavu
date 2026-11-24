@@ -29,22 +29,27 @@ They need repeatable plugin activation and live feedback on a phone screen.
 ## Information architecture
 
 The three main destinations are Overview, Plugins and Configuration. Overview
-leads with the injection chain (module → root → helper): each link shows its
-value or failure, a broken link turns red with a dashed connector, and the only
-repair action sits directly under it (manage module or re-check helper). Below
-it, "Injection scope" groups configured plugins by target process (app label,
-monospace process name, plugin rows with a type tag); processes injected without
-a plugin scope are listed as manual targets. Overview never shows per-process
-running state because only the selected process is read. Each plugin owns a
-multi-process scope. The native injection list is the union of plugin scopes
-and legacy/manual targets. Plugins shows identity rows (monogram, name,
-`TYPE · version` tag, scope count) on hairline dividers and an extended
-"Import ZIP" button. Details keep the inspected-process selector above a
-Control / Scope / Info segmented control on every tab. Control selects the
-inspected process and shows its runtime state; plugins without a declared page
-get an enlarged state block and a bottom-docked Start/Stop/Check action.
-Lua-authored pages render inline here. Switching the inspected process changes
-the displayed state only.
+leads with the injection chain (module → root → helper): each link renders one
+of three states (Healthy, Pending, or Broken), with a dashed connector and an
+inline repair action directly underneath when a link needs attention (manage
+module, reboot pending, or re-check helper). Below it, "Injection scope" groups
+configured plugins by target process (app label, monospace process name, plugin
+rows with a type tag); processes injected without a plugin scope are listed as
+manual targets and can be removed inline with confirmation. Overview never shows
+per-process running state because only the selected process is read. Each plugin
+owns a multi-process scope. The native injection list is the union of plugin
+scopes and legacy/manual targets. Plugins shows identity rows (monogram, name,
+`TYPE · version` tag, scope count) on hairline dividers and an extended "Import
+ZIP" button. Details keep the inspected-process selector above a Control / Scope
+/ Info sibling segmented control on every tab; pressing Back returns directly to
+the originating destination (Overview or Plugins), prompting Save or Discard if
+Scope has unsaved edits. Control selects the inspected process and shows its
+runtime state; plugins without a declared page get an enlarged state block and a
+bottom-docked primary action. Constructive actions (`Start`, `Load`, `Check
+status`) use filled buttons, while destructive lifecycle actions (`Stop`,
+`Unload`) consistently use error-outlined buttons across Plugin Detail, Lua
+pages and Router. Lua-authored pages render inline here. Switching the inspected
+process changes the displayed state only.
 Scope is multi-select and Info contains manifest metadata and configured targets.
 Configuration offers persisted palettes and system/light/dark mode, diagnostics
 (installer, logs, router) and About (source, third-party notices, license).
@@ -95,7 +100,8 @@ Motion (`ui/Motion.kt`, one vocabulary for the whole app):
   short spring; runtime state and action labels roll to their new value; the
   progress spinner expands into the button; the chain dims on refresh and
   lights node by node; its repair action expands in place; the running dot
-  pulses; palette and light/dark changes cross-fade over 380ms.
+  pulses (paused when backgrounded); palette and light/dark changes cross-fade
+  over 280ms across all Material 3 tokens and `ColorScheme.signal`.
 - All specs follow the system animator duration scale, so "remove animations"
   makes every state land immediately with the same content.
 
@@ -103,11 +109,14 @@ Motion (`ui/Motion.kt`, one vocabulary for the whole app):
 
 Shared pieces live in `ui/ChainComponents.kt` and `ui/Components.kt`:
 `InjectionChain`, `LiveStatus` (dot + text, pulsing when live), `TypeTag`,
-`PluginMonogram`, `StatusPill`, `NoticeBanner`, `ErrorBanner`, `TargetMenu` and
-`ManagerGroup`. Details reuse Material segmented buttons and dialogs. Declared
-events appear in the Lua page or a live-event sheet. The ZIP picker uses the
-platform Storage Access Framework. Scope editing docks its save button at the
-bottom like plugin actions.
+`PluginMonogram`, `NoticeBanner`, `ErrorBanner`, `TargetMenu`, `ManagerGroup`,
+and `ManagerLinkRow`. `ManagerMark` renders with cached Canvas paths and a
+subtle contrast badge in light mode. Details reuse `SlidingSegmented` and
+Material dialogs. Declared events appear in the Lua page or a `FLAG_SECURE`
+live-event sheet. The ZIP picker uses the platform Storage Access Framework.
+Scope editing docks its save button at the bottom like plugin actions and
+scrolls its header inside the list so landscape and soft-keyboard (`adjustResize`
++ `imePadding()`) layouts remain usable.
 
 ## Accessibility
 Keep touch targets >=48dp, label icon actions, preserve TalkBack reading order,

@@ -26,6 +26,8 @@ for tool in su chown base64 mv printf; do
 done
 
 "${KOTLINC:-kotlinc}" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/ShellExecutor.kt" \
+    "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginStorageSupport.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPackage.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginRouterConfig.kt" \
     "${APP_DIR}/src/main/java/cafe/ivory/dejavu/data/PluginPage.kt" \

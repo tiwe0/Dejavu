@@ -24,7 +24,7 @@ internal data class ModuleUiState(
     val failureExitCode: Int? = null,
     val output: String = "",
     val installSucceeded: Boolean = false,
-    val compatible: Boolean = Build.VERSION.SDK_INT in 26..35 && "arm64-v8a" in Build.SUPPORTED_ABIS,
+    val compatible: Boolean = Build.VERSION.SDK_INT in SUPPORTED_ANDROID_API_RANGE && "arm64-v8a" in Build.SUPPORTED_ABIS,
 ) {
     val working get() = installing || snapshot?.installationRunning == true
     val canInstall get() = !loading && !working && error == null && compatible && bundledVersion != null &&
@@ -33,8 +33,14 @@ internal data class ModuleUiState(
 }
 
 /** Installation continues across page changes; no installer output is persisted. */
-internal class ModuleViewModel(application: Application) : AndroidViewModel(application) {
-    private val installer = ModuleInstaller()
+internal class ModuleViewModel(
+    application: Application,
+    private val installer: ModuleInstaller = ModuleInstaller(),
+    private val coroutineScope: kotlinx.coroutines.CoroutineScope? = null,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, ModuleInstaller(), null)
+
+    private val scope get() = coroutineScope ?: viewModelScope
     private var bundle: ModuleBundle? = null
     private var refreshJob: Job? = null
     private var pollingJob: Job? = null
@@ -46,7 +52,7 @@ internal class ModuleViewModel(application: Application) : AndroidViewModel(appl
             pollingJob?.cancel()
             pollingJob = null
         } else if (pollingJob?.isActive != true) {
-            pollingJob = viewModelScope.launch {
+            pollingJob = scope.launch {
                 while (isActive) {
                     delay(1800)
                     if (mutableState.value.snapshot?.installationRunning == true && !mutableState.value.installing) refresh()
@@ -58,7 +64,7 @@ internal class ModuleViewModel(application: Application) : AndroidViewModel(appl
     fun refresh() {
         if (mutableState.value.installing || refreshJob?.isActive == true) return
         mutableState.update { it.copy(loading = true) }
-        refreshJob = viewModelScope.launch {
+        refreshJob = scope.launch {
             var payloadError: String? = null
             try {
                 val snapshot = withContext(Dispatchers.IO) {
@@ -92,7 +98,7 @@ internal class ModuleViewModel(application: Application) : AndroidViewModel(appl
         if (!mutableState.value.canInstall || refreshJob?.isActive == true) return
         val payload = bundle ?: return
         mutableState.update { it.copy(installing = true, installSucceeded = false, error = null, failureExitCode = null, output = "") }
-        viewModelScope.launch {
+        scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
                     installer.install(payload, Build.VERSION.SDK_INT, Build.SUPPORTED_ABIS.toList())

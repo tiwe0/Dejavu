@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="tab_configuration">Configuration</string>
     <string name="title_configuration">Configuration</string>
@@ -5,6 +6,6 @@
     <string name="configuration_colors">Color scheme</string>
     <string name="configuration_colors_hint">Changes apply instantly and are saved automatically.</string>
     <string name="configuration_diagnostics">Diagnostics</string>
-    <string name="configuration_selected">Selected</string>
     <string name="configuration_appearance_section">Appearance</string>
+    <string name="configuration_about">About</string>
 </resources>

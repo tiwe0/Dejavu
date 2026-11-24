@@ -41,10 +41,10 @@ the profile uses the standard Android debug signing credentials.
 ## What it does
 
 - **Overview** – the injection chain (module version → root access → root helper
-  port) with an inline repair action for a broken link, followed by configured
-  plugin scopes grouped by target process and any manual targets. Tapping a
-  plugin row opens it with that process selected. Overview shows scope, not
-  per-process running state.
+  port) with Healthy / Pending / Broken states and an inline repair action when
+  a link needs attention, followed by configured plugin scopes grouped by target
+  process and any removable manual targets. Tapping a plugin row opens it with
+  that process selected. Overview shows scope, not per-process running state.
 - **Plugins** – identity rows (monogram, name, `TYPE · version`, scope count),
   import ZIP packages, scan `/data/adb/dejavu/plugins`, configure each
   plugin's multi-process scope, and use its controls or Lua-authored page.
@@ -128,11 +128,13 @@ monospace face.
 
 Android's predictive-back callback animates internal back navigation with a
 read-only preview of the destination. Complete a gesture to return, or cancel it
-to stay on the current page. Plugin details return to the list, Scope returns to
-Control, and logs and Router return to Configuration. Installation returns to
-the Overview or Configuration page that opened it. The root pages keep system back/home
-behavior. Previewing Control never attaches event streams or changes secure-window
-flags; normal viewer cleanup happens only on a completed navigation.
+to stay on the current page. Plugin details treat Control, Scope and Info as
+sibling tabs and return directly to the screen that opened them (Overview or
+Plugins), prompting Save or Discard if Scope has unsaved edits. Logs and Router
+return to Configuration; Installation returns to the Overview or Configuration
+page that opened it. The root pages keep system back/home behavior. Previewing
+Control never attaches event streams or changes secure-window flags; normal
+viewer cleanup happens only on a completed navigation.
 
 ### Per-plugin scopes
 
@@ -198,11 +200,13 @@ curl -fL https://repo.maven.apache.org/maven2/org/json/json/20250517/json-202505
 make -C zygisk test
 bash app/tests/run-host.sh
 bash app/tests/importer/run-host.sh
+bash app/tests/module/run-host.sh
 bash app/tests/native/run-host.sh
 bash app/tests/scopes/run-host.sh
 bash app/tests/archive/run-host.sh
 bash app/tests/appearance/run-host.sh
 bash app/tests/router/run-host.sh
+bash app/tests/viewmodel/run-host.sh
 python3 tests/target_scopes_test.py
 ```
 
@@ -221,13 +225,12 @@ Lua lifecycle ownership, a self-contained sample package and live-event frame de
 The default library stores packages at `/data/adb/dejavu/plugins/<plugin-id>`.
 The app reads this library through `su`. The Zygisk module lives separately at
 `/data/adb/modules/dejavu_zygisk`.
-Tap the floating **+** on the plugin list and select a ZIP containing a valid
+Tap the extended **Import ZIP** button on the plugin list and select a ZIP containing a valid
 `manifest.json` and every resource declared in `files`. Each ZIP must contain
 exactly one manifest, either at the ZIP root or inside one enclosing folder.
 After import, configure **Scope**, restart the affected apps, and select a scoped
 process in **Control**. Tap **Start** for Lua or **Load** for Native/JIT. Import
-copies the package into the library. The + button hides during downward list
-scrolling and reappears when scrolling up or reaching either end.
+copies the package into the library. The button collapses to an icon while scrolling down and expands again at the top.
 
 The [example release ZIP](../examples/README.md) bundles seven plugins. Extract
 it, then create a separate ZIP for each plugin you want to import. You can also

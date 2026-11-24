@@ -13,11 +13,11 @@ internal data class PluginLibraryScan(
     val errors: List<String>,
 ) {
     companion object {
-        fun read(): PluginLibraryScan {
-            val result = RootShell.run("""
-                if [ ! -e ${RootShell.quote(DEFAULT_PLUGIN_DIRECTORY)} ] && [ ! -L ${RootShell.quote(DEFAULT_PLUGIN_DIRECTORY)} ]; then exit 0; fi
-                ${pluginDirectoryGuard(DEFAULT_PLUGIN_DIRECTORY)} || exit 1
-                for directory in ${RootShell.quote(DEFAULT_PLUGIN_DIRECTORY)}/*; do
+        fun read(shell: ShellExecutor = RootShell): PluginLibraryScan {
+            val result = shell.run("""
+                if [ ! -e ${shell.quote(DEFAULT_PLUGIN_DIRECTORY)} ] && [ ! -L ${shell.quote(DEFAULT_PLUGIN_DIRECTORY)} ]; then exit 0; fi
+                ${pluginDirectoryGuard(DEFAULT_PLUGIN_DIRECTORY, shell::quote)} || exit 1
+                for directory in ${shell.quote(DEFAULT_PLUGIN_DIRECTORY)}/*; do
                     [ -d "${'$'}directory" ] && [ ! -L "${'$'}directory" ] || continue
                     path="${'$'}directory/$PLUGIN_MANIFEST_FILE"
                     [ -e "${'$'}path" ] || [ -L "${'$'}path" ] || continue
@@ -62,16 +62,11 @@ internal data class PluginLibraryScan(
     }
 }
 
-internal fun pluginDirectoryGuard(path: String): String {
-    val parts = path.split('/').filter { it.isNotEmpty() }
-    return parts.indices.joinToString(" && ") { index ->
-        val directory = RootShell.quote("/" + parts.take(index + 1).joinToString("/"))
-        "[ -d $directory ] && [ ! -L $directory ]"
-    }
-}
-
 /** Execute independent package checks in one root shell, retaining per-package errors. */
-internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Result<String>> {
+internal fun runPluginScanChecks(
+    checks: Map<String, String>,
+    shell: ShellExecutor = RootShell,
+): Map<String, Result<String>> {
     if (checks.isEmpty()) return emptyMap()
     val batches = mutableListOf<String>()
     val batch = StringBuilder()
@@ -79,9 +74,9 @@ internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Resul
     checks.forEach { (id, script) ->
         // Write the status after the data so base64 can stream directly to stdout.
         val command = """
-            printf '%s\000' ${RootShell.quote(id)} || exit 1
+            printf '%s\000' ${shell.quote(id)} || exit 1
             if (
-                dejavu_plugin_root=${RootShell.quote("$DEFAULT_PLUGIN_DIRECTORY/$id/")}
+                dejavu_plugin_root=${shell.quote("$DEFAULT_PLUGIN_DIRECTORY/$id/")}
                 $script
             ) 2>/dev/null; then
                 printf '\000ok\000' || exit 1
@@ -123,7 +118,7 @@ internal fun runPluginScanChecks(checks: Map<String, String>): Map<String, Resul
     """.trimIndent()
     val results = linkedMapOf<String, Result<String>>()
     for (command in batches) {
-        val result = RootShell.run("$fileCheck\n$command")
+        val result = shell.run("$fileCheck\n$command")
         if (result.exitCode != 0) throw IOException("Unable to validate plugin resources (root command exit ${result.exitCode})")
         results.putAll(pluginScanResults(result.output))
     }
