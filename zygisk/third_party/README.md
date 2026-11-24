@@ -10,16 +10,20 @@ Source: <https://github.com/topjohnwu/zygisk-module-sample>
 ## LSPlant
 
 The backend is pinned to LSPlant main commit
-`d8b5d1dbb664abc606644036822e4bb64547edf6`, DexBuilder commit
+`6193e2503047c4333f95a458b6d3df360c623e1d`, DexBuilder commit
 `ac7fb2230954ee311808bad469b0db501f31bfb8`, and parallel-hashmap commit
 `0cd57d29a959256ed66b2afdd1009928fc625d09`. Do not use floating Maven
-versions. This LSPlant revision advertises Android 5-17 support and requires
-CMake 3.28+, C++23 and Android NDK r29. LSPlant and DexBuilder are LGPL-3.0 and
-require:
+versions. This LSPlant revision advertises Android 5-17 (API 21-37) support and
+requires CMake 3.31+, C++23 standard library modules (`import std;`), and
+Android NDK r30+. `cmake/cxx/cxxConfig.cmake` provides `cxx::cxx` directly from
+NDK r30's bundled `share/libc++/v1/std.cppm` and `std.compat.cppm` so LSPlant
+stays ABI-identical with Dejavu's static libc++ runtime without external Prefab
+archives. LSPlant and DexBuilder are LGPL-3.0 and require:
 
 - a standalone/static C++ runtime suitable for a Zygisk process;
 - an inline hook/unhook implementation;
-- a `libart.so` resolver that reads both `.dynsym` and `.symtab`;
+- a `libart.so` resolver that reads `.dynsym`, `.symtab`, and XZ-compressed
+  `.gnu_debugdata` (minidebuginfo);
 - flexible 16 KB page support.
 
 The final static backend archive must export:
@@ -74,3 +78,12 @@ Source: <https://github.com/LSPosed/LSPlant>
 <https://github.com/skywind3000/kcp> under the MIT license. It backs the
 framework stream service's `KCP` transport; the host viewer compiles the same
 source for local decoding. See `kcp/LICENSE` and `kcp/README.md`.
+
+## XZ Embedded
+
+`xz-embedded/` vendors the public-domain (0BSD) XZ decoder from
+<https://github.com/tukaani-project/xz-embedded> at commit
+`52f2742ffcc8e19ad8fed94c03b8b16337b28bd0`. `ArtElfResolver` uses it to
+decompress bounded `.gnu_debugdata` (minidebuginfo) ELF sections on Android
+15–17 ART images without depending on private platform `liblzma.so`. See
+`xz-embedded/COPYING` and `xz-embedded/README`.

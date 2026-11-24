@@ -1,6 +1,6 @@
 # Dejavu Zygisk module
 
-This directory contains the Android 8 through 15 `arm64-v8a` Zygisk integration
+This directory contains the Android 8 through 17 `arm64-v8a` Zygisk integration
 for Dejavu. It is a targeted dynamic-debugging bridge: Lua manages hooks, while
 hook callbacks are compiled by TinyCC and run as native code in the target
 process.
@@ -15,18 +15,18 @@ restart is needed only when the Loader or module installation changes.
 
 ## Requirements
 
-- Android 8 through 15 (API 26-35).
+- Android 8 through 17 (API 26-37).
 - A rooted `arm64-v8a` device with a compatible Zygisk provider enabled.
-- For source builds: a host with `adb`, Python 3, CMake 3.28+, Ninja, a JDK (17+)
-  and Android NDK r29. Packaging also needs Android SDK build-tools (`d8`,
+- For source builds: a host with `adb`, Python 3, CMake 3.31+, Ninja, a JDK (17+)
+  and Android NDK r30. Packaging also needs Android SDK build-tools (`d8`,
   discovered through `ANDROID_HOME`), `xxd`, `zip` and `unzip`.
 - For source builds: the Dejavu library built from the project root before packaging.
 
-CI builds the API 26 release baseline and representative API 30, 34 and 35
-targets. These builds establish native link compatibility; ART hook behavior
-still requires device/ROM acceptance for each Android generation. The pinned
-LSPlant revision advertises Android 5-17 support, but Dejavu keeps its installer
-range at API 26-35 until Android 16/17 device acceptance is complete.
+CI builds the API 26 release baseline and representative API 30, 34, 35, 36 and
+37 targets. These builds establish native link compatibility; ART hook behavior
+still benefits from device/ROM verification on each Android generation. The
+pinned LSPlant revision (`6193e25`) supports Android 5-17, and `ArtElfResolver`
+supports `.dynsym`, `.symtab`, and XZ-compressed `.gnu_debugdata` minidebuginfo.
 
 The current device test target is MT Manager (`bin.mt.plus`). The target is
 selected by process name, not by package name alone.
@@ -124,7 +124,7 @@ adb push zygisk/dist/dejavu-zygisk-v0.8.2-arm64.zip /sdcard/Download/
 
 Install the ZIP from Magisk or APatch Manager, then reboot so Zygisk
 rescans the module and restarts Zygote. The release package is built against
-native API 26 so one artifact covers the supported API 26-35 range. The module
+native API 26 so one artifact covers the supported API 26-37 range. The module
 installer rejects non-arm64 devices and Android versions outside that range.
 
 The bundled APatch WebUI lists packages through the root bridge and replaces

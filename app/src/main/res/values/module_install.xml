@@ -21,8 +21,8 @@
     <string name="module_install_provider">Root provider</string>
     <string name="module_install_unknown_provider">No supported installer detected</string>
     <string name="module_install_platform">Device compatibility</string>
-    <string name="module_install_supported">arm64 · Android API 26–35</string>
-    <string name="module_install_unsupported">Requires arm64 and Android API 26–35</string>
+    <string name="module_install_supported">arm64 · Android API 26–37</string>
+    <string name="module_install_unsupported">Requires arm64 and Android API 26–37</string>
     <string name="module_install_zygisk">Zygisk provider</string>
     <string name="module_install_zygisk_detected">Provider module detected</string>
     <string name="module_install_zygisk_missing">Requires an enabled Zygisk provider</string>

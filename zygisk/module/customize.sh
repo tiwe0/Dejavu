@@ -13,8 +13,8 @@ if [ "$ARCH" != "arm64" ]; then
     abort "Dejavu Zygisk currently supports arm64 only"
 fi
 
-if [ "${API:-0}" -lt 26 ] || [ "${API:-0}" -gt 35 ]; then
-    abort "Dejavu Zygisk supports Android 8 through 15 (API 26-35)"
+if [ "${API:-0}" -lt 26 ] || [ "${API:-0}" -gt 37 ]; then
+    abort "Dejavu Zygisk supports Android 8 through 17 (API 26-37)"
 fi
 
 # Keep device-owned scope, trust and startup configuration on module upgrades.

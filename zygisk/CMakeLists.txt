@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.31)
 project(dejavu_zygisk LANGUAGES C CXX ASM)
 
 if(NOT ANDROID)
@@ -12,6 +12,7 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(cxx_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cxx" CACHE PATH "" FORCE)
 
 set(LSPLANT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(DEX_BUILDER_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -128,10 +129,39 @@ add_library(kcp_static STATIC third_party/kcp/ikcp.c)
 target_include_directories(kcp_static PRIVATE third_party/kcp)
 target_compile_options(kcp_static PRIVATE -w)
 
+add_library(xz_embedded_static STATIC
+    third_party/xz-embedded/xz_crc32.c
+    third_party/xz-embedded/xz_crc64.c
+    third_party/xz-embedded/xz_sha256.c
+    third_party/xz-embedded/xz_dec_bcj.c
+    third_party/xz-embedded/xz_dec_lzma2.c
+    third_party/xz-embedded/xz_dec_stream.c
+)
+target_include_directories(xz_embedded_static PUBLIC third_party/xz-embedded)
+target_compile_definitions(xz_embedded_static
+    PUBLIC
+        DEJAVU_WITH_XZ_EMBEDDED=1
+        XZ_USE_CRC64
+        XZ_DEC_CONCATENATED
+    PRIVATE
+        XZ_USE_SHA256
+        XZ_DEC_ANY_CHECK
+        XZ_DEC_ARM64
+        XZ_DEC_ARM
+        XZ_DEC_ARMTHUMB
+)
+target_compile_options(xz_embedded_static PRIVATE
+    -w
+    -fvisibility=hidden
+    -ffunction-sections
+    -fdata-sections
+)
+
 target_include_directories(dejavu_agent PRIVATE
     include
     ../include
     third_party/kcp
+    third_party/xz-embedded
     third_party/Dobby/source
     ../router/third_party/cJSON
     ${HOOK_BRIDGE_GENERATED_DIR}
@@ -140,7 +170,7 @@ target_include_directories(dejavu_agent PRIVATE
     ${LUA_RESOURCES_GENERATED_DIR}
 )
 add_dependencies(dejavu_agent jit_prelude_generated)
-target_link_libraries(dejavu_agent PRIVATE kcp_static)
+target_link_libraries(dejavu_agent PRIVATE kcp_static xz_embedded_static)
 target_include_directories(dejavu_zygisk PRIVATE
     include
     ../include

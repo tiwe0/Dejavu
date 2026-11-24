@@ -31,7 +31,7 @@ fetch_archive() {
     fi
 
     staging=$(mktemp -d "${THIRD_PARTY_DIR}/.${name}.XXXXXX")
-    tar -xzf "${archive}" --strip-components=1 -C "${staging}"
+    tar -xzmf "${archive}" --strip-components=1 -C "${staging}"
     printf '%s\n' "${commit}" > "${staging}/.dejavu-pin"
     if [[ -e "${destination}" ]]; then
         find "${destination}" -mindepth 1 -delete
@@ -40,11 +40,19 @@ fetch_archive() {
     mv "${staging}" "${destination}"
 }
 
+LSPLANT_PATCH="${ROOT_DIR}/patches/lsplant-main-reflection-shorty.patch"
+LSPLANT_PATCH_HASH=$(shasum -a 256 "${LSPLANT_PATCH}" | awk '{print $1}')
+LSPLANT_PATCH_STAMP="${THIRD_PARTY_DIR}/LSPlant/.dejavu-lsplant-patch"
+if [[ -f "${THIRD_PARTY_DIR}/LSPlant/.dejavu-pin" ]] &&
+    { [[ ! -f "${LSPLANT_PATCH_STAMP}" ]] || [[ "$(<"${LSPLANT_PATCH_STAMP}")" != "${LSPLANT_PATCH_HASH}" ]]; }; then
+    rm "${THIRD_PARTY_DIR}/LSPlant/.dejavu-pin"
+fi
+
 fetch_archive \
     lsplant \
-    d8b5d1dbb664abc606644036822e4bb64547edf6 \
-    d640013c09037c2b771a68127b2910076715e639e814864287af5e8e4dcb06c9 \
-    https://github.com/LSPosed/LSPlant/archive/d8b5d1dbb664abc606644036822e4bb64547edf6.tar.gz \
+    6193e2503047c4333f95a458b6d3df360c623e1d \
+    544f03d5c0c3c4b2311b0290956d580cb67f5a1766ea1f353a714167db5ace3b \
+    https://github.com/LSPosed/LSPlant/archive/6193e2503047c4333f95a458b6d3df360c623e1d.tar.gz \
     "${THIRD_PARTY_DIR}/LSPlant"
 
 fetch_archive \
@@ -79,15 +87,13 @@ fetch_archive \
     "${THIRD_PARTY_DIR}/Dobby"
 
 if [[ ! -f "${DOBBY_PATCH_STAMP}" ]] || [[ "$(<"${DOBBY_PATCH_STAMP}")" != "${DOBBY_PATCH_HASH}" ]]; then
-    patch -d "${THIRD_PARTY_DIR}/Dobby" -p1 < "${DOBBY_PATCH}"
+    patch -d "${THIRD_PARTY_DIR}/Dobby" -p1 -N -V none < "${DOBBY_PATCH}"
     printf '%s\n' "${DOBBY_PATCH_HASH}" > "${DOBBY_PATCH_STAMP}"
 fi
 
-LSPLANT_PATCH_STAMP="${THIRD_PARTY_DIR}/LSPlant/.dejavu-patches-v4"
-if [[ ! -f "${LSPLANT_PATCH_STAMP}" ]]; then
-    patch -d "${THIRD_PARTY_DIR}/LSPlant" -p1 \
-        < "${ROOT_DIR}/patches/lsplant-main-reflection-shorty.patch"
-    printf '%s\n' "reflection-shorty-v2" > "${LSPLANT_PATCH_STAMP}"
+if [[ ! -f "${LSPLANT_PATCH_STAMP}" ]] || [[ "$(<"${LSPLANT_PATCH_STAMP}")" != "${LSPLANT_PATCH_HASH}" ]]; then
+    patch -d "${THIRD_PARTY_DIR}/LSPlant" -p1 -N -V none < "${LSPLANT_PATCH}"
+    printf '%s\n' "${LSPLANT_PATCH_HASH}" > "${LSPLANT_PATCH_STAMP}"
 fi
 
 echo "OK: pinned LSPlant dependencies are available in ${THIRD_PARTY_DIR}"

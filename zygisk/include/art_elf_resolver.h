@@ -24,6 +24,7 @@ class ArtElfResolver {
     ArtElfResolver &operator=(const ArtElfResolver &) = delete;
 
     bool open_loaded(std::string_view soname, std::string *error);
+    bool open_memory(const void *image, size_t size, uintptr_t load_bias, std::string *error);
     void *find(std::string_view name) const;
     void *find_prefix(std::string_view prefix) const;
     bool enumerate_symbols(std::vector<ArtElfSymbol> *symbols, std::string *error) const;
@@ -43,14 +44,20 @@ class ArtElfResolver {
         size_t strings_size = 0;
     };
 
-    void *mapping_ = nullptr;
+    const void *mapping_ = nullptr;
     size_t mapping_size_ = 0;
+    bool owns_mapping_ = false;
     std::string path_;
     uintptr_t load_bias_ = 0;
     SymbolTable dynamic_ = {};
     SymbolTable full_ = {};
+    std::vector<unsigned char> debugdata_elf_;
+    SymbolTable debugdata_ = {};
 
     void reset();
     bool initialize_tables(std::string *error);
+    bool parse_elf_tables(const void *image, size_t size, SymbolTable *dynamic_out,
+                          SymbolTable *full_out, bool allow_debugdata, std::string *error);
+    bool load_gnu_debugdata(const unsigned char *compressed, size_t compressed_size);
     void *find_in(const SymbolTable &table, std::string_view name, bool prefix) const;
 };

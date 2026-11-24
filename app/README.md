@@ -9,7 +9,7 @@ Kotlin + Jetpack Compose Material 3 app with the matching Dejavu framework inclu
 Requirements:
 
 - JDK 21 (Android Studio JBR works)
-- Android SDK platform 36 + build-tools 36.0.0
+- Android SDK platform 37 (`platforms;android-37.0`) + build-tools 37.0.0
 - `local.properties` with `sdk.dir=...`
 
 ```sh
@@ -70,8 +70,8 @@ The app verifies its embedded module, identifies the root provider from the same
 authorized `su` entry, then invokes APatch (`apd module install`), KernelSU
 (`ksud module install`) or Magisk (`magisk --install-module`). ZygiskNext provides
 the Zygisk runtime; these commands only install the same standard module ZIP.
-The module currently supports arm64 and Android API 26–35, even though the app
-targets SDK 36. A compatible Zygisk provider must be enabled separately.
+The module supports arm64 and Android API 26–37, matching the app's
+target SDK 37. A compatible Zygisk provider must be enabled separately.
 
 Installation uses a private root staging directory, binary stdin transfer and a
 second size/checksum check. A kernel-owned root lock covers the entire operation

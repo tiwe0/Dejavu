@@ -234,7 +234,7 @@ private fun providerInstallations() {
         val state = root.client.inspect()
         check(state.rootGranted && state.provider == provider)
         val payload = bundle()
-        val result = root.client.install(payload, 35, listOf("arm64-v8a", "armeabi-v7a"))
+        val result = root.client.install(payload, if (provider == RootProvider.MAGISK) 37 else 36, listOf("arm64-v8a", "armeabi-v7a"))
         check(result.exitCode == 0 && "reboot is required" in result.output) { result.output }
         check(Files.readString(root.invocation).trim() == installer) { "Selected a residual installer instead of the authorized root provider" }
         check(Files.readAllBytes(root.received).contentEquals(payload.archive)) { "Binary stdin transfer changed archive bytes" }
@@ -263,10 +263,14 @@ private fun inspectionStates() = TestRoot().use { root ->
 private fun preflightAndTampering() {
     TestRoot().use { root ->
         val payload = bundle()
-        for ((sdk, abis) in listOf(25 to listOf("arm64-v8a"), 36 to listOf("arm64-v8a"), 35 to listOf("x86_64"))) {
+        for ((sdk, abis) in listOf(25 to listOf("arm64-v8a"), 38 to listOf("arm64-v8a"), 37 to listOf("x86_64"))) {
             check(root.client.install(payload, sdk, abis).exitCode != 0)
         }
         check(root.shellCount == 0 && root.transferCount == 0) { "Unsupported devices must fail before root requests" }
+        // API 36 and 37 (Android 16 and 17) are within SUPPORTED_ANDROID_API_RANGE.
+        for (sdk in listOf(36, 37)) {
+            check(sdk in cafe.ivory.dejavu.data.SUPPORTED_ANDROID_API_RANGE)
+        }
         payload.archive[0] = 0
         check(root.client.install(payload, 35, listOf("arm64-v8a")).exitCode != 0)
         check(root.shellCount == 0 && root.transferCount == 0) { "Mutable payload tampering must fail before root" }

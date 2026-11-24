@@ -21,7 +21,10 @@ DIST_DIR="${ROOT_DIR}/dist"
 if [[ -z "${PACKAGE_VERSION:-}" ]]; then
     PACKAGE_VERSION=$(sed -n 's/^version=v//p' "${ROOT_DIR}/module/module.prop" | head -n 1)
 fi
-PACKAGE_VERSION=${PACKAGE_VERSION:-0.9.9}
+if [[ -z "${PACKAGE_VERSION}" ]]; then
+    echo "error: unable to derive PACKAGE_VERSION from ${ROOT_DIR}/module/module.prop" >&2
+    exit 1
+fi
 ZIP_PATH=${ZIP_PATH:-"${DIST_DIR}/dejavu-zygisk-v${PACKAGE_VERSION}-arm64.zip"}
 source "${ROOT_DIR}/scripts/strip-runtime.sh"
 
@@ -137,6 +140,11 @@ copy_license \
     "${ROOT_DIR}/third_party/LSPlant/lsplant/src/main/jni/external/dex_builder/external/parallel_hashmap/LICENSE" \
     "parallel-hashmap-Apache-2.0.txt"
 copy_license "${ROOT_DIR}/third_party/Dobby/LICENSE" "Dobby-Apache-2.0.txt"
+copy_license "${ROOT_DIR}/third_party/kcp/LICENSE" "KCP-MIT.txt"
+copy_license "${ROOT_DIR}/third_party/xz-embedded/COPYING" "xz-embedded-0BSD.txt"
+copy_license \
+    "${ROOT_DIR}/out/lsplant-android-arm64-v8a-api${ANDROID_API}/_deps/dejavu_mbedtls-src/LICENSE" \
+    "MbedTLS-Apache-2.0.txt"
 if [[ -f "${PROJECT_DIR}/extern/lua/lua.h" ]]; then
     {
         printf 'Lua 5.4.8 - MIT License\n\n'

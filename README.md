@@ -206,7 +206,7 @@ itself is not modified.
 
 ```sh
 git submodule update --init --recursive -- extern/lua extern/tinycc
-export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r29"
+export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/30.0.16248370"
 make smoke
 ```
 
@@ -234,17 +234,17 @@ ANDROID_API=35 BUILD_TYPE=release make smoke
 For an Android app, `targetSdkVersion` is configured in the app manifest or
 Gradle build. The NDK API selected here is the minimum Android version whose
 native APIs the `.so` may use. The API 26 artifact targets Android 8 and newer
-while using stable libc and NDK APIs. The complete Zygisk integration currently
-supports Android 8 through 15 (API 26-35); Android 16 requires separate ART and
-LSPlant compatibility validation.
+while using stable libc and NDK APIs. The complete Zygisk integration supports
+Android 8 through 17 (API 26-37) on `arm64-v8a` with 16 KB page alignment and
+`.gnu_debugdata` ART symbol resolution.
 
 ### Android compatibility status
 
 | Android versions | API levels | Status |
 | --- | --- | --- |
 | Android 8-14 | 26-34 | Build and installer support; runtime acceptance must still be verified on each device/ROM generation |
-| Android 15 | 35 | Build and installer support plus the current MT Manager device/stress validation path |
-| Android 16-17 | 36-37 | Supported by upstream LSPlant; Dejavu runtime acceptance is pending, so the module installer does not enable these versions yet |
+| Android 15 | 35 | Build and installer support plus MT Manager device/stress validation |
+| Android 16-17 | 36-37 | Full toolchain (NDK r30 / SDK 37), 16 KB page alignment, LSPlant (`6193e25`), `.gnu_debugdata` ART symbol resolution, and installer support |
 
 ### Automated releases
 
@@ -336,7 +336,7 @@ Reusable skills for common scenarios live in [SKILLS/](SKILLS/README.md).
   **core library ABI version** (currently `0.1.0`). Bump it when the public C
   ABI changes.
 - `zygisk/module/module.prop` and release tags (`vX.Y.Z`) identify the
-  **app and Zygisk module package version** (currently `0.9.9`). The app reads
+  **app and Zygisk module package version** (currently `1.0.0`). The app reads
   its version and version code from the module metadata and embeds that version's ZIP.
   This version remains independent of the core library ABI.
 - CI builds and tests pushes to `main`; a version bump in `module.prop`

@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 : "${ANDROID_HOME:?Set ANDROID_HOME}"
 : "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME}"
-TOOLS="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS_VERSION:-36.0.0}"
+TOOLS="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS_VERSION:-37.0.0}"
 TOOLCHAIN=$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)
 OUT=${OUT_DIR:-"$ROOT/out/native-namespace-fixture"}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-native-namespace.XXXXXX")
@@ -12,7 +12,7 @@ mkdir -p "$WORK/classes" "$WORK/dex" "$OUT"
 javac --release 17 -Xlint:all -Werror -d "$WORK/classes" \
     "$ROOT/zygisk/tests/device/java/io/dejavu/bridge/NativeNamespaceFixture.java"
 jar cf "$WORK/fixture.jar" -C "$WORK/classes" .
-"$TOOLS/d8" --min-api 26 --lib "$ANDROID_HOME/platforms/android-36/android.jar" \
+"$TOOLS/d8" --min-api 26 --lib "$ANDROID_HOME/platforms/android-37.0/android.jar" \
     --output "$WORK/dex" "$WORK/fixture.jar"
 cp "$WORK/dex/classes.dex" "$OUT/fixture.dex"
 "$TOOLCHAIN/bin/aarch64-linux-android26-clang++" -std=c++17 -O2 -Wall -Wextra -Werror \

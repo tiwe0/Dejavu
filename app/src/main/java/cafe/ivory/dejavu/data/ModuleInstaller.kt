@@ -180,7 +180,7 @@ internal class ModuleInstaller(
         if (!installing.compareAndSet(false, true)) return ShellResult(75, "A module installation is already running")
         try {
             if (sdk !in SUPPORTED_ANDROID_API_RANGE || "arm64-v8a" !in abis) {
-                return ShellResult(1, "The bundled module requires arm64 and Android API 26–35")
+                return ShellResult(1, "The bundled module requires arm64 and Android API 26–37")
             }
             val verified = try { ModulePayload.validate(bundle) } catch (error: Exception) {
                 return ShellResult(1, "Invalid bundled module: ${error.message.orEmpty().take(512)}")

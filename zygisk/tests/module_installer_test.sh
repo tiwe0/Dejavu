@@ -58,10 +58,12 @@ run_installer() {
 }
 
 run_installer x86_64 26 64 "currently supports arm64 only"
-run_installer arm64 25 64 "supports Android 8 through 15"
+run_installer arm64 25 64 "supports Android 8 through 17"
 run_installer arm64 26 0
 run_installer arm64 35 0
-run_installer arm64 36 64 "supports Android 8 through 15"
+run_installer arm64 36 0
+run_installer arm64 37 0
+run_installer arm64 38 64 "supports Android 8 through 17"
 
 run_installer arm64 26 64 "Unable to deploy internal Dejavu router" missing
 

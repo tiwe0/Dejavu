@@ -27,6 +27,7 @@ mkdir -p "${OUT_DIR}"
     -o "${OUT_DIR}/aarch64_adrp_add_test"
 
 "${OUT_DIR}/aarch64_adrp_add_test"
+bash "${ROOT_DIR}/tests/test-art-elf-resolver.sh"
 
 "${CXX}" \
     -std=c++17 \

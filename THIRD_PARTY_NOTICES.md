@@ -10,13 +10,15 @@ and the component license texts that are available in the working tree under
 | --- | --- | --- | --- | --- |
 | Lua | 5.4.8 (`extern/lua` @ `6e22fedb`) | MIT | <https://github.com/lua/lua> | `extern/lua/lua.h` (copyright notice at end of file) |
 | TinyCC (Frida fork) | 0.9.27-frida (`extern/tinycc` @ `ca5ee011`) | LGPL-2.1 | <https://github.com/frida/tinycc> | `extern/tinycc/COPYING` |
-| LSPlant | main @ `d8b5d1d` | LGPL-3.0 | <https://github.com/LSPosed/LSPlant> | fetched: `zygisk/third_party/LSPlant/LICENSE` |
+| LSPlant | main @ `6193e25` | LGPL-3.0 | <https://github.com/LSPosed/LSPlant> | fetched: `zygisk/third_party/LSPlant/LICENSE` |
 | DexBuilder | `ac7fb223` | LGPL-3.0 | <https://github.com/LSPosed/DexBuilder> | fetched: `.../dex_builder/LICENSE` |
 | parallel-hashmap | `0cd57d29` | Apache-2.0 | <https://github.com/greg7mdp/parallel-hashmap> | fetched: `.../parallel_hashmap/LICENSE` |
 | Dobby | `5dfc854` | Apache-2.0 | <https://github.com/jmpews/Dobby> | fetched: `zygisk/third_party/Dobby/LICENSE` |
-| Dobby Prefab | 1.2 (AAR, SHA-256 `251f48ae...`) | Apache-2.0 | <https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/> | see Dobby source license |
+| KCP | vendored (`zygisk/third_party/kcp`) | MIT | <https://github.com/skywind3000/kcp> | `zygisk/third_party/kcp/LICENSE` |
+| XZ Embedded | `52f2742f` (vendored) | 0BSD / Public Domain | <https://github.com/tukaani-project/xz-embedded> | `zygisk/third_party/xz-embedded/COPYING` |
 | cJSON | 1.7.19 (vendored) | MIT | <https://github.com/DaveGamble/cJSON> | `router/third_party/cJSON/LICENSE` |
 | libevent | 2.1.12-stable (SHA-256 pinned archive) | BSD-3-Clause and bundled notices | <https://github.com/libevent/libevent> | fetched: `router` build dependency `LICENSE` |
+| Mbed TLS | 3.6.3 (SHA-256 pinned archive) | Apache-2.0 or GPL-2.0-or-later | <https://github.com/Mbed-TLS/mbedtls> | fetched: `router` build dependency `LICENSE` |
 | Zygisk API header | API v5 @ `8ce26128` | 0BSD | <https://github.com/topjohnwu/zygisk-module-sample> | `zygisk/include/zygisk.hpp` (header) |
 | JetBrains Mono NL (Manager font, Regular/Medium) | 2.304 | OFL-1.1 | <https://github.com/JetBrains/JetBrainsMono> | `LICENSES/JetBrainsMono-OFL.txt` |
 
@@ -27,6 +29,9 @@ and the component license texts that are available in the working tree under
 - The vendored TinyCC sources are reconstructed from the pinned submodule plus
   `patches/tinycc-runtime-safety.patch` at build time; see
   `patches/README.md`.
+- Dobby is built from source with
+  `zygisk/patches/dobby-native-publication.patch` (see
+  `zygisk/third_party/README.md`).
 - LSPlant is additionally patched by
   `zygisk/patches/lsplant-main-reflection-shorty.patch` (see
   `zygisk/third_party/README.md`).

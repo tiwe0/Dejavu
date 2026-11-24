@@ -21,8 +21,8 @@
     <string name="module_install_provider">Root 方案</string>
     <string name="module_install_unknown_provider">未识别到受支持的安装器</string>
     <string name="module_install_platform">设备兼容性</string>
-    <string name="module_install_supported">arm64 · Android API 26–35</string>
-    <string name="module_install_unsupported">需要 arm64 和 Android API 26–35</string>
+    <string name="module_install_supported">arm64 · Android API 26–37</string>
+    <string name="module_install_unsupported">需要 arm64 和 Android API 26–37</string>
     <string name="module_install_zygisk">Zygisk 支持</string>
     <string name="module_install_zygisk_detected">检测到支持模块</string>
     <string name="module_install_zygisk_missing">需要启用 Zygisk 支持</string>

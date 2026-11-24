@@ -1,21 +1,61 @@
 --- a/lsplant/src/main/jni/art/runtime/art_method.cxx
 +++ b/lsplant/src/main/jni/art/runtime/art_method.cxx
-@@ -334,4 +334,3 @@ public:
+@@ -60,6 +60,10 @@
+     }
+ 
+ public:
++    inline static bool HasGetMethodShorty() {
++        return static_cast<bool>(GetMethodShortyL_) || static_cast<bool>(GetMethodShorty_);
++    }
++
+     inline static const char *GetMethodShorty(JNIEnv *env, jobject method) {
+         if (GetMethodShortyL_) {
+             return GetMethodShortyL_(env, env->FromReflectedMethod(method));
+@@ -331,8 +335,7 @@
+         }
+ 
          if (!handler(GetMethodShortyL_, true, GetMethodShorty_)) {
 -            LOGE("Failed to find GetMethodShorty");
 -            return false;
 +            LOGW("GetMethodShorty is unavailable; using reflection fallback");
          }
+ 
+         handler(PrettyMethod_, PrettyMethodStatic_, PrettyMethodMirror_);
 --- a/lsplant/src/main/jni/lsplant.cc
 +++ b/lsplant/src/main/jni/lsplant.cc
-@@ -859,9 +859,7 @@ jobject Hook(JNIEnv *env,
+@@ -744,8 +744,10 @@
+     return true;
+ }
+ 
+-std::string GetProxyMethodShorty(JNIEnv *env, jobject proxy_method) {
+-    const auto return_type = JNI_CallObjectMethod(env, proxy_method, method_get_return_type);
++std::string GetProxyMethodShorty(JNIEnv *env, jobject proxy_method, bool is_constructor = false) {
++    const auto return_type = is_constructor
++                                 ? ScopedLocalRef<jobject>{env, nullptr}
++                                 : JNI_CallObjectMethod(env, proxy_method, method_get_return_type);
+     const auto parameter_types =
+         JNI_Cast<jobjectArray>(JNI_CallObjectMethod(env, proxy_method, method_get_parameter_types));
+     auto integer_class = JNI_FindClass(env, "java/lang/Integer");
+@@ -799,7 +801,7 @@
+         if (JNI_IsSameObject(env, type, void_type)) return 'V';
+         return 'L';
+     };
+-    out += type_to_shorty(return_type);
++    out += is_constructor ? 'V' : type_to_shorty(return_type);
+     for (const auto &param : parameter_types) {
+         out += type_to_shorty(param);
+     }
+@@ -870,9 +872,10 @@
          }
          std::tie(built_class, hooker_field, hook_method, backup_method) = WrapScope(
              env,
 -            BuildDex(env, callback_class_loader.get(),
 -                     __builtin_expect(is_proxy, 0) ? GetProxyMethodShorty(env, target_method)
 -                                                   : ArtMethod::GetMethodShorty(env, target_method),
-+            BuildDex(env, callback_class_loader.get(), GetProxyMethodShorty(env, target_method),
++            BuildDex(env, callback_class_loader.get(),
++                     (__builtin_expect(is_proxy, 0) || !ArtMethod::HasGetMethodShorty())
++                         ? GetProxyMethodShorty(env, target_method, target->IsConstructor())
++                         : ArtMethod::GetMethodShorty(env, target_method),
                       is_static, target->IsConstructor() ? "constructor" : target_method_name.get(),
                       class_name.get(), callback_method_name.get()));
          if (!built_class || !hooker_field || !hook_method || !backup_method) {

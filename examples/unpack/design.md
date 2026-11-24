@@ -99,7 +99,7 @@ python3 examples/unpack/cli.py -p <进程> --active-invoke-dex <设备dex路径>
 
 ## 限制与后续
 
-- 仅 arm64、API 26-35；符号/ABI 随 ROM 变化，需要真机验证。
+- 仅 arm64、API 26-37；符号/ABI 随 ROM 变化，需要真机验证。
 - 加固（VMP、抽取壳、按需解密）需要结合类加载遍历与多次 dump；当前是
   "DEX 注册时刻" 的捕获层。
 - 只用于自有应用/研究设备；错误签名或高负载时 dump 可能导致崩溃/ANR。

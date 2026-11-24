@@ -2,8 +2,8 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)
 source "$repo/out/tooling/env.sh"
-build_tools="$ANDROID_HOME/build-tools/36.0.0"
-android_jar="$ANDROID_HOME/platforms/android-36/android.jar"
+build_tools="$ANDROID_HOME/build-tools/37.0.0"
+android_jar="$ANDROID_HOME/platforms/android-37.0/android.jar"
 fixture="$repo/zygisk/tests/device/jni_thread_scope"
 work=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-jni-scope.XXXXXX")
 output=${1:-"$repo/out/lua-rpc/jni-thread-scope-test.apk"}

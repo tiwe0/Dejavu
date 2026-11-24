@@ -78,12 +78,12 @@ if (providers.gradleProperty("dejavuRequireReleaseSigning").orNull == "true") {
 
 android {
     namespace = "cafe.ivory.dejavu"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "cafe.ivory.dejavu"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = dejavuModuleVersionCode
         versionName = dejavuModuleVersion.removePrefix("v")
         manifestPlaceholders["dejavuAppLabel"] = "@string/app_name"

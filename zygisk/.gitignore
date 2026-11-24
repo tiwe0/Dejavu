@@ -3,6 +3,7 @@
 /third_party/*
 !/third_party/README.md
 !/third_party/kcp/
+!/third_party/xz-embedded/
 
 __pycache__/
 *.pyc

@@ -41,8 +41,8 @@ if [[ -z "${NDK_DIR}" ]]; then
 fi
 NDK_REVISION=$(sed -n 's/^Pkg\.Revision = //p' "${NDK_DIR}/source.properties" | head -n 1)
 NDK_MAJOR=${NDK_REVISION%%.*}
-if [[ ! "${NDK_MAJOR}" =~ ^[0-9]+$ ]] || ((NDK_MAJOR < 29)); then
-    echo "error: LSPlant requires Android NDK r29 or newer (found ${NDK_REVISION:-unknown})" >&2
+if [[ ! "${NDK_MAJOR}" =~ ^[0-9]+$ ]] || ((NDK_MAJOR < 30)); then
+    echo "error: LSPlant requires Android NDK r30 or newer (found ${NDK_REVISION:-unknown})" >&2
     exit 1
 fi
 case "${RUN_DEVICE_SMOKE}" in
@@ -126,6 +126,11 @@ agent_exports=$(${NM} -D --defined-only "${AGENT_PATH}" | awk '{print $3}' | sed
 if [[ "${agent_exports}" != "dejavu_agent_get_api" ]]; then
     echo "error: unexpected Agent export set" >&2
     printf '%s\n' "${agent_exports}" >&2
+    exit 1
+fi
+if grep -qE 'Shared library: \[(libdejavu|libc\+\+_shared|libdobby|liblsplant)\.so\]' \
+    "${OUT_DIR}/agent-elf-dynamic.txt"; then
+    echo "error: Agent library has a forbidden private DT_NEEDED dependency" >&2
     exit 1
 fi
 echo "OK: ${AGENT_PATH}"

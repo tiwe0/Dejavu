@@ -2,8 +2,8 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 source "$repo/out/tooling/env.sh"
-build_tools="$ANDROID_HOME/build-tools/36.0.0"
-android_jar="$ANDROID_HOME/platforms/android-36/android.jar"
+build_tools="$ANDROID_HOME/build-tools/37.0.0"
+android_jar="$ANDROID_HOME/platforms/android-37.0/android.jar"
 work=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-router-instrumentation.XXXXXX")
 output=${1:-"$repo/out/router-instrumentation.apk"}
 trap 'rm -rf "$work"' EXIT

@@ -4,8 +4,8 @@ set -euo pipefail
 # Build the Manager first. This runner uses framework Instrumentation, without JUnit.
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 source "$repo/out/tooling/env.sh"
-build_tools="$ANDROID_HOME/build-tools/36.0.0"
-android_jar="$ANDROID_HOME/platforms/android-36/android.jar"
+build_tools="$ANDROID_HOME/build-tools/37.0.0"
+android_jar="$ANDROID_HOME/platforms/android-37.0/android.jar"
 app_classes="$repo/app/build/intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes"
 stdlib=$(find "$GRADLE_USER_HOME/wrapper/dists" -name 'kotlin-stdlib-*.jar' -print -quit)
 work=$(mktemp -d "${TMPDIR:-/tmp}/dejavu-rpc-instrumentation.XXXXXX")

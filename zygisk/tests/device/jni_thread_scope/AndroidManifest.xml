@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="cafe.ivory.dejavu.jniscopetest">
-    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37" />
     <application android:label="Dejavu JNI Scope Test" android:debuggable="true"
         android:testOnly="true" android:extractNativeLibs="true" />
     <instrumentation android:name="dejavu.tests.JniThreadScopeInstrumentation"
