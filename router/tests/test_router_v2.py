@@ -221,19 +221,26 @@ class RouterV2Tests(unittest.TestCase):
             'maxInflight': 16,
             'error': 'unauthorized',
         })
-        # Should reconnect after backoff
+        # Should reconnect after backoff and expose last_error / reconnect_count in status
         conn2, _ = listener.accept()
         p2 = V2Peer(conn2)
         self.peers.append(p2)
         ft, hello2 = p2.recv_frame()
         self.assertEqual(ft, FRAME_HELLO)
         self.assertEqual(hello2['deviceId'], 'phone-v2-reject')
+        status = self.ctl('status')['status']
+        self.assertEqual(status['last_error'], 'unauthorized')
+        self.assertGreaterEqual(status['reconnect_count'], 1)
 
     def test_v2_multiplexed_rpc_cancel_telemetry_and_wake(self):
         hub, _, _ = self.start_v2_hub()
         status = self.ctl('status')['status']
         self.assertEqual(status['hub_protocol'], 'v2')
         self.assertTrue(status['hub_connected'])
+        self.assertIsNone(status['last_error'])
+        self.assertGreater(status['last_heartbeat_ack_ms'], 0)
+        self.assertGreaterEqual(status['last_rtt_ms'], 0)
+        self.assertEqual(status['reconnect_count'], 0)
 
         plugin = self.connect_plugin(route='x_u10')
         delta = hub.expect_frame(FRAME_ROUTE_DELTA)

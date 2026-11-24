@@ -7,6 +7,7 @@
 #include <event2/event.h>
 #include <event2/listener.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <math.h>
 #include <ctype.h>
 #include <signal.h>
@@ -26,6 +27,12 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/timerfd.h>
+#endif
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 #include "cJSON.h"
 #include "dejavu_json.h"
@@ -154,6 +161,8 @@ struct router {
     cJSON *upstream_overrides;
     char *listen_host;
     int listen_port;
+    bool keep_awake;
+    bool keep_awake_held;
     plugin_t *plugins;
     size_t plugin_count;
     job_t *jobs;
@@ -186,7 +195,13 @@ struct upstream {
     uint16_t max_inflight;
     uint16_t last_advertised_inflight;
     int64_t last_rtt_ms;
+    int64_t last_heartbeat_ack_ms;
+    int64_t last_heartbeat_ack_boottime_ms;
+    uint64_t reconnect_count;
+    char *last_error;
     struct event *heartbeat_timer;
+    int heartbeat_tfd;
+    bool hb_wakelock_held;
     struct event *resolver_event;
     struct event *resolver_timeout;
     int resolver_fd;
@@ -221,13 +236,19 @@ struct control_client {
 };
 
 static void logmsg(const char *level, const char *fmt, ...) {
+    char msg[512];
     va_list args;
     va_start(args, fmt);
-    fprintf(stderr, "dejavuerouter: %s ", level);
-    vfprintf(stderr, fmt, args);
-    fputc('\n', stderr);
+    vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
+    fprintf(stderr, "dejavuerouter: %s %s\n", level, msg);
     fflush(stderr);
+#ifdef __ANDROID__
+    int prio = ANDROID_LOG_INFO;
+    if (!strcmp(level, "ERROR")) prio = ANDROID_LOG_ERROR;
+    else if (!strcmp(level, "WARN")) prio = ANDROID_LOG_WARN;
+    __android_log_write(prio, "DejavuRouter", msg);
+#endif
 }
 
 static void signal_cb(evutil_socket_t sig, short events, void *arg) {
@@ -363,6 +384,100 @@ static int64_t now_unix_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
 }
 
+static int64_t now_boottime_ms(void) {
+    struct timespec ts;
+#ifdef CLOCK_BOOTTIME
+    if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+        return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
+    }
+#endif
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
+}
+
+static void hub_set_last_error(upstream_t *hub, const char *reason) {
+    if (!hub) return;
+    free(hub->last_error);
+    hub->last_error = NULL;
+    if (reason && reason[0]) {
+        size_t len = strlen(reason);
+        if (len > 160) len = 160;
+        hub->last_error = malloc(len + 1);
+        if (hub->last_error) {
+            memcpy(hub->last_error, reason, len);
+            hub->last_error[len] = '\0';
+        }
+    }
+}
+
+#ifdef __ANDROID__
+static bool sysfs_wakelock_write(const char *path, const char *value) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    size_t len = strlen(value);
+    ssize_t wrote = write(fd, value, len);
+    close(fd);
+    return wrote == (ssize_t)len;
+}
+
+static void router_keep_awake_set(router_t *router, bool enable) {
+    if (!router) return;
+    char name[64];
+    snprintf(name, sizeof(name), "dejavuerouter_keep_%ld", (long)getpid());
+    if (enable && !router->keep_awake_held) {
+        if (sysfs_wakelock_write("/sys/power/wake_lock", name)) {
+            router->keep_awake_held = true;
+        }
+    } else if (!enable && router->keep_awake_held) {
+        (void)sysfs_wakelock_write("/sys/power/wake_unlock", name);
+        router->keep_awake_held = false;
+    }
+}
+
+static void hub_hb_wakelock_acquire(upstream_t *hub) {
+    if (!hub || hub->router->keep_awake_held) return;
+    char payload[96];
+    /* 10s kernel auto-expire safety timeout so a process crash cannot leak a wakelock. */
+    snprintf(payload, sizeof(payload), "dejavuerouter_hb_%ld_%p 10000000000",
+             (long)getpid(), (void *)hub);
+    if (sysfs_wakelock_write("/sys/power/wake_lock", payload)) {
+        hub->hb_wakelock_held = true;
+    }
+}
+
+static void hub_hb_wakelock_release(upstream_t *hub) {
+    if (!hub || !hub->hb_wakelock_held) return;
+    char name[64];
+    snprintf(name, sizeof(name), "dejavuerouter_hb_%ld_%p", (long)getpid(), (void *)hub);
+    (void)sysfs_wakelock_write("/sys/power/wake_unlock", name);
+    hub->hb_wakelock_held = false;
+}
+#else
+static void router_keep_awake_set(router_t *router, bool enable) {
+    (void)router;
+    (void)enable;
+}
+static void hub_hb_wakelock_acquire(upstream_t *hub) { (void)hub; }
+static void hub_hb_wakelock_release(upstream_t *hub) { (void)hub; }
+#endif
+
+static void apply_plaintext_tcp_liveness(int fd) {
+    int keepalive = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+#ifdef __linux__
+    int idle = 30;
+    int intvl = 10;
+    int cnt = 3;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+#ifdef TCP_USER_TIMEOUT
+    unsigned int user_timeout_ms = 20000u;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &user_timeout_ms, sizeof(user_timeout_ms));
+#endif
+#endif
+}
+
 static const char *protocol_name(int version) {
     return version == ROUTER_PROTO_V2 ? "v2" : "v1";
 }
@@ -495,8 +610,24 @@ static cJSON *v2_collect_hub_routes(upstream_t *hub) {
     return routes;
 }
 
+static void hub_on_disconnect_event(upstream_t *hub, const char *reason);
+
+static void v2_stop_heartbeat_timer(upstream_t *hub) {
+    if (!hub) return;
+    if (hub->heartbeat_timer) {
+        event_free(hub->heartbeat_timer);
+        hub->heartbeat_timer = NULL;
+    }
+    if (hub->heartbeat_tfd >= 0) {
+        close(hub->heartbeat_tfd);
+        hub->heartbeat_tfd = -1;
+    }
+    hub_hb_wakelock_release(hub);
+}
+
 static void v2_send_heartbeat(upstream_t *hub) {
     if (!hub || hub->protocol_version != ROUTER_PROTO_V2 || !hub->hub_connected || !hub->v2_authenticated) return;
+    hub_hb_wakelock_acquire(hub);
     cJSON *hb = cJSON_CreateObject();
     cJSON *routes = v2_collect_hub_routes(hub);
     if (hb && routes &&
@@ -510,9 +641,64 @@ static void v2_send_heartbeat(upstream_t *hub) {
 }
 
 static void v2_heartbeat_cb(evutil_socket_t fd, short events, void *arg) {
-    (void)fd;
     (void)events;
-    v2_send_heartbeat((upstream_t *)arg);
+    upstream_t *hub = (upstream_t *)arg;
+    if (hub->heartbeat_tfd >= 0 && fd == hub->heartbeat_tfd) {
+        uint64_t expirations = 0;
+        while (read(hub->heartbeat_tfd, &expirations, sizeof(expirations)) > 0) { }
+    }
+    if (!hub->hub_connected || !hub->v2_authenticated) return;
+    int64_t timeout_ms = (int64_t)hub->heartbeat_secs * 3000;
+    if (timeout_ms < 30000) timeout_ms = 30000;
+    int64_t now_bt = now_boottime_ms();
+    if (hub->last_heartbeat_ack_boottime_ms > 0 &&
+        now_bt - hub->last_heartbeat_ack_boottime_ms >= timeout_ms) {
+        logmsg("WARN", "hub v2 heartbeat ack timeout (%lldms); reconnecting",
+               (long long)(now_bt - hub->last_heartbeat_ack_boottime_ms));
+        hub_on_disconnect_event(hub, "v2_heartbeat_timeout");
+        return;
+    }
+    v2_send_heartbeat(hub);
+}
+
+static void v2_start_heartbeat_timer(upstream_t *hub, uint32_t interval_secs) {
+    v2_stop_heartbeat_timer(hub);
+    router_t *router = hub->router;
+#ifdef __linux__
+    int tfd = -1;
+#ifdef CLOCK_BOOTTIME_ALARM
+    /* CAP_WAKE_ALARM lets root wake the AP from Doze/Suspend on time to emit heartbeats. */
+    tfd = timerfd_create(CLOCK_BOOTTIME_ALARM, TFD_NONBLOCK | TFD_CLOEXEC);
+#endif
+    if (tfd < 0) {
+#ifdef CLOCK_BOOTTIME
+        tfd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+#else
+        tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+#endif
+    }
+    if (tfd >= 0) {
+        struct itimerspec its;
+        memset(&its, 0, sizeof(its));
+        its.it_value.tv_sec = (time_t)interval_secs;
+        its.it_interval.tv_sec = (time_t)interval_secs;
+        if (timerfd_settime(tfd, 0, &its, NULL) == 0) {
+            struct event *ev = event_new(router->base, tfd, EV_READ | EV_PERSIST, v2_heartbeat_cb, hub);
+            if (ev && event_add(ev, NULL) == 0) {
+                hub->heartbeat_tfd = tfd;
+                hub->heartbeat_timer = ev;
+                return;
+            }
+            if (ev) event_free(ev);
+        }
+        close(tfd);
+    }
+#endif
+    hub->heartbeat_timer = event_new(router->base, -1, EV_PERSIST, v2_heartbeat_cb, hub);
+    if (hub->heartbeat_timer) {
+        struct timeval hb_tv = { (time_t)interval_secs, 0 };
+        event_add(hub->heartbeat_timer, &hb_tv);
+    }
 }
 
 static void v2_maybe_emit_flow_control(upstream_t *hub) {
@@ -727,6 +913,7 @@ static void child_close_router_fds(router_t *router, int keep) {
     for (upstream_t *hub = router->upstreams; hub; hub = hub->next) {
         if (hub->hub_bev) child_close_fd(bufferevent_getfd(hub->hub_bev), keep);
         if (hub->hub_tls_conn) child_close_fd(tls_transport_get_fd(hub->hub_tls_conn), keep);
+        child_close_fd(hub->heartbeat_tfd, keep);
         child_close_fd(hub->resolver_fd, keep);
     }
     for (plugin_t *p = router->plugins; p; p = p->next) child_close_fd(bufferevent_getfd(p->bev), keep);
@@ -1093,10 +1280,7 @@ static void hub_disconnect(upstream_t *hub) {
     hub->hub_connected = false;
     hub->v2_authenticated = false;
     hub->last_advertised_inflight = 0;
-    if (hub->heartbeat_timer) {
-        event_free(hub->heartbeat_timer);
-        hub->heartbeat_timer = NULL;
-    }
+    v2_stop_heartbeat_timer(hub);
     if (hub->hub_bev) {
         bufferevent_free(hub->hub_bev);
         hub->hub_bev = NULL;
@@ -1148,6 +1332,7 @@ static void hub_on_connected(upstream_t *hub) {
         return;
     }
     hub_io_set_timeout(hub, 60);
+    hub_set_last_error(hub, NULL);
     cJSON *hello = cJSON_CreateObject();
     cJSON_AddStringToObject(hello, "type", "hello");
     cJSON_AddStringToObject(hello, "device_id", hub->device_id);
@@ -1170,6 +1355,8 @@ static void hub_on_connected(upstream_t *hub) {
 }
 
 static void hub_on_disconnect_event(upstream_t *hub, const char *reason) {
+    hub->reconnect_count++;
+    hub_set_last_error(hub, (reason && reason[0]) ? reason : "disconnected");
     if (reason && reason[0]) logmsg("WARN", "hub disconnected (%s); reconnecting", reason);
     else logmsg("WARN", "hub disconnected; reconnecting");
     hub_disconnect(hub);
@@ -1187,7 +1374,9 @@ static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
         return;
     }
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
-        hub_on_disconnect_event(hub, NULL);
+        const char *reason = (events & BEV_EVENT_TIMEOUT) ? "tcp_timeout" :
+                             (events & BEV_EVENT_EOF) ? "tcp_eof" : "tcp_error";
+        hub_on_disconnect_event(hub, reason);
     }
 }
 
@@ -1212,8 +1401,10 @@ static bool hub_handle_v2_frame(upstream_t *hub, uint8_t frame_type, cJSON *root
         cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
         if (!cJSON_IsTrue(ok)) {
             cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
-            logmsg("WARN", "hub v2 hello rejected: %s",
-                   cJSON_IsString(err) ? err->valuestring : "unauthorized");
+            const char *err_str = cJSON_IsString(err) ? err->valuestring : "unauthorized";
+            logmsg("WARN", "hub v2 hello rejected: %s", err_str);
+            hub->reconnect_count++;
+            hub_set_last_error(hub, err_str);
             hub_disconnect(hub);
             schedule_hub_reconnect(hub, hub->reconnect_seconds);
             if (hub->reconnect_seconds < 30) {
@@ -1240,18 +1431,12 @@ static bool hub_handle_v2_frame(upstream_t *hub, uint8_t frame_type, cJSON *root
         hub->heartbeat_secs = interval;
         hub->max_inflight = max_inflight;
         hub->last_advertised_inflight = max_inflight;
+        hub->last_heartbeat_ack_boottime_ms = now_boottime_ms();
+        hub_set_last_error(hub, NULL);
         uint32_t read_timeout_secs = interval * 3u;
         if (read_timeout_secs < 30u) read_timeout_secs = 30u;
         hub_io_set_timeout(hub, (int)read_timeout_secs);
-        if (hub->heartbeat_timer) {
-            event_free(hub->heartbeat_timer);
-            hub->heartbeat_timer = NULL;
-        }
-        hub->heartbeat_timer = event_new(router->base, -1, EV_PERSIST, v2_heartbeat_cb, hub);
-        if (hub->heartbeat_timer) {
-            struct timeval hb_tv = { (time_t)interval, 0 };
-            event_add(hub->heartbeat_timer, &hb_tv);
-        }
+        v2_start_heartbeat_timer(hub, interval);
         logmsg("INFO", "hub v2 authenticated device=%s hb=%us max_inflight=%u",
                hub->device_id, (unsigned)interval, (unsigned)max_inflight);
         /* Synchronize any routes that registered between TCP connect and HelloAck. */
@@ -1261,15 +1446,21 @@ static bool hub_handle_v2_frame(upstream_t *hub, uint8_t frame_type, cJSON *root
 
     if (!hub->v2_authenticated) {
         logmsg("WARN", "hub v2 frame 0x%02x before HelloAck; reconnecting", (unsigned)frame_type);
+        hub->reconnect_count++;
+        hub_set_last_error(hub, "v2_frame_before_hello_ack");
         hub_disconnect(hub);
         schedule_hub_reconnect(hub, 1);
         return false;
     }
 
     if (frame_type == V2_FRAME_HEARTBEAT_ACK) {
+        hub_hb_wakelock_release(hub);
+        int64_t now_ms = now_unix_ms();
+        hub->last_heartbeat_ack_ms = now_ms;
+        hub->last_heartbeat_ack_boottime_ms = now_boottime_ms();
         cJSON *echo = cJSON_GetObjectItemCaseSensitive(root, "echoSentAtMs");
         if (cJSON_IsNumber(echo) && isfinite(echo->valuedouble)) {
-            int64_t rtt = now_unix_ms() - (int64_t)echo->valuedouble;
+            int64_t rtt = now_ms - (int64_t)echo->valuedouble;
             hub->last_rtt_ms = rtt >= 0 ? rtt : 0;
         }
         return true;
@@ -1501,6 +1692,8 @@ static void hub_connect_address(upstream_t *hub, struct sockaddr *address, sockl
         };
         hub->hub_tls_conn = tls_transport_connect(router->base, address, length, &tls_cfg);
         if (!hub->hub_tls_conn) {
+            hub_set_last_error(hub, "tls_connect_init_failed");
+            logmsg("WARN", "hub tls connect init failed for %s:%d", hub->hub_host, hub->hub_port);
             if (!hub_try_next_address(hub)) schedule_hub_reconnect(hub, hub->reconnect_seconds);
         }
         return;
@@ -1514,7 +1707,10 @@ static void hub_connect_address(upstream_t *hub, struct sockaddr *address, sockl
     hub->hub_bev = bev;
     int connected = bufferevent_socket_connect(bev, address, (int)length);
     int socket_fd = bufferevent_getfd(bev);
-    if (socket_fd >= 0) evutil_make_socket_closeonexec(socket_fd);
+    if (socket_fd >= 0) {
+        evutil_make_socket_closeonexec(socket_fd);
+        apply_plaintext_tcp_liveness(socket_fd);
+    }
     if (connected != 0) {
         hub_disconnect(hub);
         if (!hub_try_next_address(hub)) schedule_hub_reconnect(hub, hub->reconnect_seconds);
@@ -2001,7 +2197,7 @@ typedef struct {
     char *hub_tls_ca_file, *hub_tls_sni;
     char *control_socket, *plugin_socket, *plugins_dir;
     cJSON *upstream_overrides;
-    bool listen_tcp, hub_tls, hub_tls_insecure;
+    bool listen_tcp, hub_tls, hub_tls_insecure, keep_awake;
     int hub_port, listen_port, hub_protocol;
 } config_t;
 
@@ -2136,6 +2332,7 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cJSON *control = cJSON_GetObjectItemCaseSensitive(root, "control_socket");
     cJSON *plugins = cJSON_GetObjectItemCaseSensitive(root, "plugin_socket");
     cJSON *tcp = cJSON_GetObjectItemCaseSensitive(root, "listen_tcp");
+    cJSON *keep_awake = cJSON_GetObjectItemCaseSensitive(root, "keep_awake");
     cJSON *directory = cJSON_GetObjectItemCaseSensitive(root, "plugins_dir");
     cJSON *overrides = cJSON_GetObjectItemCaseSensitive(root, "upstream_overrides");
     int parsed_proto = ROUTER_PROTO_V1;
@@ -2150,7 +2347,8 @@ static bool config_parse(cJSON *root, config_t *cfg) {
         !tls_ca_field(tls_ca) || (tls_sni && !text_field(tls_sni, 253, true)) ||
         (local_port && !integer_field(local_port, 1, 65535)) ||
         (control && !socket_name(control)) ||
-        (plugins && !socket_name(plugins)) || (tcp && !cJSON_IsBool(tcp))) return false;
+        (plugins && !socket_name(plugins)) || (tcp && !cJSON_IsBool(tcp)) ||
+        (keep_awake && !cJSON_IsBool(keep_awake))) return false;
 #ifdef __ANDROID__
     if ((control && strchr(control->valuestring, '/')) || (plugins && strchr(plugins->valuestring, '/'))) return false;
 #endif
@@ -2176,6 +2374,7 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cfg->upstream_overrides = overrides ? cJSON_Duplicate(overrides, true) : cJSON_CreateObject();
     if ((directory && !cfg->plugins_dir) || !cfg->upstream_overrides) { config_free(cfg); return false; }
     cfg->listen_tcp = cJSON_IsTrue(tcp);
+    cfg->keep_awake = cJSON_IsTrue(keep_awake);
     if (!cfg->hub_host || !cfg->device_id || !cfg->device_token || !cfg->listen_host ||
         !cfg->hub_tls_ca_file || !cfg->hub_tls_sni ||
         !cfg->control_socket || !cfg->plugin_socket || !strcmp(cfg->control_socket, cfg->plugin_socket)) { config_free(cfg); return false; }
@@ -2271,6 +2470,7 @@ static void upstream_free(upstream_t *hub) {
     free(hub->id); free(hub->plugin_id); free(hub->source);
     free(hub->hub_host); free(hub->device_id); free(hub->device_token);
     free(hub->hub_tls_ca_file); free(hub->hub_tls_sni);
+    free(hub->last_error);
     cJSON_Delete(hub->base_config);
     free(hub);
 }
@@ -2282,7 +2482,8 @@ static upstream_t *upstream_new(router_t *router, const char *id, const char *pl
     if (!connection_valid(effective, !strcmp(id, "default"))) return NULL;
     upstream_t *hub = calloc(1, sizeof(*hub));
     if (!hub) return NULL;
-    hub->router = router; hub->resolver_fd = -1; hub->reconnect_seconds = 1;
+    hub->router = router; hub->resolver_fd = -1; hub->heartbeat_tfd = -1;
+    hub->last_rtt_ms = -1; hub->reconnect_seconds = 1;
     hub->protocol_version = ROUTER_PROTO_V1;
     parse_protocol_value(cJSON_GetObjectItemCaseSensitive(effective, "hub_protocol"),
                          ROUTER_PROTO_V1, &hub->protocol_version);
@@ -2711,6 +2912,7 @@ static cJSON *config_json(router_t *router, const char *host, int port, const ch
         (tls && tls->insecure && !cJSON_AddBoolToObject(root, "hub_tls_insecure", true)) ||
         (tls && tls->ca_file && tls->ca_file[0] && !cJSON_AddStringToObject(root, "hub_tls_ca_file", tls->ca_file)) ||
         (tls && tls->sni && tls->sni[0] && !cJSON_AddStringToObject(root, "hub_tls_sni", tls->sni)) ||
+        (router->keep_awake && !cJSON_AddBoolToObject(root, "keep_awake", true)) ||
         !cJSON_AddStringToObject(root, "device_id", id) ||
         !cJSON_AddStringToObject(root, "device_token", token) ||
         !cJSON_AddStringToObject(root, "listen_host", "127.0.0.1") ||
@@ -2793,6 +2995,13 @@ static cJSON *status_json(router_t *router) {
     cJSON_AddBoolToObject(status, "hub_tls", fallback->hub_tls);
     if (fallback->hub_tls_conn)
         cJSON_AddStringToObject(status, "hub_tls_version", tls_transport_version_str(fallback->hub_tls_conn));
+    if (fallback->last_error) cJSON_AddStringToObject(status, "last_error", fallback->last_error);
+    else cJSON_AddNullToObject(status, "last_error");
+    if (fallback->last_rtt_ms >= 0) cJSON_AddNumberToObject(status, "last_rtt_ms", (double)fallback->last_rtt_ms);
+    else cJSON_AddNullToObject(status, "last_rtt_ms");
+    if (fallback->last_heartbeat_ack_ms > 0) cJSON_AddNumberToObject(status, "last_heartbeat_ack_ms", (double)fallback->last_heartbeat_ack_ms);
+    else cJSON_AddNullToObject(status, "last_heartbeat_ack_ms");
+    cJSON_AddNumberToObject(status, "reconnect_count", (double)fallback->reconnect_count);
     cJSON_AddStringToObject(status, "device_id", fallback->device_id);
     cJSON_AddBoolToObject(status, "token_configured", fallback->device_token && fallback->device_token[0]);
     cJSON *hubs = cJSON_AddArrayToObject(status, "upstreams");
@@ -2811,6 +3020,13 @@ static cJSON *status_json(router_t *router) {
         cJSON_AddBoolToObject(row, "tls", hub->hub_tls);
         if (hub->hub_tls_conn)
             cJSON_AddStringToObject(row, "tls_version", tls_transport_version_str(hub->hub_tls_conn));
+        if (hub->last_error) cJSON_AddStringToObject(row, "last_error", hub->last_error);
+        else cJSON_AddNullToObject(row, "last_error");
+        if (hub->last_rtt_ms >= 0) cJSON_AddNumberToObject(row, "last_rtt_ms", (double)hub->last_rtt_ms);
+        else cJSON_AddNullToObject(row, "last_rtt_ms");
+        if (hub->last_heartbeat_ack_ms > 0) cJSON_AddNumberToObject(row, "last_heartbeat_ack_ms", (double)hub->last_heartbeat_ack_ms);
+        else cJSON_AddNullToObject(row, "last_heartbeat_ack_ms");
+        cJSON_AddNumberToObject(row, "reconnect_count", (double)hub->reconnect_count);
         cJSON_AddStringToObject(row, "device_id", hub->device_id);
         cJSON_AddBoolToObject(row, "token_configured", hub->device_token && hub->device_token[0]);
         cJSON_AddBoolToObject(row, "overridden", hub->overridden);
@@ -3261,6 +3477,8 @@ int main(int argc, char **argv) {
         if (!override->string || !connection_valid(override, false)) goto cleanup;
     router.listen_host = cfg.listen_host; router.listen_port = cfg.listen_port;
     router.listen_tcp = cfg.listen_tcp;
+    router.keep_awake = cfg.keep_awake;
+    router_keep_awake_set(&router, router.keep_awake);
     router.control_name = cfg.control_socket; router.plugin_name = cfg.plugin_socket;
 #ifdef __ANDROID__
     router.control_socket = cfg.control_socket; router.plugin_socket = cfg.plugin_socket;
@@ -3309,6 +3527,7 @@ int main(int argc, char **argv) {
     exit_code = event_base_dispatch(router.base) < 0 ? 1 : 0;
 cleanup:
     router.stopping = true;
+    router_keep_awake_set(&router, false);
     if (owns_lock && published && metadata) unlink(metadata);
 
     cJSON_Delete(root);

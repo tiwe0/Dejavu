@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ struct tls_transport {
     mbedtls_ctr_drbg_context ctr_drbg;
     bool ssl_initialized;
     bool want_write;
+    bool want_read_for_write;
 
     void (*on_connected)(void *ctx);
     void (*on_read)(struct evbuffer *input, void *ctx);
@@ -141,11 +143,29 @@ static void tls_update_events(tls_transport_t *tls) {
     }
     if (tls->read_ev) event_add(tls->read_ev, NULL);
     bool need_write = tls->want_write ||
-                      (tls->state == TLS_STATE_OPEN && tls->out_buf && evbuffer_get_length(tls->out_buf) > 0);
+                      (!tls->want_read_for_write && tls->state == TLS_STATE_OPEN &&
+                       tls->out_buf && evbuffer_get_length(tls->out_buf) > 0);
     if (tls->write_ev) {
         if (need_write) event_add(tls->write_ev, NULL);
         else event_del(tls->write_ev);
     }
+}
+
+static void apply_tcp_liveness(int fd) {
+    int keepalive = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+#ifdef __linux__
+    int idle = 30;
+    int intvl = 10;
+    int cnt = 3;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+#ifdef TCP_USER_TIMEOUT
+    unsigned int user_timeout_ms = 20000u;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &user_timeout_ms, sizeof(user_timeout_ms));
+#endif
+#endif
 }
 
 static void tls_fail(tls_transport_t *tls, const char *reason) {
@@ -157,10 +177,13 @@ static void tls_fail(tls_transport_t *tls, const char *reason) {
     if (tls->on_error) tls->on_error(reason ? reason : "tls_error", tls->ctx);
 }
 
-static void tls_drive(tls_transport_t *tls) {
+static void tls_drive(tls_transport_t *tls, short trigger_events) {
     if (!tls || tls->pending_free || tls->state == TLS_STATE_FAILED) return;
     tls->in_callback = true;
     tls->want_write = false;
+    if (trigger_events & EV_READ) {
+        tls->want_read_for_write = false;
+    }
 
     if (tls->state == TLS_STATE_TCP_CONNECTING) {
         int err = 0;
@@ -195,8 +218,8 @@ static void tls_drive(tls_transport_t *tls) {
     }
 
     if (tls->state == TLS_STATE_OPEN) {
-        /* 1) Flush queued outbound plaintext through TLS */
-        while (tls->out_buf && evbuffer_get_length(tls->out_buf) > 0) {
+        /* 1) Flush queued outbound plaintext through TLS (never resets read-liveness timer). */
+        while (!tls->want_read_for_write && tls->out_buf && evbuffer_get_length(tls->out_buf) > 0) {
             size_t avail = evbuffer_get_length(tls->out_buf);
             size_t chunk = avail > 16384 ? 16384 : avail;
             unsigned char *ptr = evbuffer_pullup(tls->out_buf, (ev_ssize_t)chunk);
@@ -204,11 +227,12 @@ static void tls_drive(tls_transport_t *tls) {
             int rc = mbedtls_ssl_write(&tls->ssl, ptr, chunk);
             if (rc > 0) {
                 evbuffer_drain(tls->out_buf, (size_t)rc);
-                tls_reset_timer(tls);
+                tls->want_read_for_write = false;
             } else if (rc == MBEDTLS_ERR_SSL_WANT_WRITE) {
                 tls->want_write = true;
                 break;
             } else if (rc == MBEDTLS_ERR_SSL_WANT_READ) {
+                tls->want_read_for_write = true;
                 break;
             } else {
                 char errbuf[128];
@@ -218,7 +242,7 @@ static void tls_drive(tls_transport_t *tls) {
             }
         }
 
-        /* 2) Drain decrypted inbound records */
+        /* 2) Drain decrypted inbound records (only peer reads reset liveness timeout). */
         bool got_data = false;
         for (;;) {
             unsigned char tmp[16384];
@@ -229,6 +253,7 @@ static void tls_drive(tls_transport_t *tls) {
                     goto done;
                 }
                 got_data = true;
+                tls->want_read_for_write = false;
                 tls_reset_timer(tls);
             } else if (rc == MBEDTLS_ERR_SSL_WANT_READ) {
                 break;
@@ -256,7 +281,7 @@ static void tls_drive(tls_transport_t *tls) {
         }
 
         /* Flush any response bytes queued by on_read immediately */
-        while (tls->out_buf && evbuffer_get_length(tls->out_buf) > 0) {
+        while (!tls->want_read_for_write && tls->out_buf && evbuffer_get_length(tls->out_buf) > 0) {
             size_t avail = evbuffer_get_length(tls->out_buf);
             size_t chunk = avail > 16384 ? 16384 : avail;
             unsigned char *ptr = evbuffer_pullup(tls->out_buf, (ev_ssize_t)chunk);
@@ -264,11 +289,12 @@ static void tls_drive(tls_transport_t *tls) {
             int rc = mbedtls_ssl_write(&tls->ssl, ptr, chunk);
             if (rc > 0) {
                 evbuffer_drain(tls->out_buf, (size_t)rc);
-                tls_reset_timer(tls);
+                tls->want_read_for_write = false;
             } else if (rc == MBEDTLS_ERR_SSL_WANT_WRITE) {
                 tls->want_write = true;
                 break;
             } else if (rc == MBEDTLS_ERR_SSL_WANT_READ) {
+                tls->want_read_for_write = true;
                 break;
             } else {
                 char errbuf[128];
@@ -288,8 +314,7 @@ done:
 
 static void tls_io_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
-    (void)events;
-    tls_drive((tls_transport_t *)arg);
+    tls_drive((tls_transport_t *)arg, events);
 }
 
 static void tls_timeout_cb(evutil_socket_t fd, short events, void *arg) {
@@ -406,6 +431,7 @@ tls_transport_t *tls_transport_connect(struct event_base *base,
     if (fd < 0) { tls_destroy_now(tls); return NULL; }
     evutil_make_socket_closeonexec(fd);
     evutil_make_socket_nonblocking(fd);
+    apply_tcp_liveness(fd);
     tls->fd = fd;
 
     mbedtls_ssl_set_bio(&tls->ssl, tls, tls_bio_send, tls_bio_recv, NULL);
@@ -442,7 +468,7 @@ int tls_transport_write(tls_transport_t *tls, const void *data, size_t len) {
     if (len == 0) return 0;
     if (evbuffer_add(tls->out_buf, data, len) != 0) return -1;
     if (!tls->in_callback) {
-        tls_drive(tls);
+        tls_drive(tls, 0);
     } else {
         tls_update_events(tls);
     }

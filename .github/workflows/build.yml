@@ -372,8 +372,19 @@ jobs:
       
       - name: Verify module package
         run: |
+          set -euo pipefail
           ls -lh zygisk/dist/
           unzip -l ${{ steps.package-meta.outputs.package_glob }}
+          tmp_router=$(mktemp)
+          trap 'rm -f "${tmp_router}"' EXIT
+          unzip -p ${{ steps.package-meta.outputs.package_glob }} bin/dejavuerouter > "${tmp_router}"
+          for marker in router.v2 hub_protocol dejavuerouter-tls hub_tls_version; do
+            if ! strings "${tmp_router}" | grep -Fq "${marker}"; then
+              echo "error: packaged bin/dejavuerouter is missing expected v2/TLS marker: ${marker}" >&2
+              exit 1
+            fi
+          done
+          echo "Verified packaged bin/dejavuerouter includes v2 protocol and TLS support."
       
       - name: Build example plugins
         run: |

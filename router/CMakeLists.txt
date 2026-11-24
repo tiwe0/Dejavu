@@ -73,6 +73,7 @@ set_target_properties(dejavu_router PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 if(ANDROID)
+    target_link_libraries(dejavu_router PRIVATE log)
     target_link_options(dejavu_router PRIVATE -Wl,-z,max-page-size=16384 -Wl,--no-undefined)
     set_target_properties(dejavu_router PROPERTIES ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON)
 endif()
