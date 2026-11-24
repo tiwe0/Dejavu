@@ -42,10 +42,32 @@ else()
     set(ROUTER_EVENT_LIBRARIES event_core_static)
 endif()
 
-add_executable(dejavu_router src/tcp_router.c third_party/cJSON/cJSON.c)
+include(FetchContent)
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+set(DEJAVU_MBEDTLS_TARBALL "${CMAKE_CURRENT_SOURCE_DIR}/../out/router-deps/mbedtls-3.6.3.tar.bz2")
+if(EXISTS "${DEJAVU_MBEDTLS_TARBALL}")
+    FetchContent_Declare(dejavu_mbedtls
+        URL "file://${DEJAVU_MBEDTLS_TARBALL}"
+        URL_HASH SHA256=64cd73842cdc05e101172f7b437c65e7312e476206e1dbfd644433d11bc56327
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+else()
+    FetchContent_Declare(dejavu_mbedtls
+        URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.3/mbedtls-3.6.3.tar.bz2
+        URL_HASH SHA256=64cd73842cdc05e101172f7b437c65e7312e476206e1dbfd644433d11bc56327
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+endif()
+FetchContent_MakeAvailable(dejavu_mbedtls)
+
+add_executable(dejavu_router src/tcp_router.c src/tls_transport.c third_party/cJSON/cJSON.c)
 target_include_directories(dejavu_router PRIVATE third_party/cJSON ../include)
 target_compile_options(dejavu_router PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(dejavu_router PRIVATE ${ROUTER_EVENT_LIBRARIES} m)
+target_link_libraries(dejavu_router PRIVATE ${ROUTER_EVENT_LIBRARIES} mbedtls mbedx509 mbedcrypto m)
 set_target_properties(dejavu_router PROPERTIES
     OUTPUT_NAME dejavuerouter
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"

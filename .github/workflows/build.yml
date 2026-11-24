@@ -38,6 +38,7 @@ jobs:
         run: |
           router/scripts/build.sh host
           ROUTER_BIN="$PWD/out/router-host/dejavuerouter" python3 router/tests/integration.py
+          ROUTER_BIN="$PWD/out/router-host/dejavuerouter" python3 router/tests/test_router_v2.py
           python3 router/scripts/test-install.py
           python3 router/scripts/test-lifecycle.py
       

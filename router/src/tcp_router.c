@@ -29,6 +29,7 @@
 
 #include "cJSON.h"
 #include "dejavu_json.h"
+#include "tls_transport.h"
 
 #define MAX_LINE (1024 * 1024)
 #define MAX_PLUGINS 64
@@ -42,6 +43,26 @@
 #define MAX_WAKES 64
 #define WAKE_DEFAULT_MS 20000
 #define WAKE_MAX_MS 120000
+
+#define ROUTER_PROTO_V1 1
+#define ROUTER_PROTO_V2 2
+
+#define V2_VERSION_BYTE        0x02u
+#define V2_HEADER_LEN          6u
+#define V2_FRAME_HELLO         0x01u
+#define V2_FRAME_HELLO_ACK     0x02u
+#define V2_FRAME_HEARTBEAT     0x03u
+#define V2_FRAME_HEARTBEAT_ACK 0x04u
+#define V2_FRAME_ROUTE_DELTA   0x05u
+#define V2_FRAME_RPC_REQUEST   0x10u
+#define V2_FRAME_RPC_RESPONSE  0x11u
+#define V2_FRAME_RPC_CANCEL    0x12u
+#define V2_FRAME_FLOW_CONTROL  0x13u
+
+#define V2_DEFAULT_HEARTBEAT_SECS 20u
+#define V2_MIN_HEARTBEAT_SECS     5u
+#define V2_MAX_HEARTBEAT_SECS     120u
+#define V2_DEFAULT_MAX_INFLIGHT   64u
 
 typedef struct router router_t;
 typedef struct plugin plugin_t;
@@ -87,6 +108,9 @@ struct plugin {
     char *app;
     char *service;
     char **routes;
+    char **route_last_errors;
+    bool *route_foreground;
+    int64_t *route_token_expires_at;
     size_t route_count;
     struct event *hello_deadline;
     bool registered;
@@ -151,6 +175,18 @@ struct upstream {
     char *source;
     cJSON *base_config;
     bool overridden;
+    int protocol_version;
+    bool hub_tls;
+    bool hub_tls_insecure;
+    char *hub_tls_ca_file;
+    char *hub_tls_sni;
+    tls_transport_t *hub_tls_conn;
+    bool v2_authenticated;
+    uint32_t heartbeat_secs;
+    uint16_t max_inflight;
+    uint16_t last_advertised_inflight;
+    int64_t last_rtt_ms;
+    struct event *heartbeat_timer;
     struct event *resolver_event;
     struct event *resolver_timeout;
     int resolver_fd;
@@ -239,14 +275,46 @@ static int plugin_send_json(plugin_t *plugin, cJSON *root) {
     return rc;
 }
 
+static size_t plugin_find_route_index(plugin_t *plugin, const char *route) {
+    if (!plugin || !route) return SIZE_MAX;
+    for (size_t i = 0; i < plugin->route_count; i++) {
+        if (plugin->routes[i] && !strcmp(plugin->routes[i], route)) return i;
+    }
+    return SIZE_MAX;
+}
+
+static void plugin_record_route_error(plugin_t *plugin, const char *route, const char *code) {
+    if (!plugin || !plugin->route_last_errors || !route) return;
+    size_t idx = plugin_find_route_index(plugin, route);
+    if (idx == SIZE_MAX) return;
+    free(plugin->route_last_errors[idx]);
+    plugin->route_last_errors[idx] = NULL;
+    if (code && code[0]) {
+        size_t len = strlen(code);
+        if (len > 64) len = 64;
+        char *copy = malloc(len + 1);
+        if (copy) {
+            memcpy(copy, code, len);
+            copy[len] = '\0';
+            plugin->route_last_errors[idx] = copy;
+        }
+    }
+}
+
 static void free_plugin(plugin_t *plugin) {
     if (!plugin) return;
     if (plugin->hello_deadline) event_free(plugin->hello_deadline);
     if (plugin->bev) bufferevent_free(plugin->bev);
     free(plugin->app);
     free(plugin->service);
-    for (size_t i = 0; i < plugin->route_count; i++) free(plugin->routes[i]);
+    for (size_t i = 0; i < plugin->route_count; i++) {
+        free(plugin->routes[i]);
+        if (plugin->route_last_errors) free(plugin->route_last_errors[i]);
+    }
     free(plugin->routes);
+    free(plugin->route_last_errors);
+    free(plugin->route_foreground);
+    free(plugin->route_token_expires_at);
     free(plugin);
 }
 
@@ -266,6 +334,7 @@ static cJSON *parse_message(const char *text, size_t length);
 static bool text_field(cJSON *item, size_t maximum, bool empty);
 static bool hub_try_next_address(upstream_t *hub);
 static void dispatch_job(upstream_t *hub, cJSON *job_json);
+static bool method_field(cJSON *item);
 
 static void reconnect_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
@@ -288,24 +357,212 @@ static void schedule_hub_reconnect(upstream_t *hub, int seconds) {
 
 enum { HUB_SEND_TOO_LARGE = -2 };
 
+static int64_t now_unix_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
+}
+
+static const char *protocol_name(int version) {
+    return version == ROUTER_PROTO_V2 ? "v2" : "v1";
+}
+
+static bool parse_protocol_value(cJSON *item, int fallback, int *out) {
+    if (!item) { *out = fallback; return true; }
+    if (!cJSON_IsString(item)) return false;
+    if (!strcmp(item->valuestring, "v1")) { *out = ROUTER_PROTO_V1; return true; }
+    if (!strcmp(item->valuestring, "v2")) { *out = ROUTER_PROTO_V2; return true; }
+    return false;
+}
+
+static bool hub_has_transport(const upstream_t *hub) {
+    return hub && (hub->hub_bev != NULL || hub->hub_tls_conn != NULL);
+}
+
+static size_t hub_io_output_len(const upstream_t *hub) {
+    if (!hub) return 0;
+    if (hub->hub_tls_conn) return tls_transport_output_len(hub->hub_tls_conn);
+    if (hub->hub_bev) return evbuffer_get_length(bufferevent_get_output(hub->hub_bev));
+    return 0;
+}
+
+static int hub_io_write(upstream_t *hub, const void *data, size_t len) {
+    if (!hub) return -1;
+    if (hub->hub_tls_conn) return tls_transport_write(hub->hub_tls_conn, data, len);
+    if (hub->hub_bev) return bufferevent_write(hub->hub_bev, data, len);
+    return -1;
+}
+
+static void hub_io_set_timeout(upstream_t *hub, int secs) {
+    if (!hub) return;
+    if (hub->hub_tls_conn) {
+        tls_transport_set_timeout(hub->hub_tls_conn, secs);
+    } else if (hub->hub_bev) {
+        struct timeval tv = { .tv_sec = secs, .tv_usec = 0 };
+        bufferevent_set_timeouts(hub->hub_bev, &tv, &tv);
+    }
+}
+
 static int hub_send_json(upstream_t *hub, cJSON *root) {
-    if (!hub || !hub->hub_connected || !hub->hub_bev || !root ||
-        evbuffer_get_length(bufferevent_get_output(hub->hub_bev)) > MAX_OUTPUT) return -1;
+    if (!hub || !hub->hub_connected || !hub_has_transport(hub) || !root ||
+        hub_io_output_len(hub) > MAX_OUTPUT) return -1;
     char *text = dejavu_json_print(root);
     if (!text) return -1;
-    if (strlen(text) > MAX_LINE) {
+    size_t len = strlen(text);
+    if (len > MAX_LINE) {
         free(text);
         return HUB_SEND_TOO_LARGE;
     }
-    int rc = bufferevent_write(hub->hub_bev, text, strlen(text));
-    if (rc == 0) rc = bufferevent_write(hub->hub_bev, "\n", 1);
+    char *line = malloc(len + 1u);
+    if (!line) {
+        free(text);
+        return -1;
+    }
+    memcpy(line, text, len);
+    line[len] = '\n';
     free(text);
+    int rc = hub_io_write(hub, line, len + 1u);
+    free(line);
     return rc;
+}
+
+static int hub_send_v2_frame(upstream_t *hub, uint8_t frame_type, cJSON *root) {
+    if (!hub || !hub->hub_connected || !hub_has_transport(hub) || !root ||
+        hub_io_output_len(hub) > MAX_OUTPUT) return -1;
+    char *text = dejavu_json_print(root);
+    if (!text) return -1;
+    size_t payload_len = strlen(text);
+    if (payload_len > MAX_LINE) {
+        free(text);
+        return HUB_SEND_TOO_LARGE;
+    }
+    unsigned char *frame = malloc(V2_HEADER_LEN + payload_len);
+    if (!frame) {
+        free(text);
+        return -1;
+    }
+    uint32_t body_len_be = htonl((uint32_t)(2u + payload_len));
+    memcpy(frame, &body_len_be, 4);
+    frame[4] = V2_VERSION_BYTE;
+    frame[5] = frame_type;
+    memcpy(frame + V2_HEADER_LEN, text, payload_len);
+    free(text);
+    int rc = hub_io_write(hub, frame, V2_HEADER_LEN + payload_len);
+    free(frame);
+    return rc;
+}
+
+static cJSON *v2_build_route_telemetry(router_t *router, plugin_t *plugin, size_t idx) {
+    const char *route = plugin->routes[idx];
+    uint32_t depth = 0;
+    for (job_t *j = router->jobs; j; j = j->next) {
+        if (j->route && !strcmp(j->route, route)) depth++;
+    }
+    if (depth > UINT16_MAX) depth = UINT16_MAX;
+    cJSON *item = cJSON_CreateObject();
+    if (!item) return NULL;
+    cJSON_AddStringToObject(item, "route", route);
+    cJSON_AddBoolToObject(item, "appAlive", !plugin->closing);
+    cJSON_AddBoolToObject(item, "foreground",
+                          plugin->route_foreground ? plugin->route_foreground[idx] : false);
+    cJSON_AddNumberToObject(item, "queueDepth", (double)depth);
+    if (plugin->route_token_expires_at && plugin->route_token_expires_at[idx] > 0) {
+        cJSON_AddNumberToObject(item, "cachedTokenExpiresAt",
+                                (double)plugin->route_token_expires_at[idx]);
+    } else {
+        cJSON_AddNullToObject(item, "cachedTokenExpiresAt");
+    }
+    if (plugin->route_last_errors && plugin->route_last_errors[idx]) {
+        cJSON_AddStringToObject(item, "lastError", plugin->route_last_errors[idx]);
+    } else {
+        cJSON_AddNullToObject(item, "lastError");
+    }
+    return item;
+}
+
+static cJSON *v2_collect_hub_routes(upstream_t *hub) {
+    router_t *router = hub->router;
+    cJSON *routes = cJSON_CreateArray();
+    if (!routes) return NULL;
+    for (plugin_t *p = router->plugins; p; p = p->next) {
+        if (!p->registered || p->closing) continue;
+        for (size_t i = 0; i < p->route_count; i++) {
+            if (route_upstream(router, p->routes[i], p->service) != hub) continue;
+            cJSON *telem = v2_build_route_telemetry(router, p, i);
+            if (telem) cJSON_AddItemToArray(routes, telem);
+        }
+    }
+    return routes;
+}
+
+static void v2_send_heartbeat(upstream_t *hub) {
+    if (!hub || hub->protocol_version != ROUTER_PROTO_V2 || !hub->hub_connected || !hub->v2_authenticated) return;
+    cJSON *hb = cJSON_CreateObject();
+    cJSON *routes = v2_collect_hub_routes(hub);
+    if (hb && routes &&
+        cJSON_AddNumberToObject(hb, "sentAtMs", (double)now_unix_ms()) &&
+        cJSON_AddItemToObject(hb, "routes", routes)) {
+        routes = NULL;
+        hub_send_v2_frame(hub, V2_FRAME_HEARTBEAT, hb);
+    }
+    cJSON_Delete(routes);
+    cJSON_Delete(hb);
+}
+
+static void v2_heartbeat_cb(evutil_socket_t fd, short events, void *arg) {
+    (void)fd;
+    (void)events;
+    v2_send_heartbeat((upstream_t *)arg);
+}
+
+static void v2_maybe_emit_flow_control(upstream_t *hub) {
+    if (!hub || hub->protocol_version != ROUTER_PROTO_V2 ||
+        !hub->hub_connected || !hub->v2_authenticated || hub->max_inflight == 0) return;
+    size_t active = 0;
+    for (job_t *j = hub->router->jobs; j; j = j->next) {
+        if (j->hub == hub) active++;
+    }
+    uint16_t target = hub->last_advertised_inflight ? hub->last_advertised_inflight : hub->max_inflight;
+    if (active * 4 >= (size_t)hub->max_inflight * 3) {
+        target = (uint16_t)(hub->max_inflight / 2);
+        if (target < 1) target = 1;
+    } else if (active * 4 <= (size_t)hub->max_inflight) {
+        target = hub->max_inflight;
+    }
+    if (target == hub->last_advertised_inflight) return;
+    hub->last_advertised_inflight = target;
+    cJSON *fc = cJSON_CreateObject();
+    if (fc && cJSON_AddNumberToObject(fc, "maxInflight", (double)target)) {
+        hub_send_v2_frame(hub, V2_FRAME_FLOW_CONTROL, fc);
+    }
+    cJSON_Delete(fc);
 }
 
 static void hub_route_event(upstream_t *hub, const char *action, const char *route,
                             const char *app) {
     if (!hub || !hub->hub_connected || !route) return;
+    if (hub->protocol_version == ROUTER_PROTO_V2) {
+        if (!hub->v2_authenticated) return;
+        cJSON *delta = cJSON_CreateObject();
+        if (!delta) return;
+        cJSON *upserted = cJSON_AddArrayToObject(delta, "upserted");
+        cJSON *removed = cJSON_AddArrayToObject(delta, "removed");
+        if (upserted && removed) {
+            if (!strcmp(action, "register")) {
+                plugin_t *p = find_plugin(hub->router, route);
+                size_t idx = plugin_find_route_index(p, route);
+                if (p && idx != SIZE_MAX) {
+                    cJSON *telem = v2_build_route_telemetry(hub->router, p, idx);
+                    if (telem) cJSON_AddItemToArray(upserted, telem);
+                }
+            } else if (!strcmp(action, "unregister")) {
+                cJSON_AddItemToArray(removed, cJSON_CreateString(route));
+            }
+            hub_send_v2_frame(hub, V2_FRAME_ROUTE_DELTA, delta);
+        }
+        cJSON_Delete(delta);
+        return;
+    }
     cJSON *root = cJSON_CreateObject();
     if (!root) return;
     cJSON_AddStringToObject(root, "type", "route");
@@ -317,8 +574,72 @@ static void hub_route_event(upstream_t *hub, const char *action, const char *rou
     cJSON_Delete(root);
 }
 
+static bool parse_u64_id(const char *id, uint64_t *out) {
+    if (!id || !id[0]) return false;
+    for (const char *p = id; *p; ++p) {
+        if (*p < '0' || *p > '9') return false;
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long val = strtoull(id, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    *out = (uint64_t)val;
+    return true;
+}
+
+static void send_hub_response_v2(upstream_t *hub, const char *job_id, bool ok,
+                                 cJSON *result_or_error) {
+    uint64_t req_id = 0;
+    if (!parse_u64_id(job_id, &req_id)) return;
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+    cJSON_AddNumberToObject(root, "reqId", (double)req_id);
+    cJSON_AddBoolToObject(root, "ok", ok);
+    if (ok) {
+        if (result_or_error) cJSON_AddItemReferenceToObject(root, "result", result_or_error);
+        else cJSON_AddObjectToObject(root, "result");
+        cJSON_AddNullToObject(root, "errorCode");
+        cJSON_AddBoolToObject(root, "retryable", false);
+        cJSON_AddNullToObject(root, "details");
+    } else {
+        cJSON_AddNullToObject(root, "result");
+        cJSON *code_item = result_or_error ? cJSON_GetObjectItemCaseSensitive(result_or_error, "code") : NULL;
+        cJSON *retry_item = result_or_error ? cJSON_GetObjectItemCaseSensitive(result_or_error, "retryable") : NULL;
+        const char *err_code = cJSON_IsString(code_item) ? code_item->valuestring : "router_error";
+        bool retryable = retry_item ? cJSON_IsTrue(retry_item) : true;
+        cJSON_AddStringToObject(root, "errorCode", err_code);
+        cJSON_AddBoolToObject(root, "retryable", retryable);
+        if (result_or_error) cJSON_AddItemReferenceToObject(root, "details", result_or_error);
+        else cJSON_AddNullToObject(root, "details");
+    }
+    if (hub_send_v2_frame(hub, V2_FRAME_RPC_RESPONSE, root) == HUB_SEND_TOO_LARGE) {
+        cJSON *fallback = cJSON_CreateObject();
+        cJSON *details = fallback ? cJSON_CreateObject() : NULL;
+        if (fallback && details &&
+            cJSON_AddNumberToObject(fallback, "reqId", (double)req_id) &&
+            cJSON_AddBoolToObject(fallback, "ok", false) &&
+            cJSON_AddNullToObject(fallback, "result") &&
+            cJSON_AddStringToObject(fallback, "errorCode", "response_too_large") &&
+            cJSON_AddBoolToObject(fallback, "retryable", false) &&
+            cJSON_AddStringToObject(details, "code", "response_too_large") &&
+            cJSON_AddStringToObject(details, "message", "response exceeds Hub frame limit") &&
+            cJSON_AddBoolToObject(details, "retryable", false) &&
+            cJSON_AddItemToObject(fallback, "details", details)) {
+            details = NULL;
+            hub_send_v2_frame(hub, V2_FRAME_RPC_RESPONSE, fallback);
+        }
+        cJSON_Delete(details);
+        cJSON_Delete(fallback);
+    }
+    cJSON_Delete(root);
+}
+
 static void send_hub_response(upstream_t *hub, const char *job_id, const char *route,
                               bool ok, cJSON *result_or_error) {
+    if (hub && hub->protocol_version == ROUTER_PROTO_V2) {
+        send_hub_response_v2(hub, job_id, ok, result_or_error);
+        return;
+    }
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "response");
     cJSON_AddStringToObject(root, "id", job_id ? job_id : "");
@@ -405,6 +726,7 @@ static void child_close_router_fds(router_t *router, int keep) {
     if (router->control_listener) child_close_fd(evconnlistener_get_fd(router->control_listener), keep);
     for (upstream_t *hub = router->upstreams; hub; hub = hub->next) {
         if (hub->hub_bev) child_close_fd(bufferevent_getfd(hub->hub_bev), keep);
+        if (hub->hub_tls_conn) child_close_fd(tls_transport_get_fd(hub->hub_tls_conn), keep);
         child_close_fd(hub->resolver_fd, keep);
     }
     for (plugin_t *p = router->plugins; p; p = p->next) child_close_fd(bufferevent_getfd(p->bev), keep);
@@ -689,41 +1011,53 @@ static void job_timeout_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
     (void)events;
     job_t *job = arg;
+    upstream_t *hub = job->hub;
+    plugin_record_route_error(job->plugin, job->route, "plugin_timeout");
     job_cancel_plugin(job);
-    send_hub_error(job->hub, job->id, job->route, "plugin_timeout", "plugin response timed out");
+    send_hub_error(hub, job->id, job->route, "plugin_timeout", "plugin response timed out");
     job_remove(job->router, job);
     job_free(job);
+    v2_maybe_emit_flow_control(hub);
 }
 
 static void job_complete(router_t *router, job_t *job, cJSON *response) {
+    upstream_t *hub = job->hub;
     cJSON *response_route = cJSON_GetObjectItemCaseSensitive(response, "route");
     if (!cJSON_IsString(response_route) || strcmp(response_route->valuestring, job->route)) {
-        send_hub_error(job->hub, job->id, job->route, "route_mismatch",
+        plugin_record_route_error(job->plugin, job->route, "route_mismatch");
+        send_hub_error(hub, job->id, job->route, "route_mismatch",
                        "plugin response route does not match request route");
         job_remove(router, job);
         job_free(job);
+        v2_maybe_emit_flow_control(hub);
         return;
     }
     cJSON *ok = cJSON_GetObjectItemCaseSensitive(response, "ok");
     bool success = cJSON_IsTrue(ok);
     if (success) {
-        send_hub_response(job->hub, job->id, job->route, true,
+        plugin_record_route_error(job->plugin, job->route, NULL);
+        send_hub_response(hub, job->id, job->route, true,
                           cJSON_GetObjectItemCaseSensitive(response, "result"));
     } else {
         cJSON *error = cJSON_GetObjectItemCaseSensitive(response, "error");
         if (!error) {
+            plugin_record_route_error(job->plugin, job->route, "plugin_error");
             error = cJSON_CreateObject();
             cJSON_AddStringToObject(error, "code", "plugin_error");
             cJSON_AddStringToObject(error, "message", "plugin returned an error");
             cJSON_AddBoolToObject(error, "retryable", 1);
-            send_hub_response(job->hub, job->id, job->route, false, error);
+            send_hub_response(hub, job->id, job->route, false, error);
             cJSON_Delete(error);
         } else {
-            send_hub_response(job->hub, job->id, job->route, false, error);
+            cJSON *code_item = cJSON_GetObjectItemCaseSensitive(error, "code");
+            plugin_record_route_error(job->plugin, job->route,
+                                      cJSON_IsString(code_item) ? code_item->valuestring : "plugin_error");
+            send_hub_response(hub, job->id, job->route, false, error);
         }
     }
     job_remove(router, job);
     job_free(job);
+    v2_maybe_emit_flow_control(hub);
 }
 
 static job_t *find_hub_job(upstream_t *hub, const char *id) {
@@ -757,9 +1091,19 @@ static void hub_disconnect(upstream_t *hub) {
     router_t *router = hub->router;
     resolver_cancel(hub);
     hub->hub_connected = false;
+    hub->v2_authenticated = false;
+    hub->last_advertised_inflight = 0;
+    if (hub->heartbeat_timer) {
+        event_free(hub->heartbeat_timer);
+        hub->heartbeat_timer = NULL;
+    }
     if (hub->hub_bev) {
         bufferevent_free(hub->hub_bev);
         hub->hub_bev = NULL;
+    }
+    if (hub->hub_tls_conn) {
+        tls_transport_free(hub->hub_tls_conn);
+        hub->hub_tls_conn = NULL;
     }
     for (job_t *job = router->jobs; job; ) {
         job_t *next = job->next;
@@ -773,53 +1117,301 @@ static void hub_disconnect(upstream_t *hub) {
     }
 }
 
-static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
-    (void)bev;
-    upstream_t *hub = arg;
+static void hub_on_connected(upstream_t *hub) {
     router_t *router = hub->router;
-    if (events & BEV_EVENT_CONNECTED) {
-        struct timeval timeout = {60, 0};
-        bufferevent_set_timeouts(bev, &timeout, &timeout);
-        hub->next_address = hub->resolution.count;
-        hub->hub_connected = true;
-        hub->reconnect_seconds = 1;
+    hub->next_address = hub->resolution.count;
+    hub->hub_connected = true;
+    hub->reconnect_seconds = 1;
+    if (hub->protocol_version == ROUTER_PROTO_V2) {
+        hub_io_set_timeout(hub, 10);
+        hub->v2_authenticated = false;
         cJSON *hello = cJSON_CreateObject();
-        cJSON_AddStringToObject(hello, "type", "hello");
-        cJSON_AddStringToObject(hello, "device_id", hub->device_id);
-        cJSON_AddNumberToObject(hello, "version", 1);
-        if (hub->device_token && *hub->device_token) {
-            cJSON_AddStringToObject(hello, "token", hub->device_token);
+        cJSON *caps = hello ? cJSON_AddArrayToObject(hello, "capabilities") : NULL;
+        cJSON *routes = v2_collect_hub_routes(hub);
+        if (hello && caps && routes &&
+            cJSON_AddStringToObject(hello, "deviceId", hub->device_id) &&
+            cJSON_AddStringToObject(hello, "token", hub->device_token ? hub->device_token : "") &&
+            cJSON_AddItemToArray(caps, cJSON_CreateString("router.plugin")) &&
+            cJSON_AddItemToArray(caps, cJSON_CreateString("router.v2")) &&
+            cJSON_AddItemToArray(caps, cJSON_CreateString("router.cancel")) &&
+            cJSON_AddItemToArray(caps, cJSON_CreateString("router.telemetry")) &&
+            cJSON_AddItemToObject(hello, "routes", routes)) {
+            routes = NULL;
+            hub_send_v2_frame(hub, V2_FRAME_HELLO, hello);
         }
-        cJSON *caps = cJSON_AddArrayToObject(hello, "capabilities");
-        cJSON_AddItemToArray(caps, cJSON_CreateString("router.plugin"));
-        hub_send_json(hub, hello);
+        cJSON_Delete(routes);
         cJSON_Delete(hello);
-        logmsg("INFO", "hub connected %s:%d", hub->hub_host, hub->hub_port);
-        /* Let the server learn which local routes are currently online. */
-        for (plugin_t *p = router->plugins; p; p = p->next) {
-            if (!p->registered || p->closing) continue;
-            for (size_t i = 0; i < p->route_count; i++) {
-                if (route_upstream(router, p->routes[i], p->service) == hub) hub_route_event(hub, "register", p->routes[i], p->app);
-            }
-        }
+        logmsg("INFO", "hub connected (v2%s%s) %s:%d",
+               hub->hub_tls_conn ? " " : "",
+               hub->hub_tls_conn ? tls_transport_version_str(hub->hub_tls_conn) : "",
+               hub->hub_host, hub->hub_port);
         return;
     }
-    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
-        logmsg("WARN", "hub disconnected; reconnecting");
-        hub_disconnect(hub);
-        if (!hub_try_next_address(hub)) {
-            schedule_hub_reconnect(hub, hub->reconnect_seconds);
-            if (hub->reconnect_seconds < 30) hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
+    hub_io_set_timeout(hub, 60);
+    cJSON *hello = cJSON_CreateObject();
+    cJSON_AddStringToObject(hello, "type", "hello");
+    cJSON_AddStringToObject(hello, "device_id", hub->device_id);
+    cJSON_AddNumberToObject(hello, "version", 1);
+    if (hub->device_token && *hub->device_token) {
+        cJSON_AddStringToObject(hello, "token", hub->device_token);
+    }
+    cJSON *caps = cJSON_AddArrayToObject(hello, "capabilities");
+    cJSON_AddItemToArray(caps, cJSON_CreateString("router.plugin"));
+    hub_send_json(hub, hello);
+    cJSON_Delete(hello);
+    logmsg("INFO", "hub connected %s:%d", hub->hub_host, hub->hub_port);
+    /* Let the server learn which local routes are currently online. */
+    for (plugin_t *p = router->plugins; p; p = p->next) {
+        if (!p->registered || p->closing) continue;
+        for (size_t i = 0; i < p->route_count; i++) {
+            if (route_upstream(router, p->routes[i], p->service) == hub) hub_route_event(hub, "register", p->routes[i], p->app);
         }
     }
 }
 
-static void dispatch_job(upstream_t *hub, cJSON *job_json);
+static void hub_on_disconnect_event(upstream_t *hub, const char *reason) {
+    if (reason && reason[0]) logmsg("WARN", "hub disconnected (%s); reconnecting", reason);
+    else logmsg("WARN", "hub disconnected; reconnecting");
+    hub_disconnect(hub);
+    if (!hub_try_next_address(hub)) {
+        schedule_hub_reconnect(hub, hub->reconnect_seconds);
+        if (hub->reconnect_seconds < 30) hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
+    }
+}
 
-static void hub_read_cb(struct bufferevent *bev, void *arg) {
+static void hub_event_cb(struct bufferevent *bev, short events, void *arg) {
+    (void)bev;
     upstream_t *hub = arg;
+    if (events & BEV_EVENT_CONNECTED) {
+        hub_on_connected(hub);
+        return;
+    }
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
+        hub_on_disconnect_event(hub, NULL);
+    }
+}
+
+static void dispatch_job(upstream_t *hub, cJSON *job_json);
+static bool method_field(cJSON *item);
+
+static bool v2_parse_req_id(cJSON *item, uint64_t *out_num, char out_str[32]) {
+    if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
+        item->valuedouble < 0.0 || item->valuedouble > 9007199254740991.0 ||
+        floor(item->valuedouble) != item->valuedouble) {
+        return false;
+    }
+    uint64_t id = (uint64_t)item->valuedouble;
+    if (out_num) *out_num = id;
+    if (out_str) snprintf(out_str, 32, "%llu", (unsigned long long)id);
+    return true;
+}
+
+static bool hub_handle_v2_frame(upstream_t *hub, uint8_t frame_type, cJSON *root) {
     router_t *router = hub->router;
-    struct evbuffer *input = bufferevent_get_input(bev);
+    if (frame_type == V2_FRAME_HELLO_ACK) {
+        cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+        if (!cJSON_IsTrue(ok)) {
+            cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+            logmsg("WARN", "hub v2 hello rejected: %s",
+                   cJSON_IsString(err) ? err->valuestring : "unauthorized");
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, hub->reconnect_seconds);
+            if (hub->reconnect_seconds < 30) {
+                hub->reconnect_seconds = hub->reconnect_seconds < 15 ? hub->reconnect_seconds * 2 : 30;
+            }
+            return false;
+        }
+        cJSON *hb_secs = cJSON_GetObjectItemCaseSensitive(root, "heartbeatIntervalSecs");
+        cJSON *max_inf = cJSON_GetObjectItemCaseSensitive(root, "maxInflight");
+        uint32_t interval = V2_DEFAULT_HEARTBEAT_SECS;
+        if (cJSON_IsNumber(hb_secs) && isfinite(hb_secs->valuedouble) && hb_secs->valuedouble >= 1.0) {
+            double v = hb_secs->valuedouble;
+            if (v < (double)V2_MIN_HEARTBEAT_SECS) v = (double)V2_MIN_HEARTBEAT_SECS;
+            if (v > (double)V2_MAX_HEARTBEAT_SECS) v = (double)V2_MAX_HEARTBEAT_SECS;
+            interval = (uint32_t)v;
+        }
+        uint16_t max_inflight = V2_DEFAULT_MAX_INFLIGHT;
+        if (cJSON_IsNumber(max_inf) && isfinite(max_inf->valuedouble) && max_inf->valuedouble >= 1.0) {
+            double v = max_inf->valuedouble;
+            if (v > (double)MAX_JOBS) v = (double)MAX_JOBS;
+            max_inflight = (uint16_t)v;
+        }
+        hub->v2_authenticated = true;
+        hub->heartbeat_secs = interval;
+        hub->max_inflight = max_inflight;
+        hub->last_advertised_inflight = max_inflight;
+        uint32_t read_timeout_secs = interval * 3u;
+        if (read_timeout_secs < 30u) read_timeout_secs = 30u;
+        hub_io_set_timeout(hub, (int)read_timeout_secs);
+        if (hub->heartbeat_timer) {
+            event_free(hub->heartbeat_timer);
+            hub->heartbeat_timer = NULL;
+        }
+        hub->heartbeat_timer = event_new(router->base, -1, EV_PERSIST, v2_heartbeat_cb, hub);
+        if (hub->heartbeat_timer) {
+            struct timeval hb_tv = { (time_t)interval, 0 };
+            event_add(hub->heartbeat_timer, &hb_tv);
+        }
+        logmsg("INFO", "hub v2 authenticated device=%s hb=%us max_inflight=%u",
+               hub->device_id, (unsigned)interval, (unsigned)max_inflight);
+        /* Synchronize any routes that registered between TCP connect and HelloAck. */
+        v2_send_heartbeat(hub);
+        return true;
+    }
+
+    if (!hub->v2_authenticated) {
+        logmsg("WARN", "hub v2 frame 0x%02x before HelloAck; reconnecting", (unsigned)frame_type);
+        hub_disconnect(hub);
+        schedule_hub_reconnect(hub, 1);
+        return false;
+    }
+
+    if (frame_type == V2_FRAME_HEARTBEAT_ACK) {
+        cJSON *echo = cJSON_GetObjectItemCaseSensitive(root, "echoSentAtMs");
+        if (cJSON_IsNumber(echo) && isfinite(echo->valuedouble)) {
+            int64_t rtt = now_unix_ms() - (int64_t)echo->valuedouble;
+            hub->last_rtt_ms = rtt >= 0 ? rtt : 0;
+        }
+        return true;
+    }
+
+    if (frame_type == V2_FRAME_RPC_REQUEST) {
+        char id_str[32];
+        cJSON *req_id = cJSON_GetObjectItemCaseSensitive(root, "reqId");
+        cJSON *route = cJSON_GetObjectItemCaseSensitive(root, "route");
+        cJSON *method = cJSON_GetObjectItemCaseSensitive(root, "method");
+        cJSON *deadline = cJSON_GetObjectItemCaseSensitive(root, "deadlineMs");
+        cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+        if (!v2_parse_req_id(req_id, NULL, id_str)) return true;
+        if (!text_field(route, 128, false) || !method_field(method)) {
+            send_hub_error(hub, id_str, cJSON_IsString(route) ? route->valuestring : "",
+                           "invalid_job", "job needs valid reqId, route and method");
+            return true;
+        }
+        if (!strcmp(method->valuestring, "wake")) {
+            cJSON *wake_req = cJSON_CreateObject();
+            if (!wake_req) {
+                send_hub_error(hub, id_str, route->valuestring, "router_oom", "out of memory");
+                return true;
+            }
+            cJSON_AddStringToObject(wake_req, "id", id_str);
+            cJSON_AddStringToObject(wake_req, "route", route->valuestring);
+            if (cJSON_IsObject(params)) {
+                cJSON *fg = cJSON_GetObjectItemCaseSensitive(params, "foreground");
+                if (fg) cJSON_AddItemReferenceToObject(wake_req, "foreground", fg);
+                cJSON *t_ms = cJSON_GetObjectItemCaseSensitive(params, "timeout_ms");
+                if (!t_ms) t_ms = cJSON_GetObjectItemCaseSensitive(params, "timeoutMs");
+                if (t_ms) cJSON_AddItemReferenceToObject(wake_req, "timeout_ms", t_ms);
+                else if (deadline) cJSON_AddItemReferenceToObject(wake_req, "timeout_ms", deadline);
+            } else if (deadline) {
+                cJSON_AddItemReferenceToObject(wake_req, "timeout_ms", deadline);
+            }
+            handle_wake(hub, wake_req);
+            cJSON_Delete(wake_req);
+            return true;
+        }
+        cJSON *job_req = cJSON_CreateObject();
+        if (!job_req) {
+            send_hub_error(hub, id_str, route->valuestring, "router_oom", "out of memory");
+            return true;
+        }
+        cJSON_AddStringToObject(job_req, "id", id_str);
+        cJSON_AddItemReferenceToObject(job_req, "route", route);
+        cJSON_AddItemReferenceToObject(job_req, "method", method);
+        if (deadline) cJSON_AddItemReferenceToObject(job_req, "deadline_ms", deadline);
+        if (params) cJSON_AddItemReferenceToObject(job_req, "params", params);
+        dispatch_job(hub, job_req);
+        cJSON_Delete(job_req);
+        v2_maybe_emit_flow_control(hub);
+        return true;
+    }
+
+    if (frame_type == V2_FRAME_RPC_CANCEL) {
+        char id_str[32];
+        cJSON *req_id = cJSON_GetObjectItemCaseSensitive(root, "reqId");
+        if (!v2_parse_req_id(req_id, NULL, id_str)) return true;
+        job_t *job = find_hub_job(hub, id_str);
+        if (job) {
+            job_cancel_plugin(job);
+            job_remove(router, job);
+            job_free(job);
+            v2_maybe_emit_flow_control(hub);
+        }
+        for (wake_t *wake = router->wakes; wake; wake = wake->next) {
+            if (wake->hub == hub && !strcmp(wake->id, id_str)) {
+                wake_drop(wake);
+                break;
+            }
+        }
+        return true;
+    }
+
+    return true;
+}
+
+static void hub_read_v2(struct evbuffer *input, upstream_t *hub) {
+    if (evbuffer_get_length(input) > MAX_LINE * 2) {
+        logmsg("WARN", "hub v2 input exceeds limit; reconnecting");
+        hub_disconnect(hub);
+        schedule_hub_reconnect(hub, 1);
+        return;
+    }
+    while (evbuffer_get_length(input) >= 4) {
+        unsigned char len_bytes[4];
+        if (evbuffer_copyout(input, len_bytes, 4) != 4) break;
+        uint32_t body_len_be = 0;
+        memcpy(&body_len_be, len_bytes, 4);
+        uint32_t body_len = ntohl(body_len_be);
+        if (body_len < 2u || body_len - 2u > MAX_LINE) {
+            logmsg("WARN", "hub v2 invalid frame length %u; reconnecting", (unsigned)body_len);
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, 1);
+            return;
+        }
+        if (evbuffer_get_length(input) < 4u + (size_t)body_len) break;
+        unsigned char header[V2_HEADER_LEN];
+        if (evbuffer_remove(input, header, sizeof(header)) != (int)sizeof(header)) break;
+        if (header[4] != V2_VERSION_BYTE) {
+            logmsg("WARN", "hub v2 unsupported protocol byte 0x%02x; reconnecting", (unsigned)header[4]);
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, 1);
+            return;
+        }
+        uint8_t frame_type = header[5];
+        size_t payload_len = (size_t)(body_len - 2u);
+        char *payload = malloc(payload_len + 1u);
+        if (!payload) {
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, 2);
+            return;
+        }
+        if (payload_len > 0 && evbuffer_remove(input, payload, payload_len) != (int)payload_len) {
+            free(payload);
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, 1);
+            return;
+        }
+        payload[payload_len] = '\0';
+        cJSON *root = parse_message(payload, payload_len);
+        free(payload);
+        if (!root) {
+            logmsg("WARN", "hub v2 invalid JSON payload; reconnecting");
+            hub_disconnect(hub);
+            schedule_hub_reconnect(hub, 1);
+            return;
+        }
+        bool keep_open = hub_handle_v2_frame(hub, frame_type, root);
+        cJSON_Delete(root);
+        if (!keep_open || !hub_has_transport(hub)) return;
+    }
+}
+
+static void hub_consume_input(upstream_t *hub, struct evbuffer *input) {
+    if (hub->protocol_version == ROUTER_PROTO_V2) {
+        hub_read_v2(input, hub);
+        return;
+    }
+    router_t *router = hub->router;
     if (evbuffer_get_length(input) > MAX_LINE * 2) {
         logmsg("WARN", "hub input exceeds limit; reconnecting");
         hub_disconnect(hub);
@@ -866,6 +1458,22 @@ static void hub_read_cb(struct bufferevent *bev, void *arg) {
     }
 }
 
+static void hub_read_cb(struct bufferevent *bev, void *arg) {
+    hub_consume_input((upstream_t *)arg, bufferevent_get_input(bev));
+}
+
+static void hub_tls_connected_cb(void *ctx) {
+    hub_on_connected((upstream_t *)ctx);
+}
+
+static void hub_tls_read_cb(struct evbuffer *input, void *ctx) {
+    hub_consume_input((upstream_t *)ctx, input);
+}
+
+static void hub_tls_error_cb(const char *reason, void *ctx) {
+    hub_on_disconnect_event((upstream_t *)ctx, reason);
+}
+
 static void resolver_cancel(upstream_t *hub) {
     if (hub->resolver_event) { event_free(hub->resolver_event); hub->resolver_event = NULL; }
     if (hub->resolver_timeout) { event_free(hub->resolver_timeout); hub->resolver_timeout = NULL; }
@@ -879,6 +1487,24 @@ static void resolver_cancel(upstream_t *hub) {
 
 static void hub_connect_address(upstream_t *hub, struct sockaddr *address, socklen_t length) {
     router_t *router = hub->router;
+    if (hub->hub_tls) {
+        tls_transport_config_t tls_cfg = {
+            .host = hub->hub_host,
+            .sni = hub->hub_tls_sni,
+            .ca_file = hub->hub_tls_ca_file,
+            .insecure_skip_verify = hub->hub_tls_insecure,
+            .connect_timeout_secs = 10,
+            .on_connected = hub_tls_connected_cb,
+            .on_read = hub_tls_read_cb,
+            .on_error = hub_tls_error_cb,
+            .ctx = hub,
+        };
+        hub->hub_tls_conn = tls_transport_connect(router->base, address, length, &tls_cfg);
+        if (!hub->hub_tls_conn) {
+            if (!hub_try_next_address(hub)) schedule_hub_reconnect(hub, hub->reconnect_seconds);
+        }
+        return;
+    }
     struct bufferevent *bev = bufferevent_socket_new(router->base, -1, BEV_OPT_CLOSE_ON_FREE);
     if (!bev) { schedule_hub_reconnect(hub, 2); return; }
     bufferevent_setcb(bev, hub_read_cb, NULL, hub_event_cb, hub);
@@ -940,7 +1566,7 @@ static void resolver_timeout_cb(evutil_socket_t fd, short events, void *arg) {
 
 static void hub_connect(upstream_t *hub) {
     router_t *router = hub->router;
-    if (router->stopping || hub->hub_bev || hub->resolver_event || !hub->hub_host[0]) return;
+    if (router->stopping || hub_has_transport(hub) || hub->resolver_event || !hub->hub_host[0]) return;
     if (hub->reconnect_timer) {
         event_free(hub->reconnect_timer);
         hub->reconnect_timer = NULL;
@@ -1196,9 +1822,17 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
         plugin->app = strdup(app->valuestring);
         plugin->service = strdup(service ? service->valuestring : "");
         plugin->routes = calloc(count, sizeof(char *));
-        if (!plugin->app || !plugin->service || !plugin->routes) {
+        plugin->route_last_errors = calloc(count, sizeof(char *));
+        plugin->route_foreground = calloc(count, sizeof(bool));
+        plugin->route_token_expires_at = calloc(count, sizeof(int64_t));
+        if (!plugin->app || !plugin->service || !plugin->routes ||
+            !plugin->route_last_errors || !plugin->route_foreground || !plugin->route_token_expires_at) {
             free(plugin->app); plugin->app = NULL;
+            free(plugin->service); plugin->service = NULL;
             free(plugin->routes); plugin->routes = NULL;
+            free(plugin->route_last_errors); plugin->route_last_errors = NULL;
+            free(plugin->route_foreground); plugin->route_foreground = NULL;
+            free(plugin->route_token_expires_at); plugin->route_token_expires_at = NULL;
             plugin_reject_hello(plugin, "router_oom", "cannot allocate route registration");
             cJSON_Delete(root); return;
         }
@@ -1207,7 +1841,11 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
             if (!route) {
                 for (size_t j = 0; j < plugin->route_count; j++) free(plugin->routes[j]);
                 free(plugin->routes); plugin->routes = NULL; plugin->route_count = 0;
+                free(plugin->route_last_errors); plugin->route_last_errors = NULL;
+                free(plugin->route_foreground); plugin->route_foreground = NULL;
+                free(plugin->route_token_expires_at); plugin->route_token_expires_at = NULL;
                 free(plugin->app); plugin->app = NULL;
+                free(plugin->service); plugin->service = NULL;
                 plugin_reject_hello(plugin, "router_oom", "cannot allocate route registration");
                 cJSON_Delete(root); return;
             }
@@ -1236,6 +1874,26 @@ static void plugin_handle_message(plugin_t *plugin, const char *line, size_t len
         if (!cJSON_IsString(id)) { cJSON_Delete(root); return; }
         job_t *job = find_wire_job(plugin->router, id->valuestring);
         if (job && job->plugin == plugin) job_complete(plugin->router, job, root);
+    } else if (!strcmp(type->valuestring, "telemetry")) {
+        cJSON *route = cJSON_GetObjectItemCaseSensitive(root, "route");
+        size_t idx = cJSON_IsString(route) ? plugin_find_route_index(plugin, route->valuestring) : SIZE_MAX;
+        if (idx != SIZE_MAX) {
+            cJSON *fg = cJSON_GetObjectItemCaseSensitive(root, "foreground");
+            if (cJSON_IsBool(fg) && plugin->route_foreground)
+                plugin->route_foreground[idx] = cJSON_IsTrue(fg);
+            cJSON *exp = cJSON_GetObjectItemCaseSensitive(root, "cached_token_expires_at");
+            if (!exp) exp = cJSON_GetObjectItemCaseSensitive(root, "cachedTokenExpiresAt");
+            if (cJSON_IsNumber(exp) && isfinite(exp->valuedouble) && exp->valuedouble >= 0 && plugin->route_token_expires_at)
+                plugin->route_token_expires_at[idx] = (int64_t)exp->valuedouble;
+            cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "last_error");
+            if (!err) err = cJSON_GetObjectItemCaseSensitive(root, "lastError");
+            if (cJSON_IsString(err)) plugin_record_route_error(plugin, route->valuestring, err->valuestring);
+            else if (cJSON_IsNull(err)) plugin_record_route_error(plugin, route->valuestring, NULL);
+            upstream_t *target_hub = route_upstream(plugin->router, plugin->routes[idx], plugin->service);
+            if (target_hub && target_hub->protocol_version == ROUTER_PROTO_V2) {
+                hub_route_event(target_hub, "register", plugin->routes[idx], plugin->app);
+            }
+        }
     } else if (!strcmp(type->valuestring, "ping")) {
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "pong");
@@ -1332,11 +1990,19 @@ static void listener_cb(struct evconnlistener *listener, evutil_socket_t fd,
 /* Config and main                                                           */
 
 typedef struct {
+    bool enabled;
+    bool insecure;
+    const char *ca_file;
+    const char *sni;
+} tls_opts_t;
+
+typedef struct {
     char *hub_host, *device_id, *device_token, *listen_host;
+    char *hub_tls_ca_file, *hub_tls_sni;
     char *control_socket, *plugin_socket, *plugins_dir;
     cJSON *upstream_overrides;
-    bool listen_tcp;
-    int hub_port, listen_port;
+    bool listen_tcp, hub_tls, hub_tls_insecure;
+    int hub_port, listen_port, hub_protocol;
 } config_t;
 
 static bool text_field(cJSON *item, size_t maximum, bool empty) {
@@ -1444,8 +2110,14 @@ static char *state_path(router_t *router, const char *name) {
 
 static void config_free(config_t *cfg) {
     free(cfg->hub_host); free(cfg->device_id); free(cfg->device_token); free(cfg->listen_host);
+    free(cfg->hub_tls_ca_file); free(cfg->hub_tls_sni);
     free(cfg->control_socket); free(cfg->plugin_socket); free(cfg->plugins_dir); cJSON_Delete(cfg->upstream_overrides);
     memset(cfg, 0, sizeof(*cfg));
+}
+
+static bool tls_ca_field(cJSON *item) {
+    if (!item) return true;
+    return text_field(item, 1024, true) && (!item->valuestring[0] || item->valuestring[0] == '/');
 }
 
 static bool config_parse(cJSON *root, config_t *cfg) {
@@ -1455,18 +2127,27 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cJSON *token = cJSON_GetObjectItemCaseSensitive(root, "device_token");
     cJSON *listen = cJSON_GetObjectItemCaseSensitive(root, "listen_host");
     cJSON *port = cJSON_GetObjectItemCaseSensitive(root, "hub_port");
+    cJSON *proto = cJSON_GetObjectItemCaseSensitive(root, "hub_protocol");
+    cJSON *tls = cJSON_GetObjectItemCaseSensitive(root, "hub_tls");
+    cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_ca_file");
+    cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_sni");
+    cJSON *tls_insecure = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_insecure");
     cJSON *local_port = cJSON_GetObjectItemCaseSensitive(root, "listen_port");
     cJSON *control = cJSON_GetObjectItemCaseSensitive(root, "control_socket");
     cJSON *plugins = cJSON_GetObjectItemCaseSensitive(root, "plugin_socket");
     cJSON *tcp = cJSON_GetObjectItemCaseSensitive(root, "listen_tcp");
     cJSON *directory = cJSON_GetObjectItemCaseSensitive(root, "plugins_dir");
     cJSON *overrides = cJSON_GetObjectItemCaseSensitive(root, "upstream_overrides");
+    int parsed_proto = ROUTER_PROTO_V1;
     if ((directory && (!text_field(directory, 2048, false) || directory->valuestring[0] != '/')) ||
         (overrides && (!cJSON_IsObject(overrides) || cJSON_GetArraySize(overrides) > 64)) ||
         (host && !text_field(host, 253, true)) || (id && !text_field(id, 128, false)) ||
         (token && !text_field(token, 4096, true)) ||
         (listen && (!text_field(listen, 15, false) || strcmp(listen->valuestring, "127.0.0.1"))) ||
         (port && !integer_field(port, 1, 65535)) ||
+        !parse_protocol_value(proto, ROUTER_PROTO_V1, &parsed_proto) ||
+        (tls && !cJSON_IsBool(tls)) || (tls_insecure && !cJSON_IsBool(tls_insecure)) ||
+        !tls_ca_field(tls_ca) || (tls_sni && !text_field(tls_sni, 253, true)) ||
         (local_port && !integer_field(local_port, 1, 65535)) ||
         (control && !socket_name(control)) ||
         (plugins && !socket_name(plugins)) || (tcp && !cJSON_IsBool(tcp))) return false;
@@ -1478,6 +2159,11 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     cfg->device_token = strdup(token ? token->valuestring : "");
     cfg->listen_host = strdup("127.0.0.1");
     cfg->hub_port = port ? port->valueint : 39010;
+    cfg->hub_protocol = parsed_proto;
+    cfg->hub_tls = cJSON_IsTrue(tls);
+    cfg->hub_tls_insecure = cJSON_IsTrue(tls_insecure);
+    cfg->hub_tls_ca_file = strdup(tls_ca ? tls_ca->valuestring : "");
+    cfg->hub_tls_sni = strdup(tls_sni ? tls_sni->valuestring : "");
     cfg->listen_port = local_port ? local_port->valueint : 39111;
 #ifdef __ANDROID__
     cfg->control_socket = strdup(control ? control->valuestring : "dejavu.router.control");
@@ -1491,6 +2177,7 @@ static bool config_parse(cJSON *root, config_t *cfg) {
     if ((directory && !cfg->plugins_dir) || !cfg->upstream_overrides) { config_free(cfg); return false; }
     cfg->listen_tcp = cJSON_IsTrue(tcp);
     if (!cfg->hub_host || !cfg->device_id || !cfg->device_token || !cfg->listen_host ||
+        !cfg->hub_tls_ca_file || !cfg->hub_tls_sni ||
         !cfg->control_socket || !cfg->plugin_socket || !strcmp(cfg->control_socket, cfg->plugin_socket)) { config_free(cfg); return false; }
     return true;
 }
@@ -1541,21 +2228,40 @@ static upstream_t *find_upstream(router_t *router, const char *id) {
     return NULL;
 }
 
-static cJSON *connection_json(const char *host, int port, const char *id, const char *token) {
+static cJSON *connection_json(const char *host, int port, const char *id, const char *token,
+                              int protocol, const tls_opts_t *tls) {
     cJSON *root = cJSON_CreateObject();
     if (!root || !cJSON_AddStringToObject(root, "hub_host", host) ||
         !cJSON_AddNumberToObject(root, "hub_port", port) ||
         !cJSON_AddStringToObject(root, "device_id", id) ||
-        !cJSON_AddStringToObject(root, "device_token", token)) { cJSON_Delete(root); return NULL; }
+        !cJSON_AddStringToObject(root, "device_token", token) ||
+        (protocol == ROUTER_PROTO_V2 && !cJSON_AddStringToObject(root, "hub_protocol", "v2")) ||
+        (tls && tls->enabled && !cJSON_AddBoolToObject(root, "hub_tls", true)) ||
+        (tls && tls->insecure && !cJSON_AddBoolToObject(root, "hub_tls_insecure", true)) ||
+        (tls && tls->ca_file && tls->ca_file[0] && !cJSON_AddStringToObject(root, "hub_tls_ca_file", tls->ca_file)) ||
+        (tls && tls->sni && tls->sni[0] && !cJSON_AddStringToObject(root, "hub_tls_sni", tls->sni))) {
+        cJSON_Delete(root);
+        return NULL;
+    }
     return root;
 }
 
 static bool connection_valid(cJSON *root, bool empty_host) {
+    int parsed_proto = ROUTER_PROTO_V1;
+    cJSON *tls = cJSON_GetObjectItemCaseSensitive(root, "hub_tls");
+    cJSON *tls_insecure = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_insecure");
+    cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_ca_file");
+    cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(root, "hub_tls_sni");
     return cJSON_IsObject(root) && unique_members(root) &&
         text_field(cJSON_GetObjectItemCaseSensitive(root, "hub_host"), 253, empty_host) &&
         integer_field(cJSON_GetObjectItemCaseSensitive(root, "hub_port"), 1, 65535) &&
         text_field(cJSON_GetObjectItemCaseSensitive(root, "device_id"), 128, false) &&
-        text_field(cJSON_GetObjectItemCaseSensitive(root, "device_token"), 4096, true);
+        text_field(cJSON_GetObjectItemCaseSensitive(root, "device_token"), 4096, true) &&
+        parse_protocol_value(cJSON_GetObjectItemCaseSensitive(root, "hub_protocol"), ROUTER_PROTO_V1, &parsed_proto) &&
+        (!tls || cJSON_IsBool(tls)) &&
+        (!tls_insecure || cJSON_IsBool(tls_insecure)) &&
+        tls_ca_field(tls_ca) &&
+        (!tls_sni || text_field(tls_sni, 253, true));
 }
 
 static void upstream_free(upstream_t *hub) {
@@ -1564,6 +2270,7 @@ static void upstream_free(upstream_t *hub) {
     if (hub->reconnect_timer) event_free(hub->reconnect_timer);
     free(hub->id); free(hub->plugin_id); free(hub->source);
     free(hub->hub_host); free(hub->device_id); free(hub->device_token);
+    free(hub->hub_tls_ca_file); free(hub->hub_tls_sni);
     cJSON_Delete(hub->base_config);
     free(hub);
 }
@@ -1576,6 +2283,15 @@ static upstream_t *upstream_new(router_t *router, const char *id, const char *pl
     upstream_t *hub = calloc(1, sizeof(*hub));
     if (!hub) return NULL;
     hub->router = router; hub->resolver_fd = -1; hub->reconnect_seconds = 1;
+    hub->protocol_version = ROUTER_PROTO_V1;
+    parse_protocol_value(cJSON_GetObjectItemCaseSensitive(effective, "hub_protocol"),
+                         ROUTER_PROTO_V1, &hub->protocol_version);
+    hub->hub_tls = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(effective, "hub_tls"));
+    hub->hub_tls_insecure = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(effective, "hub_tls_insecure"));
+    cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(effective, "hub_tls_ca_file");
+    cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(effective, "hub_tls_sni");
+    hub->hub_tls_ca_file = strdup(tls_ca ? tls_ca->valuestring : "");
+    hub->hub_tls_sni = strdup(tls_sni ? tls_sni->valuestring : "");
     hub->id = strdup(id); hub->plugin_id = strdup(plugin_id); hub->source = strdup(source);
     hub->base_config = cJSON_Duplicate(base, true);
     hub->hub_host = strdup(cJSON_GetObjectItemCaseSensitive(effective, "hub_host")->valuestring);
@@ -1584,7 +2300,10 @@ static upstream_t *upstream_new(router_t *router, const char *id, const char *pl
     hub->device_token = strdup(cJSON_GetObjectItemCaseSensitive(effective, "device_token")->valuestring);
     hub->overridden = override != NULL;
     if (!hub->id || !hub->plugin_id || !hub->source || !hub->base_config || !hub->hub_host ||
-        !hub->device_id || !hub->device_token) { upstream_free(hub); return NULL; }
+        !hub->device_id || !hub->device_token || !hub->hub_tls_ca_file || !hub->hub_tls_sni) {
+        upstream_free(hub);
+        return NULL;
+    }
     return hub;
 }
 
@@ -1771,7 +2490,10 @@ static bool plugin_config_parse(router_t *router, const char *plugin_id, const c
                                  cJSON *definition, plugin_config_t **configs,
                                  upstream_t **hubs, size_t *hub_count) {
     static const char *const root_fields[] = {"schemaVersion", "services", "upstreams", "default_upstream", "routes"};
-    static const char *const upstream_fields[] = {"id", "host", "port", "device_id", "device_token"};
+    static const char *const upstream_fields[] = {
+        "id", "host", "port", "device_id", "device_token", "protocol",
+        "tls", "tls_ca_file", "tls_sni", "tls_insecure"
+    };
     if (!only_fields(definition, root_fields, sizeof(root_fields) / sizeof(*root_fields))) return false;
     cJSON *schema = cJSON_GetObjectItemCaseSensitive(definition, "schemaVersion");
     cJSON *services = cJSON_GetObjectItemCaseSensitive(definition, "services");
@@ -1804,8 +2526,17 @@ static bool plugin_config_parse(router_t *router, const char *plugin_id, const c
         cJSON *port = cJSON_GetObjectItemCaseSensitive(item, "port");
         cJSON *device = cJSON_GetObjectItemCaseSensitive(item, "device_id");
         cJSON *token = cJSON_GetObjectItemCaseSensitive(item, "device_token");
+        cJSON *proto = cJSON_GetObjectItemCaseSensitive(item, "protocol");
+        cJSON *tls = cJSON_GetObjectItemCaseSensitive(item, "tls");
+        cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(item, "tls_ca_file");
+        cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(item, "tls_sni");
+        cJSON *tls_insecure = cJSON_GetObjectItemCaseSensitive(item, "tls_insecure");
+        int parsed_proto = ROUTER_PROTO_V1;
         if (!only_fields(item, upstream_fields, sizeof(upstream_fields) / sizeof(*upstream_fields)) || !cJSON_IsString(id) || !plugin_identifier(id->valuestring) ||
             !text_field(host, 253, false) || !integer_field(port, 1, 65535) ||
+            !parse_protocol_value(proto, ROUTER_PROTO_V1, &parsed_proto) ||
+            (tls && !cJSON_IsBool(tls)) || (tls_insecure && !cJSON_IsBool(tls_insecure)) ||
+            !tls_ca_field(tls_ca) || (tls_sni && !text_field(tls_sni, 253, true)) ||
             (device && !text_field(device, 128, false)) || (token && !text_field(token, 4096, true))) return false;
         for (cJSON *previous = upstreams->child; previous != item; previous = previous->next) {
             cJSON *other_id = cJSON_GetObjectItemCaseSensitive(previous, "id");
@@ -1814,8 +2545,15 @@ static bool plugin_config_parse(router_t *router, const char *plugin_id, const c
         if (!strcmp(id->valuestring, selected->valuestring)) found_default = true;
         char qualified[130]; snprintf(qualified, sizeof(qualified), "%s/%s", plugin_id, id->valuestring);
         upstream_t *fallback = find_upstream(router, "default");
+        tls_opts_t tls_opts = {
+            .enabled = cJSON_IsTrue(tls),
+            .insecure = cJSON_IsTrue(tls_insecure),
+            .ca_file = tls_ca ? tls_ca->valuestring : "",
+            .sni = tls_sni ? tls_sni->valuestring : "",
+        };
         cJSON *base = connection_json(host->valuestring, port->valueint,
-            device ? device->valuestring : fallback->device_id, token ? token->valuestring : "");
+            device ? device->valuestring : fallback->device_id, token ? token->valuestring : "",
+            parsed_proto, &tls_opts);
         upstream_t *hub = base ? upstream_new(router, qualified, plugin_id, source, base, router->upstream_overrides) : NULL;
         cJSON_Delete(base);
         if (!hub) return false;
@@ -1846,6 +2584,10 @@ static bool plugin_config_parse(router_t *router, const char *plugin_id, const c
 
 static bool same_connection(upstream_t *a, upstream_t *b) {
     return !strcmp(a->hub_host, b->hub_host) && a->hub_port == b->hub_port &&
+        a->protocol_version == b->protocol_version &&
+        a->hub_tls == b->hub_tls && a->hub_tls_insecure == b->hub_tls_insecure &&
+        !strcmp(a->hub_tls_ca_file, b->hub_tls_ca_file) &&
+        !strcmp(a->hub_tls_sni, b->hub_tls_sni) &&
         !strcmp(a->device_id, b->device_id) && !strcmp(a->device_token, b->device_token);
 }
 
@@ -1958,11 +2700,17 @@ static const char *reload_plugins(router_t *router) {
     return NULL;
 }
 
-static cJSON *config_json(router_t *router, const char *host, int port, const char *id, const char *token) {
+static cJSON *config_json(router_t *router, const char *host, int port, const char *id, const char *token,
+                          int protocol, const tls_opts_t *tls) {
     cJSON *root = cJSON_CreateObject();
     cJSON *overrides = cJSON_Duplicate(router->upstream_overrides, true);
     if (!root || !overrides || !cJSON_AddStringToObject(root, "hub_host", host) ||
         !cJSON_AddNumberToObject(root, "hub_port", port) ||
+        (protocol == ROUTER_PROTO_V2 && !cJSON_AddStringToObject(root, "hub_protocol", "v2")) ||
+        (tls && tls->enabled && !cJSON_AddBoolToObject(root, "hub_tls", true)) ||
+        (tls && tls->insecure && !cJSON_AddBoolToObject(root, "hub_tls_insecure", true)) ||
+        (tls && tls->ca_file && tls->ca_file[0] && !cJSON_AddStringToObject(root, "hub_tls_ca_file", tls->ca_file)) ||
+        (tls && tls->sni && tls->sni[0] && !cJSON_AddStringToObject(root, "hub_tls_sni", tls->sni)) ||
         !cJSON_AddStringToObject(root, "device_id", id) ||
         !cJSON_AddStringToObject(root, "device_token", token) ||
         !cJSON_AddStringToObject(root, "listen_host", "127.0.0.1") ||
@@ -2028,7 +2776,10 @@ static cJSON *status_json(router_t *router) {
     cJSON *status = cJSON_CreateObject();
     if (!status) return NULL;
     cJSON_AddNumberToObject(status, "pid", getpid());
-    cJSON_AddBoolToObject(status, "hub_connected", fallback->hub_connected);
+    cJSON_AddBoolToObject(status, "hub_connected",
+                          fallback->protocol_version == ROUTER_PROTO_V2
+                              ? (fallback->hub_connected && fallback->v2_authenticated)
+                              : fallback->hub_connected);
     size_t registered = 0;
     for (plugin_t *p = router->plugins; p; p = p->next) if (p->registered) registered++;
     cJSON_AddNumberToObject(status, "plugin_count", (double)registered);
@@ -2038,6 +2789,10 @@ static cJSON *status_json(router_t *router) {
     cJSON_AddStringToObject(status, "plugin_socket", router->plugin_socket);
     cJSON_AddStringToObject(status, "hub_host", fallback->hub_host);
     cJSON_AddNumberToObject(status, "hub_port", fallback->hub_port);
+    cJSON_AddStringToObject(status, "hub_protocol", protocol_name(fallback->protocol_version));
+    cJSON_AddBoolToObject(status, "hub_tls", fallback->hub_tls);
+    if (fallback->hub_tls_conn)
+        cJSON_AddStringToObject(status, "hub_tls_version", tls_transport_version_str(fallback->hub_tls_conn));
     cJSON_AddStringToObject(status, "device_id", fallback->device_id);
     cJSON_AddBoolToObject(status, "token_configured", fallback->device_token && fallback->device_token[0]);
     cJSON *hubs = cJSON_AddArrayToObject(status, "upstreams");
@@ -2046,9 +2801,16 @@ static cJSON *status_json(router_t *router) {
         cJSON_AddStringToObject(row, "id", hub->id);
         cJSON_AddStringToObject(row, "plugin_id", hub->plugin_id);
         cJSON_AddStringToObject(row, "source", hub->source);
-        cJSON_AddBoolToObject(row, "connected", hub->hub_connected);
+        cJSON_AddBoolToObject(row, "connected",
+                              hub->protocol_version == ROUTER_PROTO_V2
+                                  ? (hub->hub_connected && hub->v2_authenticated)
+                                  : hub->hub_connected);
         cJSON_AddStringToObject(row, "host", hub->hub_host);
         cJSON_AddNumberToObject(row, "port", hub->hub_port);
+        cJSON_AddStringToObject(row, "protocol", protocol_name(hub->protocol_version));
+        cJSON_AddBoolToObject(row, "tls", hub->hub_tls);
+        if (hub->hub_tls_conn)
+            cJSON_AddStringToObject(row, "tls_version", tls_transport_version_str(hub->hub_tls_conn));
         cJSON_AddStringToObject(row, "device_id", hub->device_id);
         cJSON_AddBoolToObject(row, "token_configured", hub->device_token && hub->device_token[0]);
         cJSON_AddBoolToObject(row, "overridden", hub->overridden);
@@ -2094,15 +2856,37 @@ static const char *control_configure(router_t *router, cJSON *request) {
     cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "hub_port");
     cJSON *id = cJSON_GetObjectItemCaseSensitive(request, "device_id");
     cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "device_token");
+    cJSON *proto = cJSON_GetObjectItemCaseSensitive(request, "hub_protocol");
+    cJSON *tls = cJSON_GetObjectItemCaseSensitive(request, "hub_tls");
+    cJSON *tls_insecure = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_insecure");
+    cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_ca_file");
+    cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_sni");
+    int parsed_proto = hub->protocol_version;
     if (!text_field(host, 253, true) || !integer_field(port, 1, 65535) ||
-        !text_field(id, 128, false) || (token && !text_field(token, 4096, true))) return "invalid_config";
+        !text_field(id, 128, false) || (token && !text_field(token, 4096, true)) ||
+        !parse_protocol_value(proto, hub->protocol_version, &parsed_proto) ||
+        (tls && !cJSON_IsBool(tls)) || (tls_insecure && !cJSON_IsBool(tls_insecure)) ||
+        !tls_ca_field(tls_ca) || (tls_sni && !text_field(tls_sni, 253, true))) return "invalid_config";
+    tls_opts_t tls_opts = {
+        .enabled = tls ? cJSON_IsTrue(tls) : hub->hub_tls,
+        .insecure = tls_insecure ? cJSON_IsTrue(tls_insecure) : hub->hub_tls_insecure,
+        .ca_file = tls_ca ? tls_ca->valuestring : hub->hub_tls_ca_file,
+        .sni = tls_sni ? tls_sni->valuestring : hub->hub_tls_sni,
+    };
     cJSON *base = connection_json(host->valuestring, port->valueint, id->valuestring,
-                                  token ? token->valuestring : hub->device_token);
+                                  token ? token->valuestring : hub->device_token, parsed_proto, &tls_opts);
     upstream_t *replacement = base ? upstream_new(router, "default", "", "config.json", base, NULL) : NULL;
     cJSON_Delete(base);
     if (!replacement) return "out_of_memory";
+    tls_opts_t repl_tls = {
+        .enabled = replacement->hub_tls,
+        .insecure = replacement->hub_tls_insecure,
+        .ca_file = replacement->hub_tls_ca_file,
+        .sni = replacement->hub_tls_sni,
+    };
     cJSON *config = config_json(router, replacement->hub_host, replacement->hub_port,
-                               replacement->device_id, replacement->device_token);
+                               replacement->device_id, replacement->device_token,
+                               replacement->protocol_version, &repl_tls);
     bool written = config && write_config(router, config);
     cJSON_Delete(config);
     if (!written) { upstream_free(replacement); return "persist_failed"; }
@@ -2111,8 +2895,12 @@ static const char *control_configure(router_t *router, cJSON *request) {
     free(hub->hub_host); hub->hub_host = replacement->hub_host; replacement->hub_host = NULL;
     free(hub->device_id); hub->device_id = replacement->device_id; replacement->device_id = NULL;
     free(hub->device_token); hub->device_token = replacement->device_token; replacement->device_token = NULL;
+    free(hub->hub_tls_ca_file); hub->hub_tls_ca_file = replacement->hub_tls_ca_file; replacement->hub_tls_ca_file = NULL;
+    free(hub->hub_tls_sni); hub->hub_tls_sni = replacement->hub_tls_sni; replacement->hub_tls_sni = NULL;
     cJSON_Delete(hub->base_config); hub->base_config = replacement->base_config; replacement->base_config = NULL;
-    hub->hub_port = replacement->hub_port; hub->reconnect_seconds = 1;
+    hub->hub_port = replacement->hub_port; hub->protocol_version = replacement->protocol_version;
+    hub->hub_tls = replacement->hub_tls; hub->hub_tls_insecure = replacement->hub_tls_insecure;
+    hub->reconnect_seconds = 1;
     upstream_free(replacement);
     hub_connect(hub);
     return NULL;
@@ -2132,12 +2920,27 @@ static const char *control_upstream(router_t *router, cJSON *request, bool reset
         cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "hub_port");
         cJSON *id = cJSON_GetObjectItemCaseSensitive(request, "device_id");
         cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "device_token");
+        cJSON *proto = cJSON_GetObjectItemCaseSensitive(request, "hub_protocol");
+        cJSON *tls = cJSON_GetObjectItemCaseSensitive(request, "hub_tls");
+        cJSON *tls_insecure = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_insecure");
+        cJSON *tls_ca = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_ca_file");
+        cJSON *tls_sni = cJSON_GetObjectItemCaseSensitive(request, "hub_tls_sni");
+        int parsed_proto = hub->protocol_version;
         if (!text_field(host, 253, false) || !integer_field(port, 1, 65535) ||
-            !text_field(id, 128, false) || (token && !text_field(token, 4096, true))) {
+            !text_field(id, 128, false) || (token && !text_field(token, 4096, true)) ||
+            !parse_protocol_value(proto, hub->protocol_version, &parsed_proto) ||
+            (tls && !cJSON_IsBool(tls)) || (tls_insecure && !cJSON_IsBool(tls_insecure)) ||
+            !tls_ca_field(tls_ca) || (tls_sni && !text_field(tls_sni, 253, true))) {
             cJSON_Delete(overrides); return "invalid_config";
         }
+        tls_opts_t tls_opts = {
+            .enabled = tls ? cJSON_IsTrue(tls) : hub->hub_tls,
+            .insecure = tls_insecure ? cJSON_IsTrue(tls_insecure) : hub->hub_tls_insecure,
+            .ca_file = tls_ca ? tls_ca->valuestring : hub->hub_tls_ca_file,
+            .sni = tls_sni ? tls_sni->valuestring : hub->hub_tls_sni,
+        };
         cJSON *value = connection_json(host->valuestring, port->valueint, id->valuestring,
-                                      token ? token->valuestring : hub->device_token);
+                                      token ? token->valuestring : hub->device_token, parsed_proto, &tls_opts);
         if (!value || !cJSON_AddItemToObject(overrides, key->valuestring, value)) {
             cJSON_Delete(value); cJSON_Delete(overrides); return "out_of_memory";
         }
@@ -2147,7 +2950,14 @@ static const char *control_upstream(router_t *router, cJSON *request, bool reset
     cJSON *old = router->upstream_overrides;
     router->upstream_overrides = overrides;
     upstream_t *fallback = find_upstream(router, "default");
-    cJSON *config = config_json(router, fallback->hub_host, fallback->hub_port, fallback->device_id, fallback->device_token);
+    tls_opts_t fb_tls = {
+        .enabled = fallback->hub_tls,
+        .insecure = fallback->hub_tls_insecure,
+        .ca_file = fallback->hub_tls_ca_file,
+        .sni = fallback->hub_tls_sni,
+    };
+    cJSON *config = config_json(router, fallback->hub_host, fallback->hub_port, fallback->device_id,
+                                fallback->device_token, fallback->protocol_version, &fb_tls);
     router->upstream_overrides = old;
     bool written = config && write_config(router, config);
     cJSON_Delete(config);
@@ -2158,7 +2968,11 @@ static const char *control_upstream(router_t *router, cJSON *request, bool reset
     free(hub->hub_host); hub->hub_host = replacement->hub_host; replacement->hub_host = NULL;
     free(hub->device_id); hub->device_id = replacement->device_id; replacement->device_id = NULL;
     free(hub->device_token); hub->device_token = replacement->device_token; replacement->device_token = NULL;
-    hub->hub_port = replacement->hub_port; hub->overridden = replacement->overridden; hub->reconnect_seconds = 1;
+    free(hub->hub_tls_ca_file); hub->hub_tls_ca_file = replacement->hub_tls_ca_file; replacement->hub_tls_ca_file = NULL;
+    free(hub->hub_tls_sni); hub->hub_tls_sni = replacement->hub_tls_sni; replacement->hub_tls_sni = NULL;
+    hub->hub_port = replacement->hub_port; hub->protocol_version = replacement->protocol_version;
+    hub->hub_tls = replacement->hub_tls; hub->hub_tls_insecure = replacement->hub_tls_insecure;
+    hub->overridden = replacement->overridden; hub->reconnect_seconds = 1;
     upstream_free(replacement);
     hub_connect(hub);
     return NULL;
@@ -2416,7 +3230,14 @@ int main(int argc, char **argv) {
     cJSON_Delete(root); root = NULL;
     router.base = event_base_new();
     if (!router.base) { logmsg("ERROR", "cannot initialize event loop"); goto cleanup; }
-    cJSON *default_config = connection_json(cfg.hub_host, cfg.hub_port, cfg.device_id, cfg.device_token);
+    tls_opts_t default_tls = {
+        .enabled = cfg.hub_tls,
+        .insecure = cfg.hub_tls_insecure,
+        .ca_file = cfg.hub_tls_ca_file,
+        .sni = cfg.hub_tls_sni,
+    };
+    cJSON *default_config = connection_json(cfg.hub_host, cfg.hub_port, cfg.device_id, cfg.device_token,
+                                            cfg.hub_protocol, &default_tls);
     router.upstreams = default_config ? upstream_new(&router, "default", "", "config.json", default_config, NULL) : NULL;
     cJSON_Delete(default_config);
     if (!router.upstreams) goto cleanup;

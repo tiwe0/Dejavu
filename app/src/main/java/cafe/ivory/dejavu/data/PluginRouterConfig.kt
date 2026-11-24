@@ -38,13 +38,29 @@ internal object PluginRouterConfig {
         require(upstreams.length() in 1..8) { "Declare between 1 and 8 Router upstreams" }
         val ids = (0 until upstreams.length()).map { index ->
             val upstream = upstreams.getJSONObject(index)
-            upstream.onlyKeys("id", "host", "port", "device_id", "device_token")
+            upstream.onlyKeys(
+                "id", "host", "port", "device_id", "device_token",
+                "protocol", "tls", "tls_ca_file", "tls_sni", "tls_insecure",
+            )
             val id = upstream.text("id", 64)
             require(id.matches(Regex("[a-z][a-z0-9_-]{0,63}"))) { "Invalid Router upstream identifier" }
             upstream.text("host", 253)
             upstream.integer("port", 1, 65535)
             if (upstream.has("device_id")) upstream.text("device_id", 128)
             if (upstream.has("device_token")) upstream.text("device_token", 4096, empty = true)
+            if (upstream.has("protocol")) {
+                val protocol = upstream.text("protocol", 16)
+                require(protocol == "v1" || protocol == "v2") { "Unsupported Router protocol" }
+            }
+            if (upstream.has("tls")) require(upstream.get("tls") is Boolean) { "Router tls must be a boolean" }
+            if (upstream.has("tls_insecure")) {
+                require(upstream.get("tls_insecure") is Boolean) { "Router tls_insecure must be a boolean" }
+            }
+            if (upstream.has("tls_ca_file")) {
+                val caFile = upstream.text("tls_ca_file", 1024, empty = true)
+                require(caFile.isEmpty() || caFile.startsWith("/")) { "Router tls_ca_file must be an absolute path" }
+            }
+            if (upstream.has("tls_sni")) upstream.text("tls_sni", 253, empty = true)
             id
         }
         require(ids.distinct().size == ids.size) { "Duplicate Router upstream identifier" }

@@ -78,6 +78,8 @@ private fun runPluginRouterRegression(legacy: PluginPackageManifest) {
     PluginRouterConfig.validate(source + " ".repeat(MAX_PLUGIN_ROUTER_BYTES - pluginUtf8Bytes(source).size), legacy.id)
     val explicitServices = JSONObject(source).put("services", JSONArray(listOf("service.A-1", "a".repeat(128)))).toString()
     PluginRouterConfig.validate(explicitServices, legacy.id)
+    val v2TlsConfig = """{"schemaVersion":1,"upstreams":[{"id":"main","host":"hub.example.com","port":39010,"protocol":"v2","tls":true,"tls_ca_file":"/data/adb/dejavu/ca.pem","tls_sni":"hub.example.com","tls_insecure":false}],"default_upstream":"main"}"""
+    PluginRouterConfig.validate(v2TlsConfig, legacy.id)
     PluginRouterConfig.validate(source.replace("\"schemaVersion\":1", "\"schemaVersion\":1e0").replace("\"port\":39010", "\"port\":39010.0"), legacy.id)
     val invalidConfigs = listOf(
         source + "x", source + " {}", source.replace("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVersion\":1"),
@@ -112,6 +114,10 @@ private fun runPluginRouterRegression(legacy: PluginPackageManifest) {
         JSONObject(source).put("routes", JSONObject().apply { repeat(513) { put("route$it", "main") } }).toString(),
         JSONObject(source).put("typo", true).toString(),
         source.replace("\"port\":39010", "\"port\":39010,\"typo\":true"),
+        source.replace("\"port\":39010", "\"port\":39010,\"protocol\":\"v3\""),
+        source.replace("\"port\":39010", "\"port\":39010,\"tls\":\"true\""),
+        source.replace("\"port\":39010", "\"port\":39010,\"tls_insecure\":1"),
+        source.replace("\"port\":39010", "\"port\":39010,\"tls_ca_file\":\"relative/ca.pem\""),
         source + " ".repeat(MAX_PLUGIN_ROUTER_BYTES),
     )
     invalidConfigs.forEachIndexed { index, invalid ->
