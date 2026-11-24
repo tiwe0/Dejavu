@@ -96,7 +96,7 @@ printf '%s %s\n' "$watchdog_pid" "$(start_time "$watchdog_pid")" > "$DATA/watchd
 i=0
 while [ "$i" -lt 50 ]; do
     if daemon_alive && [ -s "$DATA/control.json" ]; then status; exit 0; fi
-    if ! watchdog_alive; then break; fi
+    if [ "$i" -ge 5 ] && ! watchdog_alive; then break; fi
     i=$((i + 1)); sleep 0.1
 done
 stop_daemon || true
