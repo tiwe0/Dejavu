@@ -14,10 +14,12 @@ else
 fi
 FLAGS=(-O1 -g -fno-omit-frame-pointer)
 if [[ -n "${LUA_RPC_SANITIZERS:-}" ]]; then FLAGS+=(-fsanitize="$LUA_RPC_SANITIZERS"); fi
-if [[ ! -f "$OBJ_DIR/dejavu_lua.o" ]]; then
-  echo 'Core object directory is missing dejavu_lua.o.' >&2
-  exit 1
-fi
+for required_obj in dejavu_lua.o dejavu_lua_json.o dejavu_lua_xml.o dejavu_lua_sqlite.o sqlite3.o; do
+  if [[ ! -f "$OBJ_DIR/$required_obj" ]]; then
+    echo "Core object directory is missing $required_obj." >&2
+    exit 1
+  fi
+done
 "${CC:-cc}" -std=c11 "${FLAGS[@]}" -I"$ROOT/router/third_party/cJSON" -c \
   "$ROOT/router/third_party/cJSON/cJSON.c" -o "$WORK/json.o"
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -pthread "${FLAGS[@]}" \
@@ -25,5 +27,6 @@ fi
   -I"$ROOT/router/third_party/cJSON" "$ROOT/zygisk/src/rpc_service.cpp" \
   "$ROOT/zygisk/src/lua_rpc_bindings.cpp" "$ROOT/zygisk/tests/lua_rpc_bindings_test.cpp" \
   "$WORK/json.o" "$OBJ_DIR/dejavu.o" "$OBJ_DIR/dejavu_engine.o" "$OBJ_DIR/dejavu_lua.o" \
-  "$OBJ_DIR/dejavu_lua_json.o" "$OBJ_DIR/lua.o" "$OBJ_DIR/tinycc.o" -ldl -lm -o "$WORK/lua_rpc_bindings_test"
+  "$OBJ_DIR/dejavu_lua_json.o" "$OBJ_DIR/dejavu_lua_xml.o" "$OBJ_DIR/dejavu_lua_sqlite.o" \
+  "$OBJ_DIR/sqlite3.o" "$OBJ_DIR/lua.o" "$OBJ_DIR/tinycc.o" -ldl -lm -o "$WORK/lua_rpc_bindings_test"
 "$WORK/lua_rpc_bindings_test" "$ROOT/zygisk/config/rpc.lua"

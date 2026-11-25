@@ -674,7 +674,7 @@ LUA_KEYWORDS = frozenset(
 )
 REPL_RESERVED_ALIASES = frozenset(
     {
-        "_G", "dejavu", "hook", "java", "native", "plugin",
+        "_G", "dejavu", "hook", "java", "native", "plugin", "sqlite", "xml",
     }
 )
 REPL_DOT_COMMANDS = (

@@ -56,7 +56,7 @@ NM="${TOOLCHAIN}/bin/llvm-nm"
 
 if [[ ! -x "${CC}" ]]; then
     max_api=$(find "${TOOLCHAIN}/bin" -maxdepth 1 -name 'aarch64-linux-android*-clang' \
-        -printf '%f\n' 2>/dev/null | sed -E 's/^.*android([0-9]+)-clang$/\1/' | sort -n | tail -n 1)
+        -exec basename {} \; 2>/dev/null | sed -E 's/^.*android([0-9]+)-clang$/\1/' | sort -n | tail -n 1)
     echo "error: NDK ${NDK_DIR} does not provide Android API ${ANDROID_API} (max: ${max_api:-unknown})" >&2
     exit 1
 fi
@@ -129,7 +129,21 @@ echo "[3/6] Dejavu Lua control"
 
 "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
     -I"${ROOT_DIR}/extern/lua" -c "${ROOT_DIR}/src/dejavu_lua_json.c" -o "${OBJ_DIR}/dejavu_lua_json.o"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/extern/lua" -c "${ROOT_DIR}/src/dejavu_lua_xml.c" -o "${OBJ_DIR}/dejavu_lua_xml.o"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
+    -I"${ROOT_DIR}/extern/lua" -c "${ROOT_DIR}/src/dejavu_lua_sqlite.c" -o "${OBJ_DIR}/dejavu_lua_sqlite.o"
 "${CC}" "${COMMON_FLAGS[@]}" -c "${ROOT_DIR}/router/third_party/cJSON/cJSON.c" -o "${OBJ_DIR}/cJSON.o"
+"${CC}" "${COMMON_FLAGS[@]}" -w \
+    -DSQLITE_THREADSAFE=1 \
+    -DSQLITE_TEMP_STORE=3 \
+    -DSQLITE_DEFAULT_MEMSTATUS=0 \
+    -DSQLITE_DQS=0 \
+    -DSQLITE_OMIT_LOAD_EXTENSION=1 \
+    -DSQLITE_OMIT_DEPRECATED=1 \
+    -DSQLITE_MAX_EXPR_DEPTH=128 \
+    '-DSQLITE_API=__attribute__((visibility("hidden")))' \
+    -c "${ROOT_DIR}/third_party/sqlite3/sqlite3.c" -o "${OBJ_DIR}/sqlite3.o"
 
 echo "[4/6] Lua 5.4"
 "${CC}" "${COMMON_FLAGS[@]}" \
@@ -155,7 +169,10 @@ echo "[6/6] libdejavu.so"
     "${OBJ_DIR}/dejavu_engine.o" \
     "${OBJ_DIR}/dejavu_lua.o" \
     "${OBJ_DIR}/dejavu_lua_json.o" \
+    "${OBJ_DIR}/dejavu_lua_xml.o" \
+    "${OBJ_DIR}/dejavu_lua_sqlite.o" \
     "${OBJ_DIR}/cJSON.o" \
+    "${OBJ_DIR}/sqlite3.o" \
     "${OBJ_DIR}/lua.o" \
     "${OBJ_DIR}/tinycc.o" \
     -ldl -lm -pthread \

@@ -92,6 +92,7 @@ builds and releases do not require access to it.
 | Java/Kotlin hooks | LSPlant, Lua `hook` / `hookx` | [Cookbook](zygisk/docs/cookbook.md) |
 | Native hooks and calls | Dobby, TinyCC and `native.*` | [Native API](zygisk/docs/native-hook-api.md) |
 | Java calls and object handles | `java.invoke`, `java.new`, `java.load_dex` | [Java API](zygisk/docs/java-invoke-api.md) |
+| XML & SQLite read/write | `xml.parse`, `xml.prefs`, `sqlite.open` | [XML & SQLite API](zygisk/docs/xml-sqlite-api.md) |
 | Reusable plugins | Lua packages, native `.so`, JIT `.c` | [Plugin API](zygisk/docs/plugin-api.md) |
 | Agent-driven iteration | Unified CLI and MCP tools | [Agent guide](SKILL.md) |
 | Files, memory and modules | Target-process helper APIs | [Agent helpers](zygisk/docs/agent-helpers.md) |
@@ -109,8 +110,9 @@ WebUI saves a plain process list and discards that ownership metadata.
 Start with the [Manager build guide](app/README.md),
 [Zygisk build guide](zygisk/README.md) or [public examples](examples/README.md).
 Host development supports Linux and macOS. Core dependencies are pinned Git
-submodules; the core embeds Lua 5.4.8 and TinyCC 0.9.27-frida. The router uses
-vendored cJSON and a checksum-pinned libevent source archive.
+submodules; the core embeds Lua 5.4.8, TinyCC 0.9.27-frida, and public-domain
+SQLite 3.54.1. The router uses vendored cJSON and a checksum-pinned libevent
+source archive.
 
 <details>
 <summary><strong>Engine, build, CLI and contributor reference</strong></summary>
@@ -186,8 +188,8 @@ symbols are rejected instead of being resolved from the process with
 This allowlist limits linking; it is not a security sandbox. Generated native
 code still executes with the permissions and address space of the host process.
 
-The Lua control surface exposes only `dejavu.compile()` plus the base, table,
-string, and math libraries:
+The Lua control surface exposes `dejavu.compile()`, built-in `json`, `xml`, and
+`sqlite` modules, plus the base, table, string, and math libraries:
 
 ```lua
 local run = dejavu.compile [[

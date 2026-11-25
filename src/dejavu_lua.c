@@ -12,6 +12,8 @@
 #include <time.h>
 
 #include "dejavu_lua_json.h"
+#include "dejavu_lua_sqlite.h"
+#include "dejavu_lua_xml.h"
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -115,6 +117,8 @@ static void open_control_libraries(lua_State *state) {
     lua_pop(state, 1);
 
     dejavu_lua_json_open(state);
+    dejavu_lua_xml_open(state);
+    dejavu_lua_sqlite_open(state);
 
     lua_pushnil(state);
     lua_setglobal(state, "dofile");

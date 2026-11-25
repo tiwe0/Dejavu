@@ -42,7 +42,7 @@ PROJECT_INCLUDES=(
     -I"${TINYCC_SRC}"
 )
 
-for source in dejavu dejavu_engine dejavu_lua dejavu_lua_json; do
+for source in dejavu dejavu_engine dejavu_lua dejavu_lua_json dejavu_lua_xml dejavu_lua_sqlite; do
     "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror \
         -DDEJAVU_TCC_VERSION='"0.9.27-frida"' \
         "${PROJECT_INCLUDES[@]}" \
@@ -50,6 +50,15 @@ for source in dejavu dejavu_engine dejavu_lua dejavu_lua_json; do
 done
 
 "${CC}" "${COMMON_FLAGS[@]}" -c "${ROOT_DIR}/router/third_party/cJSON/cJSON.c" -o "${OBJ_DIR}/cJSON.o"
+"${CC}" "${COMMON_FLAGS[@]}" -w \
+    -DSQLITE_THREADSAFE=1 \
+    -DSQLITE_TEMP_STORE=3 \
+    -DSQLITE_DEFAULT_MEMSTATUS=0 \
+    -DSQLITE_DQS=0 \
+    -DSQLITE_OMIT_LOAD_EXTENSION=1 \
+    -DSQLITE_OMIT_DEPRECATED=1 \
+    -DSQLITE_MAX_EXPR_DEPTH=128 \
+    -c "${ROOT_DIR}/third_party/sqlite3/sqlite3.c" -o "${OBJ_DIR}/sqlite3.o"
 
 "${CC}" "${COMMON_FLAGS[@]}" -DMAKE_LIB -DLUA_USE_LINUX \
     -I"${ROOT_DIR}/extern/lua" \
@@ -69,7 +78,10 @@ done
     "${OBJ_DIR}/dejavu_engine.o" \
     "${OBJ_DIR}/dejavu_lua.o" \
     "${OBJ_DIR}/dejavu_lua_json.o" \
+    "${OBJ_DIR}/dejavu_lua_xml.o" \
+    "${OBJ_DIR}/dejavu_lua_sqlite.o" \
     "${OBJ_DIR}/cJSON.o" \
+    "${OBJ_DIR}/sqlite3.o" \
     "${OBJ_DIR}/lua.o" \
     "${OBJ_DIR}/tinycc.o" \
     "${OBJ_DIR}/smoke.o" \
@@ -82,7 +94,8 @@ echo "== Lua RPC core"
 "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
     "${ROOT_DIR}/tests/lua_rpc_core.c" \
     "${OBJ_DIR}/dejavu.o" "${OBJ_DIR}/dejavu_engine.o" "${OBJ_DIR}/dejavu_lua.o" \
-    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/dejavu_lua_xml.o" "${OBJ_DIR}/dejavu_lua_sqlite.o" \
+    "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/sqlite3.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
     -ldl -lm -pthread -o "${OUT_DIR}/lua_rpc_core"
 "${OUT_DIR}/lua_rpc_core"
 
@@ -90,9 +103,21 @@ echo "== Lua RPC allocation failures"
 "${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror "${PROJECT_INCLUDES[@]}" \
     "${ROOT_DIR}/tests/lua_rpc_core_oom.c" \
     "${OBJ_DIR}/dejavu.o" "${OBJ_DIR}/dejavu_engine.o" \
-    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/dejavu_lua_xml.o" "${OBJ_DIR}/dejavu_lua_sqlite.o" \
+    "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/sqlite3.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
     -ldl -lm -pthread -o "${OUT_DIR}/lua_rpc_core_oom"
 "${OUT_DIR}/lua_rpc_core_oom"
+
+echo "== Lua XML & SQLite"
+"${CC}" "${COMMON_FLAGS[@]}" -Wall -Wextra -Werror -I"${ROOT_DIR}/include" \
+    "${ROOT_DIR}/tests/lua_xml_sqlite_test.c" \
+    "${OBJ_DIR}/dejavu.o" "${OBJ_DIR}/dejavu_engine.o" "${OBJ_DIR}/dejavu_lua.o" \
+    "${OBJ_DIR}/dejavu_lua_json.o" "${OBJ_DIR}/dejavu_lua_xml.o" "${OBJ_DIR}/dejavu_lua_sqlite.o" \
+    "${OBJ_DIR}/cJSON.o" "${OBJ_DIR}/sqlite3.o" "${OBJ_DIR}/lua.o" "${OBJ_DIR}/tinycc.o" \
+    -ldl -lm -pthread -o "${OUT_DIR}/lua_xml_sqlite_test"
+rm -f "${OUT_DIR}/test.db" "${OUT_DIR}/test.db-wal" "${OUT_DIR}/test.db-shm"
+"${OUT_DIR}/lua_xml_sqlite_test" "${ROOT_DIR}/zygisk/config/resources.lua" "${OUT_DIR}/test.db"
+rm -f "${OUT_DIR}/test.db" "${OUT_DIR}/test.db-wal" "${OUT_DIR}/test.db-shm"
 
 echo "== JIT ABI header compile"
 "${CC}" "${COMMON_FLAGS[@]}" -std=c11 -Wall -Wextra -Werror     -I"${ROOT_DIR}/include" -fsyntax-only "${ROOT_DIR}/tests/jit_abi_compile.c"
@@ -140,7 +165,10 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         "${OBJ_DIR}/dejavu_engine.o" \
         "${OBJ_DIR}/dejavu_lua.o" \
         "${OBJ_DIR}/dejavu_lua_json.o" \
+        "${OBJ_DIR}/dejavu_lua_xml.o" \
+        "${OBJ_DIR}/dejavu_lua_sqlite.o" \
         "${OBJ_DIR}/cJSON.o" \
+        "${OBJ_DIR}/sqlite3.o" \
         "${OBJ_DIR}/lua.o" \
         "${OBJ_DIR}/tinycc.o" \
         -Wl,--wrap=mprotect \

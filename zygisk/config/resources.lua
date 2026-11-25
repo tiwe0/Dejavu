@@ -1896,6 +1896,19 @@ local function install_resource_scope()
         return ref
     end
 
+    function scope_methods:track_sqlite(db)
+        local sq = rawget(_G, "sqlite")
+        local is_valid_db = type(sq) == "table" and type(sq.is_db) == "function" and sq.is_db(db)
+        assert(is_valid_db, "scope:track_sqlite expects a SQLite database handle")
+        self:defer(function()
+            if db:is_open() then
+                db:close()
+            end
+            return true
+        end)
+        return db
+    end
+
     function scope_methods:count()
         return #self._items
     end
@@ -2760,75 +2773,111 @@ local function install_repl_runtime()
         local base, sep, partial = text:match("^(.*)([%.:])([A-Za-z0-9_]*)$")
         if base ~= nil and base ~= "" then
             local val, ok = resolve_readonly_path(base)
-            if not ok or type(val) ~= "table" then
+            if not ok or (type(val) ~= "table" and type(val) ~= "userdata") then
                 return "[]"
             end
             local include_dunder = partial:sub(1, 1) == "_"
-            local meta, kind = nil, nil
-            if type(reflect_for_repl) == "function" then
-                meta, kind = reflect_for_repl(val)
-            end
-            if kind == "class" then
-                if type(meta) == "table" then
-                    if type(meta.methods) == "table" then
-                        for mname in pairs(meta.methods) do
-                            add_if_match(matches, seen, mname, partial, include_dunder)
+            if type(val) == "userdata" then
+                local mt = getmetatable(val)
+                local idx_tbl = type(mt) == "table" and rawget(mt, "__index") or nil
+                if type(idx_tbl) == "table" then
+                    for k in next, idx_tbl do
+                        if is_identifier_key(k) then
+                            add_if_match(matches, seen, k, partial, include_dunder)
                         end
                     end
-                    if sep == "." and type(meta.fields) == "table" then
-                        for fname, finfo in pairs(meta.fields) do
-                            if type(finfo) == "table" and finfo.static then
+                end
+            else
+                local meta, kind = nil, nil
+                if type(reflect_for_repl) == "function" then
+                    meta, kind = reflect_for_repl(val)
+                end
+                if kind == "class" then
+                    if type(meta) == "table" then
+                        if type(meta.methods) == "table" then
+                            for mname in pairs(meta.methods) do
+                                add_if_match(matches, seen, mname, partial, include_dunder)
+                            end
+                        end
+                        if sep == "." and type(meta.fields) == "table" then
+                            for fname, finfo in pairs(meta.fields) do
+                                if type(finfo) == "table" and finfo.static then
+                                    add_if_match(matches, seen, fname, partial, include_dunder)
+                                end
+                            end
+                        end
+                        if type(meta.constructors) == "table" and #meta.constructors > 0 then
+                            add_if_match(matches, seen, "new", partial, include_dunder)
+                        end
+                    end
+                    local meta_list = sep == "." and CLASS_META_DOT_COMPLETIONS or CLASS_META_COLON_COMPLETIONS
+                    for i = 1, #meta_list do
+                        add_if_match(matches, seen, meta_list[i], partial, include_dunder)
+                    end
+                elseif kind == "ref" then
+                    if type(meta) == "table" then
+                        if type(meta.methods) == "table" then
+                            for mname in pairs(meta.methods) do
+                                add_if_match(matches, seen, mname, partial, include_dunder)
+                            end
+                        end
+                        if sep == "." and type(meta.fields) == "table" then
+                            for fname in pairs(meta.fields) do
                                 add_if_match(matches, seen, fname, partial, include_dunder)
                             end
                         end
                     end
-                    if type(meta.constructors) == "table" and #meta.constructors > 0 then
-                        add_if_match(matches, seen, "new", partial, include_dunder)
+                    for i = 1, #REF_META_COMPLETIONS do
+                        add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
                     end
-                end
-                local meta_list = sep == "." and CLASS_META_DOT_COMPLETIONS or CLASS_META_COLON_COMPLETIONS
-                for i = 1, #meta_list do
-                    add_if_match(matches, seen, meta_list[i], partial, include_dunder)
-                end
-            elseif kind == "ref" then
-                if type(meta) == "table" then
-                    if type(meta.methods) == "table" then
-                        for mname in pairs(meta.methods) do
-                            add_if_match(matches, seen, mname, partial, include_dunder)
-                        end
+                elseif kind == "released" then
+                    for i = 1, #REF_META_COMPLETIONS do
+                        add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
                     end
-                    if sep == "." and type(meta.fields) == "table" then
-                        for fname in pairs(meta.fields) do
-                            add_if_match(matches, seen, fname, partial, include_dunder)
-                        end
+                elseif rawget(val, METHOD_KEY) ~= nil then
+                    local m_st = rawget(val, METHOD_KEY)
+                    local method_helpers
+                    if m_st.ov ~= nil then
+                        method_helpers = sep == "."
+                            and { "hook", "sig", "signature" }
+                            or { "hook", "signature" }
+                    else
+                        method_helpers = { "hook", "overload", "overloads" }
                     end
-                end
-                for i = 1, #REF_META_COMPLETIONS do
-                    add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
-                end
-            elseif kind == "released" then
-                for i = 1, #REF_META_COMPLETIONS do
-                    add_if_match(matches, seen, REF_META_COMPLETIONS[i], partial, include_dunder)
-                end
-            elseif rawget(val, METHOD_KEY) ~= nil then
-                local m_st = rawget(val, METHOD_KEY)
-                local method_helpers
-                if m_st.ov ~= nil then
-                    method_helpers = sep == "."
-                        and { "hook", "sig", "signature" }
-                        or { "hook", "signature" }
+                    for i = 1, #method_helpers do
+                        add_if_match(matches, seen, method_helpers[i], partial, include_dunder)
+                    end
                 else
-                    method_helpers = { "hook", "overload", "overloads" }
-                end
-                for i = 1, #method_helpers do
-                    add_if_match(matches, seen, method_helpers[i], partial, include_dunder)
-                end
-            else
-                -- Plain Lua table: iterate via next to avoid triggering custom __pairs.
-                for k in next, val do
-                    if is_identifier_key(k) then
-                        if not (val == target and k:sub(1, 6) == "_repl_" and partial:sub(1, 5) ~= "_repl") then
-                            add_if_match(matches, seen, k, partial, include_dunder)
+                    -- Plain Lua table or table with a static method table __index (e.g. xml.node, scope):
+                    -- iterate via next to avoid triggering any custom __pairs or function __index.
+                    -- On colon (':') completion, only include callable entries.
+                    local function is_callable_entry(entry)
+                        if type(entry) == "function" then
+                            return true
+                        end
+                        if type(entry) == "table" then
+                            local emt = getmetatable(entry)
+                            return type(emt) == "table" and rawget(emt, "__call") ~= nil
+                        end
+                        return false
+                    end
+                    local hide_internal = partial:sub(1, 1) ~= "_"
+                    for k, v in next, val do
+                        if is_identifier_key(k) then
+                            local is_hidden_helper = (val == target and k:sub(1, 6) == "_repl_" and partial:sub(1, 5) ~= "_repl")
+                                or (hide_internal and (k == "_node_methods" or k == "_db_methods" or k == "_stmt_methods"))
+                            if not is_hidden_helper and (sep ~= ":" or is_callable_entry(v)) then
+                                add_if_match(matches, seen, k, partial, include_dunder)
+                            end
+                        end
+                    end
+                    local mt = getmetatable(val)
+                    local idx_tbl = type(mt) == "table" and rawget(mt, "__index") or nil
+                    if type(idx_tbl) == "table" then
+                        for k, v in next, idx_tbl do
+                            if is_identifier_key(k) and (sep ~= ":" or is_callable_entry(v)) then
+                                add_if_match(matches, seen, k, partial, include_dunder)
+                            end
                         end
                     end
                 end
@@ -2921,6 +2970,1052 @@ local function install_repl_runtime()
     end
 end
 
+local function install_xml_sugar()
+    local x = rawget(_G, "xml")
+    if type(x) ~= "table" or type(rawget(x, "prefs")) == "function" then
+        return
+    end
+
+    local type = type
+    local rawget = rawget
+    local rawset = rawset
+    local next = next
+    local pairs = pairs
+    local ipairs = ipairs
+    local assert = assert
+    local error = error
+    local tonumber = tonumber
+    local tostring = tostring
+    local t_concat = table.concat
+    local t_sort = table.sort
+    local t_remove = table.remove
+    local m_type = math.type
+    local m_tointeger = math.tointeger
+
+    local methods = rawget(x, "_node_methods")
+    if type(methods) ~= "table" then
+        methods = {}
+        rawset(x, "_node_methods", methods)
+    end
+
+    function methods:set_text(str)
+        assert(type(self) == "table", "expected XML node")
+        assert(type(str) == "string", "set_text expects a string")
+        self.children = { str }
+        return self
+    end
+
+    function methods:set_attr(name, value)
+        assert(type(self) == "table", "expected XML node")
+        assert(type(name) == "string" and name ~= "", "set_attr expects a non-empty attribute name")
+        if type(self.attrs) ~= "table" then
+            self.attrs = {}
+        end
+        if value == nil then
+            self.attrs[name] = nil
+        else
+            local tv = type(value)
+            assert(tv == "string" or tv == "number" or tv == "boolean",
+                   "set_attr value must be string, number, boolean, or nil")
+            if tv == "number" then
+                assert(value == value and value ~= math.huge and value ~= -math.huge,
+                       "set_attr number must be finite")
+                self.attrs[name] = (tostring(value):gsub(",", "."))
+            else
+                self.attrs[name] = tostring(value)
+            end
+        end
+        return self
+    end
+
+    function methods:elements(tag)
+        assert(type(self) == "table", "expected XML node")
+        local out = {}
+        local children = self.children
+        if type(children) == "table" then
+            for i = 1, #children do
+                local c = children[i]
+                if type(c) == "table" and (tag == nil or c.tag == tag) then
+                    out[#out + 1] = c
+                end
+            end
+        end
+        return out
+    end
+
+    function methods:child(tag)
+        assert(type(self) == "table", "expected XML node")
+        local children = self.children
+        if type(children) == "table" then
+            for i = 1, #children do
+                local c = children[i]
+                if type(c) == "table" and (tag == nil or c.tag == tag) then
+                    return c
+                end
+            end
+        end
+        return nil
+    end
+
+    function methods:add(child)
+        assert(type(self) == "table", "expected XML node")
+        assert(type(child) == "table" or type(child) == "string",
+               "add expects an XML node table or string")
+        if type(self.children) ~= "table" then
+            self.children = {}
+        end
+        self.children[#self.children + 1] = child
+        return self
+    end
+
+    function methods:remove(target_or_index)
+        assert(type(self) == "table", "expected XML node")
+        local children = self.children
+        if type(children) ~= "table" then
+            return nil
+        end
+        if type(target_or_index) == "number" and m_type(target_or_index) == "integer" then
+            if target_or_index < 1 or target_or_index > #children then
+                return nil
+            end
+            return t_remove(children, target_or_index)
+        end
+        for i = 1, #children do
+            if children[i] == target_or_index then
+                return t_remove(children, i)
+            end
+        end
+        return nil
+    end
+
+    local function skip_sel_ws(path, pos, len)
+        while pos <= len and path:sub(pos, pos):match("%s") do
+            pos = pos + 1
+        end
+        return pos
+    end
+
+    local function parse_selector(path)
+        assert(type(path) == "string" and path ~= "", "selector path must be a non-empty string")
+        local steps = {}
+        local pos = 1
+        local len = #path
+        while pos <= len do
+            local recursive = false
+            if path:sub(pos, pos + 1) == "//" then
+                recursive = true
+                pos = pos + 2
+            elseif path:sub(pos, pos) == "/" then
+                pos = pos + 1
+            elseif #steps > 0 then
+                error("expected '/' between XML selector steps: " .. path, 0)
+            end
+            if pos > len then
+                error("trailing '/' in XML selector: " .. path, 0)
+            end
+
+            local tag_start = pos
+            while pos <= len do
+                local ch = path:sub(pos, pos)
+                if ch == "/" or ch == "[" then
+                    break
+                end
+                pos = pos + 1
+            end
+            local tag = path:sub(tag_start, pos - 1):match("^%s*(.-)%s*$")
+            assert(tag ~= "", "empty tag name in XML selector: " .. path)
+
+            local attrs = {}
+            local index_pred = nil
+            while pos <= len and path:sub(pos, pos) == "[" do
+                pos = skip_sel_ws(path, pos + 1, len)
+                if path:sub(pos, pos) == "@" then
+                    pos = pos + 1
+                    local k_start = pos
+                    while pos <= len do
+                        local ch = path:sub(pos, pos)
+                        if ch == "=" or ch == "]" or ch:match("%s") then
+                            break
+                        end
+                        pos = pos + 1
+                    end
+                    local k = path:sub(k_start, pos - 1)
+                    assert(k ~= "", "empty attribute name in XML selector: " .. path)
+                    pos = skip_sel_ws(path, pos, len)
+                    local v = true -- existence check
+                    if path:sub(pos, pos) == "=" then
+                        pos = skip_sel_ws(path, pos + 1, len)
+                        local q = path:sub(pos, pos)
+                        if q == "'" or q == '"' then
+                            pos = pos + 1
+                            local v_start = pos
+                            while pos <= len and path:sub(pos, pos) ~= q do
+                                pos = pos + 1
+                            end
+                            assert(pos <= len and path:sub(pos, pos) == q,
+                                   "unterminated quoted value in XML selector: " .. path)
+                            v = path:sub(v_start, pos - 1)
+                            pos = skip_sel_ws(path, pos + 1, len)
+                        else
+                            local v_start = pos
+                            while pos <= len and path:sub(pos, pos) ~= "]" do
+                                pos = pos + 1
+                            end
+                            v = path:sub(v_start, pos - 1):match("^%s*(.-)%s*$")
+                        end
+                    end
+                    assert(path:sub(pos, pos) == "]", "expected ']' in XML selector: " .. path)
+                    pos = pos + 1
+                    attrs[#attrs + 1] = { key = k, value = v }
+                else
+                    assert(index_pred == nil, "duplicate index predicate in XML selector: " .. path)
+                    local idx_start = pos
+                    while pos <= len and path:sub(pos, pos) ~= "]" do
+                        pos = pos + 1
+                    end
+                    assert(path:sub(pos, pos) == "]", "expected ']' in XML selector: " .. path)
+                    local raw_idx = path:sub(idx_start, pos - 1):match("^%s*(.-)%s*$")
+                    local parsed = m_tointeger(tonumber(raw_idx))
+                    assert(parsed ~= nil and parsed >= 1,
+                           "XML selector index must be a positive integer: " .. raw_idx)
+                    index_pred = parsed
+                    pos = pos + 1
+                end
+            end
+
+            steps[#steps + 1] = {
+                recursive = recursive,
+                tag = tag,
+                attrs = attrs,
+                index = index_pred,
+            }
+        end
+        return steps
+    end
+
+    local function node_matches_step(node, step)
+        if type(node) ~= "table" then
+            return false
+        end
+        if step.tag ~= "*" and node.tag ~= step.tag then
+            return false
+        end
+        if #step.attrs > 0 then
+            local nattrs = node.attrs
+            if type(nattrs) ~= "table" then
+                return false
+            end
+            for i = 1, #step.attrs do
+                local pred = step.attrs[i]
+                local actual = nattrs[pred.key]
+                if pred.value == true then
+                    if actual == nil then
+                        return false
+                    end
+                elseif actual ~= pred.value then
+                    return false
+                end
+            end
+        end
+        return true
+    end
+
+    local function collect_descendants(node, step, out, matched_seen, visited, depth)
+        if depth > 64 or type(node) ~= "table" or type(node.children) ~= "table" then
+            return
+        end
+        for i = 1, #node.children do
+            local c = node.children[i]
+            if type(c) == "table" and not visited[c] then
+                visited[c] = true
+                if node_matches_step(c, step) and not matched_seen[c] then
+                    matched_seen[c] = true
+                    out[#out + 1] = c
+                end
+                collect_descendants(c, step, out, matched_seen, visited, depth + 1)
+            end
+        end
+    end
+
+    function methods:find_all(path)
+        assert(type(self) == "table", "expected XML node")
+        local steps = parse_selector(path)
+        local current = { self }
+        for s = 1, #steps do
+            local step = steps[s]
+            local next_nodes = {}
+            local seen = {}
+            for i = 1, #current do
+                local parent = current[i]
+                if step.recursive then
+                    local found = {}
+                    collect_descendants(parent, step, found, {}, { [parent] = true }, 0)
+                    if step.index ~= nil then
+                        local pick = found[step.index]
+                        if pick ~= nil and not seen[pick] then
+                            seen[pick] = true
+                            next_nodes[#next_nodes + 1] = pick
+                        end
+                    else
+                        for j = 1, #found do
+                            if not seen[found[j]] then
+                                seen[found[j]] = true
+                                next_nodes[#next_nodes + 1] = found[j]
+                            end
+                        end
+                    end
+                elseif type(parent.children) == "table" then
+                    local matched_here = {}
+                    for j = 1, #parent.children do
+                        local c = parent.children[j]
+                        if node_matches_step(c, step) then
+                            matched_here[#matched_here + 1] = c
+                        end
+                    end
+                    if step.index ~= nil then
+                        local pick = matched_here[step.index]
+                        if pick ~= nil and not seen[pick] then
+                            seen[pick] = true
+                            next_nodes[#next_nodes + 1] = pick
+                        end
+                    else
+                        for j = 1, #matched_here do
+                            if not seen[matched_here[j]] then
+                                seen[matched_here[j]] = true
+                                next_nodes[#next_nodes + 1] = matched_here[j]
+                            end
+                        end
+                    end
+                end
+            end
+            current = next_nodes
+            if #current == 0 then
+                break
+            end
+        end
+        return current
+    end
+
+    function methods:find(path)
+        local matches = self:find_all(path)
+        return matches[1]
+    end
+
+    local function node_to_plain(node, depth, ancestors, budget)
+        if ancestors[node] then
+            error("cyclic XML node reference", 0)
+        end
+        if depth > 64 then
+            error("XML node depth limit exceeded", 0)
+        end
+        budget.nodes = budget.nodes + 1
+        if budget.nodes > 65536 then
+            error("XML node count limit exceeded", 0)
+        end
+        ancestors[node] = true
+        local attrs = {}
+        if type(node.attrs) == "table" then
+            for k, v in pairs(node.attrs) do
+                attrs[k] = v
+            end
+        end
+        local children = {}
+        local text_parts = {}
+        local has_elem = false
+        if type(node.children) == "table" then
+            for i = 1, #node.children do
+                local c = node.children[i]
+                if type(c) == "table" then
+                    has_elem = true
+                    children[#children + 1] = node_to_plain(c, depth + 1, ancestors, budget)
+                elseif type(c) == "string" then
+                    text_parts[#text_parts + 1] = c
+                end
+            end
+        end
+        ancestors[node] = nil
+        local out = { tag = node.tag, attrs = attrs }
+        if has_elem then
+            out.children = children
+            if #text_parts > 0 then
+                out.text = t_concat(text_parts)
+            end
+        else
+            out.text = t_concat(text_parts)
+        end
+        return out
+    end
+
+    function methods:to_table()
+        assert(type(self) == "table", "expected XML node")
+        return node_to_plain(self, 0, {}, { nodes = 0 })
+    end
+
+    local function require_fs(op)
+        local f = rawget(_G, "fs")
+        assert(type(f) == "table" and type(f[op]) == "function",
+               "fs." .. op .. " is unavailable in this Lua session")
+        return f[op]
+    end
+
+    function x.load(path, opts)
+        assert(type(path) == "string" and path ~= "", "xml.load expects a file path")
+        local read_fn = require_fs("read")
+        local content = read_fn(path)
+        return x.parse(content, opts)
+    end
+    x.parse_file = x.load
+
+    function x.save(path, node, opts)
+        assert(type(path) == "string" and path ~= "", "xml.save expects a file path")
+        local write_fn = require_fs("write")
+        local encoded = x.encode(node, opts)
+        return write_fn(path, encoded)
+    end
+    x.write_file = x.save
+
+    -- Android SharedPreferences (<map>...</map>) sugar
+    function x.prefs(xml_or_path)
+        assert(type(xml_or_path) == "string" and xml_or_path ~= "",
+               "xml.prefs expects XML text or a file path")
+        local probe = xml_or_path
+        if probe:sub(1, 3) == "\239\187\191" then
+            probe = probe:sub(4)
+        end
+        local root
+        if probe:match("^%s*<") then
+            root = x.parse(xml_or_path)
+        else
+            root = x.load(xml_or_path)
+        end
+        assert(root.tag == "map",
+               "xml.prefs expected SharedPreferences <map> root, got <" .. tostring(root.tag) .. ">")
+        local result = {}
+        local elems = root:elements()
+        for i = 1, #elems do
+            local el = elems[i]
+            local name = el:attr("name")
+            if name ~= nil then
+                local tag = el.tag
+                if tag == "string" then
+                    result[name] = el:text()
+                elseif tag == "int" or tag == "long" then
+                    local raw = el:attr("value")
+                    local num = raw ~= nil and tonumber(raw) or nil
+                    result[name] = (num ~= nil and m_tointeger(num)) or num
+                elseif tag == "float" or tag == "double" then
+                    local raw = el:attr("value")
+                    if raw == "NaN" then
+                        result[name] = 0 / 0
+                    elseif raw == "Infinity" then
+                        result[name] = math.huge
+                    elseif raw == "-Infinity" then
+                        result[name] = -math.huge
+                    else
+                        result[name] = raw ~= nil and tonumber(raw) or nil
+                    end
+                elseif tag == "boolean" then
+                    result[name] = (el:attr("value") == "true")
+                elseif tag == "set" then
+                    local list = {}
+                    local items = el:elements("string")
+                    for j = 1, #items do
+                        list[j] = items[j]:text()
+                    end
+                    result[name] = list
+                end
+            end
+        end
+        return result
+    end
+
+    function x.encode_prefs(tbl, opts)
+        assert(type(tbl) == "table", "xml.encode_prefs expects a table")
+        local keys = {}
+        for k in next, tbl do
+            assert(type(k) == "string", "SharedPreferences keys must be strings")
+            keys[#keys + 1] = k
+        end
+        t_sort(keys)
+        local root = x.node("map")
+        for i = 1, #keys do
+            local k = keys[i]
+            local v = tbl[k]
+            local tv = type(v)
+            if tv == "string" then
+                root:add(x.node("string", { name = k }, v))
+            elseif tv == "boolean" then
+                root:add(x.node("boolean", { name = k, value = v and "true" or "false" }))
+            elseif tv == "number" then
+                if m_type(v) == "integer" then
+                    local tag = (v >= -2147483648 and v <= 2147483647) and "int" or "long"
+                    root:add(x.node(tag, { name = k, value = tostring(v) }))
+                else
+                    local fstr
+                    if v ~= v then
+                        fstr = "NaN"
+                    elseif v == math.huge then
+                        fstr = "Infinity"
+                    elseif v == -math.huge then
+                        fstr = "-Infinity"
+                    else
+                        fstr = (tostring(v):gsub(",", "."))
+                    end
+                    root:add(x.node("float", { name = k, value = fstr }))
+                end
+            elseif tv == "table" then
+                local n = #v
+                local count = 0
+                for sk, sv in next, v do
+                    count = count + 1
+                    assert(type(sk) == "number" and m_type(sk) == "integer" and sk >= 1 and sk <= n,
+                           "SharedPreferences <set> for key '" .. k .. "' must be a contiguous string array")
+                    assert(type(sv) == "string",
+                           "SharedPreferences <set> elements for key '" .. k .. "' must be strings")
+                end
+                assert(count == n,
+                       "SharedPreferences <set> for key '" .. k .. "' must not be sparse")
+                local set_node = x.node("set", { name = k })
+                for j = 1, n do
+                    set_node:add(x.node("string", {}, v[j]))
+                end
+                root:add(set_node)
+            else
+                error("unsupported SharedPreferences value type for key '" .. k .. "': " .. tv, 0)
+            end
+        end
+        local enc_opts = { declaration = true, indent = "  " }
+        if type(opts) == "table" then
+            if opts.declaration ~= nil then enc_opts.declaration = opts.declaration end
+            if opts.indent ~= nil then enc_opts.indent = opts.indent end
+        end
+        return x.encode(root, enc_opts)
+    end
+
+    function x.save_prefs(path, tbl, opts)
+        assert(type(path) == "string" and path ~= "", "xml.save_prefs expects a file path")
+        local write_fn = require_fs("write")
+        return write_fn(path, x.encode_prefs(tbl, opts))
+    end
+end
+
+local function install_sqlite_sugar()
+    local sq = rawget(_G, "sqlite")
+    if type(sq) ~= "table" or type(rawget(sq, "with")) == "function" then
+        return
+    end
+
+    local type = type
+    local rawget = rawget
+    local rawequal = rawequal
+    local next = next
+    local pairs = pairs
+    local pcall = pcall
+    local assert = assert
+    local error = error
+    local tostring = tostring
+    local t_concat = table.concat
+    local t_sort = table.sort
+    local t_pack = table.pack
+    local t_unpack = table.unpack
+    local m_type = math.type
+    local m_huge = math.huge
+
+    local json_table = rawget(_G, "json")
+    local pinned_json_null = type(json_table) == "table" and rawget(json_table, "null") or nil
+
+    local db_methods = rawget(sq, "_db_methods")
+    if type(db_methods) ~= "table" then
+        db_methods = {}
+        rawset(sq, "_db_methods", db_methods)
+    end
+
+    local function quote_ident(name)
+        assert(type(name) == "string" and name ~= "" and not name:find("\0", 1, true),
+               "SQLite identifier must be a non-empty string without NUL bytes")
+        return '"' .. (name:gsub('"', '""')) .. '"'
+    end
+
+    local function is_sql_null(v)
+        if v == nil then
+            return true
+        end
+        if rawequal(v, sq.NULL) then
+            return true
+        end
+        if pinned_json_null ~= nil then
+            return rawequal(v, pinned_json_null)
+        end
+        local j = rawget(_G, "json")
+        if type(j) == "table" then
+            local jn = rawget(j, "null")
+            if jn ~= nil then
+                pinned_json_null = jn
+                return rawequal(v, jn)
+            end
+        end
+        return false
+    end
+
+    local function sorted_keys(tbl)
+        local keys = {}
+        for k in next, tbl do
+            assert(type(k) == "string" and k ~= "" and not k:find("\0", 1, true),
+                   "SQLite column name must be a non-empty string without NUL bytes")
+            keys[#keys + 1] = k
+        end
+        t_sort(keys)
+        return keys
+    end
+
+    local function build_where_clause(where, where_params, params_out, param_offset)
+        param_offset = param_offset or 0
+        if where == nil then
+            return nil
+        end
+        if type(where) == "table" then
+            local keys = sorted_keys(where)
+            if #keys == 0 then
+                return nil
+            end
+            local clauses = {}
+            local pos = 0
+            for i = 1, #keys do
+                local k = keys[i]
+                local v = where[k]
+                if is_sql_null(v) then
+                    clauses[i] = quote_ident(k) .. " IS NULL"
+                else
+                    clauses[i] = quote_ident(k) .. " = ?"
+                    pos = pos + 1
+                    params_out[param_offset + pos] = v
+                end
+            end
+            return t_concat(clauses, " AND ")
+        elseif type(where) == "string" then
+            assert(not where:match("^%s*$"), "WHERE clause string must not be empty")
+            assert(not where:find("\0", 1, true), "WHERE clause must not contain NUL bytes")
+            if param_offset > 0 then
+                assert(not where:find("%?%d"),
+                       "numbered ?N placeholders are not supported in db:update string WHERE; use ? or :name")
+            end
+            if where_params ~= nil then
+                assert(type(where_params) == "table", "where_params must be a table")
+                for k, v in next, where_params do
+                    if type(k) == "number" and m_type(k) == "integer" and k >= 1 then
+                        params_out[param_offset + k] = v
+                    elseif type(k) == "string" and k ~= "" then
+                        params_out[k] = v
+                    else
+                        error("where_params keys must be positive integers or non-empty strings", 0)
+                    end
+                end
+            end
+            return where
+        end
+        error("WHERE clause must be a table, SQL string, or nil", 0)
+    end
+
+    local function format_order_term(col, dir_raw)
+        local dir_trim = (dir_raw or ""):match("^%s*(.-)%s*$"):upper()
+        if dir_trim == "" then
+            return quote_ident(col)
+        elseif dir_trim == "ASC" or dir_trim == "DESC" then
+            return quote_ident(col) .. " " .. dir_trim
+        end
+        error("invalid ORDER BY direction: " .. dir_trim, 0)
+    end
+
+    local function build_order_clause(order)
+        if order == nil then
+            return nil
+        end
+        local out = {}
+        if type(order) == "string" then
+            assert(not order:match("^%s*$"), "order string must not be empty")
+            for part in (order .. ","):gmatch("(.-),") do
+                local trimmed = part:match("^%s*(.-)%s*$")
+                if trimmed ~= "" then
+                    local col, dir = trimmed:match("^([A-Za-z_][A-Za-z0-9_]*)(.*)$")
+                    assert(col ~= nil, "invalid ORDER BY term: " .. trimmed)
+                    out[#out + 1] = format_order_term(col, dir)
+                end
+            end
+        elseif type(order) == "table" then
+            local count = 0
+            for k in next, order do
+                assert(type(k) == "number" and m_type(k) == "integer" and k >= 1,
+                       "order table must be a contiguous array")
+                count = count + 1
+            end
+            assert(count > 0 and count == #order, "order table must be a non-empty contiguous array")
+            for i = 1, count do
+                local entry = order[i]
+                if type(entry) == "string" then
+                    local trimmed = entry:match("^%s*(.-)%s*$")
+                    local col, dir = trimmed:match("^([A-Za-z_][A-Za-z0-9_]*)(.*)$")
+                    assert(col ~= nil, "invalid ORDER BY term: " .. trimmed)
+                    out[#out + 1] = format_order_term(col, dir)
+                elseif type(entry) == "table" then
+                    assert(type(entry[1]) == "string" and entry[1] ~= "",
+                           "order tuple must start with a column name string")
+                    assert(entry[2] == nil or type(entry[2]) == "string",
+                           "order tuple direction must be a string or nil")
+                    out[#out + 1] = format_order_term(entry[1], entry[2])
+                else
+                    error("order entries must be strings or { column, direction } tables", 0)
+                end
+            end
+        else
+            error("order option must be a string or table", 0)
+        end
+        assert(#out > 0, "order option must specify at least one column")
+        return t_concat(out, ", ")
+    end
+
+    local function merge_find_opts(where, opts)
+        local merged = {}
+        if opts ~= nil then
+            assert(type(opts) == "table", "opts must be a table")
+            for k, v in next, opts do
+                if type(k) == "number" then
+                    error("find/first opts must be an options table (pass SQL parameters via { params = ... })", 0)
+                end
+                merged[k] = v
+            end
+        end
+        merged.where = where
+        return merged
+    end
+
+    -- Top-level ergonomic constructors
+    function sq.memory(opts)
+        return sq.open(":memory:", opts)
+    end
+
+    function sq.open_ro(path, opts)
+        if opts == nil then
+            return sq.open(path, "ro")
+        end
+        assert(type(opts) == "table", "sqlite.open_ro expects an optional options table")
+        local copy = {}
+        for k, v in pairs(opts) do
+            copy[k] = v
+        end
+        copy.mode = "ro"
+        return sq.open(path, copy)
+    end
+
+    function sq.with(path, mode_or_fn, fn)
+        local mode_or_opts = nil
+        local callback = fn
+        if type(mode_or_fn) == "function" and fn == nil then
+            callback = mode_or_fn
+        else
+            mode_or_opts = mode_or_fn
+        end
+        assert(type(callback) == "function", "sqlite.with expects a callback function")
+        local db = sq.open(path, mode_or_opts)
+        local results = t_pack(pcall(callback, db))
+        if db:is_open() then
+            db:close()
+        end
+        if not results[1] then
+            error(results[2], 0)
+        end
+        return t_unpack(results, 2, results.n)
+    end
+
+    -- Introspection helpers
+    function db_methods:tables()
+        local rows = self:query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+        local out = {}
+        for i = 1, #rows do
+            out[i] = rows[i].name
+        end
+        return out
+    end
+
+    function db_methods:columns(table_name)
+        return self:query("PRAGMA table_info(" .. quote_ident(table_name) .. ")")
+    end
+
+    function db_methods:schema(table_name)
+        if table_name ~= nil then
+            assert(type(table_name) == "string" and table_name ~= "", "table_name must be a string")
+            return self:scalar(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                { table_name }
+            )
+        end
+        local rows = self:query(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+        local out = {}
+        for i = 1, #rows do
+            out[rows[i].name] = rows[i].sql
+        end
+        return out
+    end
+
+    function db_methods:pragma(name, value)
+        assert(type(name) == "string" and name:match("^[A-Za-z_][A-Za-z0-9_]*$") ~= nil,
+               "invalid PRAGMA name: " .. tostring(name))
+        if value == nil then
+            return self:scalar("PRAGMA " .. name)
+        end
+        local tv = type(value)
+        local rendered
+        if tv == "boolean" then
+            rendered = value and "ON" or "OFF"
+        elseif tv == "number" then
+            assert(value == value and value ~= m_huge and value ~= -m_huge,
+                   "PRAGMA numeric value must be finite")
+            rendered = (tostring(value):gsub(",", "."))
+        elseif tv == "string" then
+            assert(not value:find("\0", 1, true), "PRAGMA string value must not contain NUL bytes")
+            rendered = "'" .. (value:gsub("'", "''")) .. "'"
+        else
+            error("unsupported PRAGMA value type: " .. tv, 0)
+        end
+        self:exec("PRAGMA " .. name .. " = " .. rendered, {})
+        return self:scalar("PRAGMA " .. name)
+    end
+
+    -- CRUD sugar (all values strictly parameterized, all identifiers quoted)
+    function db_methods:insert(table_name, row_or_rows)
+        assert(type(row_or_rows) == "table", "db:insert expects a row table or array of rows")
+        local tbl_q = quote_ident(table_name)
+        if type(row_or_rows[1]) == "table" then
+            local count = 0
+            for k in next, row_or_rows do
+                assert(type(k) == "number" and m_type(k) == "integer" and k >= 1,
+                       "batch insert expects a contiguous array of row tables")
+                count = count + 1
+            end
+            assert(count > 0 and count == #row_or_rows,
+                   "batch insert array must not contain holes")
+            return self:transaction(function()
+                local inserted = 0
+                local cached_key = nil
+                local cached_stmt = nil
+                local ok_batch, batch_err = pcall(function()
+                    for r = 1, count do
+                        local row = row_or_rows[r]
+                        assert(type(row) == "table", "batch insert item must be a table")
+                        local keys = sorted_keys(row)
+                        assert(#keys > 0, "insert row must not be empty")
+                        local sig = t_concat(keys, "\0")
+                        if sig ~= cached_key then
+                            if cached_stmt ~= nil then
+                                cached_stmt:close()
+                                cached_stmt = nil
+                            end
+                            local qcols, ph = {}, {}
+                            for i = 1, #keys do
+                                qcols[i] = quote_ident(keys[i])
+                                ph[i] = "?"
+                            end
+                            local sql = "INSERT INTO " .. tbl_q .. " (" .. t_concat(qcols, ", ") ..
+                                        ") VALUES (" .. t_concat(ph, ", ") .. ")"
+                            cached_stmt = self:prepare(sql)
+                            cached_key = sig
+                        end
+                        local vals = {}
+                        for i = 1, #keys do
+                            vals[i] = row[keys[i]]
+                        end
+                        cached_stmt:run(vals)
+                        inserted = inserted + 1
+                    end
+                end)
+                if cached_stmt ~= nil then
+                    cached_stmt:close()
+                end
+                if not ok_batch then
+                    error(batch_err, 0)
+                end
+                return inserted
+            end)
+        end
+
+        local keys = sorted_keys(row_or_rows)
+        assert(#keys > 0, "insert row must not be empty")
+        local qcols, ph, vals = {}, {}, {}
+        for i = 1, #keys do
+            qcols[i] = quote_ident(keys[i])
+            ph[i] = "?"
+            vals[i] = row_or_rows[keys[i]]
+        end
+        local sql = "INSERT INTO " .. tbl_q .. " (" .. t_concat(qcols, ", ") ..
+                    ") VALUES (" .. t_concat(ph, ", ") .. ")"
+        local _, rowid = self:exec(sql, vals)
+        return rowid
+    end
+
+    function db_methods:upsert(table_name, row, conflict_cols)
+        assert(type(row) == "table", "db:upsert expects a row table")
+        local keys = sorted_keys(row)
+        assert(#keys > 0, "upsert row must not be empty")
+
+        local conflict_list = {}
+        local conflict_set = {}
+        if type(conflict_cols) == "string" then
+            conflict_list[1] = quote_ident(conflict_cols)
+            conflict_set[conflict_cols] = true
+        elseif type(conflict_cols) == "table" and #conflict_cols > 0 then
+            for i = 1, #conflict_cols do
+                conflict_list[i] = quote_ident(conflict_cols[i])
+                conflict_set[conflict_cols[i]] = true
+            end
+        else
+            error("db:upsert expects conflict_cols as a column name string or non-empty array", 0)
+        end
+
+        local qcols, ph, vals, updates = {}, {}, {}, {}
+        for i = 1, #keys do
+            local k = keys[i]
+            local qk = quote_ident(k)
+            qcols[i] = qk
+            ph[i] = "?"
+            vals[i] = row[k]
+            if not conflict_set[k] then
+                updates[#updates + 1] = qk .. " = excluded." .. qk
+            end
+        end
+
+        local action = #updates > 0
+            and ("DO UPDATE SET " .. t_concat(updates, ", "))
+            or "DO NOTHING"
+        local sql = "INSERT INTO " .. quote_ident(table_name) .. " (" .. t_concat(qcols, ", ") ..
+                    ") VALUES (" .. t_concat(ph, ", ") .. ") ON CONFLICT(" ..
+                    t_concat(conflict_list, ", ") .. ") " .. action
+        return self:exec(sql, vals)
+    end
+
+    function db_methods:update(table_name, values, where, where_params)
+        assert(type(values) == "table", "db:update expects a values table")
+        local keys = sorted_keys(values)
+        assert(#keys > 0, "db:update values table must not be empty")
+        assert(where ~= nil, "db:update requires a WHERE clause (pass true to update all rows)")
+
+        local sets, params = {}, {}
+        for i = 1, #keys do
+            local k = keys[i]
+            sets[i] = quote_ident(k) .. " = ?"
+            params[i] = values[k]
+        end
+
+        local sql = "UPDATE " .. quote_ident(table_name) .. " SET " .. t_concat(sets, ", ")
+        if where ~= true then
+            local clause = build_where_clause(where, where_params, params, #keys)
+            assert(clause ~= nil, "db:update WHERE table must not be empty (pass true to update all rows)")
+            sql = sql .. " WHERE " .. clause
+        end
+        local changes = self:exec(sql, params)
+        return changes
+    end
+
+    function db_methods:delete(table_name, where, where_params)
+        assert(where ~= nil, "db:delete requires a WHERE clause (pass true to delete all rows)")
+        local params = {}
+        local sql = "DELETE FROM " .. quote_ident(table_name)
+        if where ~= true then
+            local clause = build_where_clause(where, where_params, params, 0)
+            assert(clause ~= nil, "db:delete WHERE table must not be empty (pass true to delete all rows)")
+            sql = sql .. " WHERE " .. clause
+        end
+        local changes = self:exec(sql, params)
+        return changes
+    end
+
+    function db_methods:select(table_name, opts)
+        opts = opts or {}
+        assert(type(opts) == "table", "db:select expects an optional options table")
+        local col_sql = "*"
+        if opts.cols ~= nil then
+            if type(opts.cols) == "string" then
+                col_sql = quote_ident(opts.cols)
+            elseif type(opts.cols) == "table" then
+                local count = 0
+                for k in next, opts.cols do
+                    assert(type(k) == "number" and m_type(k) == "integer" and k >= 1,
+                           "cols table must be a contiguous array of column names")
+                    count = count + 1
+                end
+                assert(count > 0 and count == #opts.cols,
+                       "cols table must be a non-empty contiguous array of column names")
+                local qcols = {}
+                for i = 1, count do
+                    qcols[i] = quote_ident(opts.cols[i])
+                end
+                col_sql = t_concat(qcols, ", ")
+            else
+                error("cols option must be a string or non-empty array of strings", 0)
+            end
+        end
+
+        local params = {}
+        local sql = "SELECT " .. col_sql .. " FROM " .. quote_ident(table_name)
+        if opts.where ~= nil then
+            local clause = build_where_clause(opts.where, opts.params, params, 0)
+            if clause ~= nil then
+                sql = sql .. " WHERE " .. clause
+            end
+        end
+        local order_sql = build_order_clause(opts.order)
+        if order_sql ~= nil then
+            sql = sql .. " ORDER BY " .. order_sql
+        end
+        if opts.limit ~= nil then
+            assert(type(opts.limit) == "number" and m_type(opts.limit) == "integer" and opts.limit >= 0,
+                   "limit must be a non-negative integer")
+            sql = sql .. " LIMIT " .. tostring(opts.limit)
+        end
+        if opts.offset ~= nil then
+            assert(type(opts.offset) == "number" and m_type(opts.offset) == "integer" and opts.offset >= 0,
+                   "offset must be a non-negative integer")
+            if opts.limit == nil then
+                sql = sql .. " LIMIT -1"
+            end
+            sql = sql .. " OFFSET " .. tostring(opts.offset)
+        end
+
+        local query_opts = nil
+        if opts.mode ~= nil or opts.max_rows ~= nil or opts.null ~= nil then
+            query_opts = { mode = opts.mode, max_rows = opts.max_rows, null = opts.null }
+        end
+        return self:query(sql, next(params) ~= nil and params or nil, query_opts)
+    end
+
+    function db_methods:find(table_name, where, opts)
+        return self:select(table_name, merge_find_opts(where, opts))
+    end
+
+    function db_methods:first(table_name, where, opts)
+        local merged = merge_find_opts(where, opts)
+        merged.limit = 1
+        local rows = self:select(table_name, merged)
+        return rows[1]
+    end
+
+    function db_methods:count(table_name, where, where_params)
+        local params = {}
+        local sql = "SELECT COUNT(*) FROM " .. quote_ident(table_name)
+        if where ~= nil then
+            local clause = build_where_clause(where, where_params, params, 0)
+            if clause ~= nil then
+                sql = sql .. " WHERE " .. clause
+            end
+        end
+        return self:scalar(sql, next(params) ~= nil and params or nil)
+    end
+end
+
 install_java_resource_guards()
 install_resource_scope()
+install_xml_sugar()
+install_sqlite_sugar()
 install_repl_runtime()
