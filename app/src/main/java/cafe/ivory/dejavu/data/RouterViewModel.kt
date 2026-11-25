@@ -41,7 +41,8 @@ internal class RouterViewModel(
             while (isActive) {
                 val discover = ticks == 0 || failures >= 5 || (mutableState.value.service?.running == false && ticks % 5 == 0)
                 if (discover) failures = 0
-                val success = update(discover = discover)
+                val showLoading = mutableState.value.service == null
+                val success = update(discover = discover, showLoading = showLoading)
                 ticks++
                 failures = if (success) 0 else failures + 1
                 delay(3000)
@@ -49,11 +50,11 @@ internal class RouterViewModel(
         }
     }
     fun refresh() {
-        scope.launch { update(discover = true) }
+        scope.launch { update(discover = true, showLoading = true) }
     }
-    private suspend fun update(discover: Boolean): Boolean = mutex.withLock {
+    private suspend fun update(discover: Boolean, showLoading: Boolean): Boolean = mutex.withLock {
         reading = true
-        mutableState.update { it.copy(loading = true) }
+        if (showLoading) mutableState.update { it.copy(loading = true) }
         try {
             val previous = mutableState.value.service
             if (!discover && previous == null) return@withLock false
@@ -69,7 +70,7 @@ internal class RouterViewModel(
             false
         } finally {
             reading = false
-            mutableState.update { it.copy(loading = false) }
+            if (showLoading) mutableState.update { it.copy(loading = false) }
         }
     }
     fun setRunning(running: Boolean) = action {

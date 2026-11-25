@@ -272,6 +272,33 @@ private fun upstreamCommandsKeepTheirIdentityAndTokenSemantics() {
     }
 }
 
+private fun steadyPollingDoesNotFlashLoading() {
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val calls = AtomicInteger()
+    Fixture().use { fixture ->
+        fixture.main { setVisible(true) }
+        fixture.awaitState("Initial snapshot") { it.snapshot?.pid == 42 && !it.loading }
+        LocalSocket.onRead = {
+            if (calls.getAndIncrement() == 0) {
+                entered.countDown()
+                release.awaitEvent("Release silent revisit read")
+            }
+        }
+        try {
+            fixture.main { setVisible(false); setVisible(true) }
+            entered.awaitEvent("Silent revisit read did not start")
+            check(!fixture.model.state.value.loading) {
+                "Silent polling refresh must not flash loading when service state is already known"
+            }
+            LocalSocket.response = response(44)
+        } finally { release.countDown() }
+        fixture.awaitState("Silent revisit must publish updated snapshot") {
+            it.snapshot?.pid == 44 && !it.loading
+        }
+    }
+}
+
 fun main() {
     val tests = listOf(
         "rapid visibility cancels root discovery" to ::rapidVisibilityCancelsRootDiscovery,
@@ -283,6 +310,7 @@ fun main() {
         "offscreen refresh releases queued stop" to ::offscreenRefreshReleasesQueuedStop,
         "visibility preserves authorized control mutation" to ::visibilityDoesNotCancelAuthorizedControlMutation,
         "upstream commands preserve target identity and token semantics" to ::upstreamCommandsKeepTheirIdentityAndTokenSemantics,
+        "steady polling does not flash loading" to ::steadyPollingDoesNotFlashLoading,
     )
     for ((name, test) in tests) {
         test()

@@ -2,6 +2,7 @@ package cafe.ivory.dejavu.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -70,54 +71,62 @@ internal fun RouterScreen(
         contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
+        item(key = "service") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SectionTitle(title = stringResource(R.string.router_service), subtitle = stringResource(R.string.router_independent))
                 ManagerGroup {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (state.loading || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        LiveStatus(
-                            label = stringResource(
-                                when {
-                                    !state.healthKnown && state.failure != null -> R.string.router_unknown
-                                    state.service == null -> R.string.router_loading
-                                    !state.service.installed -> R.string.router_unavailable
-                                    running -> R.string.router_running
-                                    else -> R.string.router_stopped
-                                },
-                            ),
-                            live = running && state.healthKnown,
-                            error = !state.healthKnown && state.failure != null,
-                        )
-                        if (state.service?.installed == false) Text(stringResource(R.string.router_install_hint), style = MaterialTheme.typography.bodySmall)
-                        if (state.service?.installed == true) {
-                            Text(stringResource(if (state.service.enabled) R.string.router_boot_enabled else R.string.router_boot_disabled), style = MaterialTheme.typography.bodySmall)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
-                                val toggleEnabled = !state.busy && !state.loading && (state.healthKnown || running)
-                                if (running) {
-                                    OutlinedButton(
-                                        onClick = { onSetRunning(false) },
-                                        enabled = toggleEnabled,
-                                        modifier = Modifier.heightIn(min = 48.dp),
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (toggleEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
-                                        ),
-                                    ) { Text(stringResource(R.string.router_stop)) }
-                                    OutlinedButton(
-                                        onClick = { onReconnect(null) },
-                                        enabled = canManage,
-                                        modifier = Modifier.heightIn(min = 48.dp),
-                                    ) { Text(stringResource(R.string.router_reconnect_all)) }
-                                } else {
-                                    Button(
-                                        onClick = { onSetRunning(true) },
-                                        enabled = toggleEnabled,
-                                        modifier = Modifier.heightIn(min = 48.dp),
-                                    ) { Text(stringResource(R.string.router_start)) }
+                    Box(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LiveStatus(
+                                label = stringResource(
+                                    when {
+                                        !state.healthKnown && state.failure != null -> R.string.router_unknown
+                                        state.service == null -> R.string.router_loading
+                                        !state.service.installed -> R.string.router_unavailable
+                                        running -> R.string.router_running
+                                        else -> R.string.router_stopped
+                                    },
+                                ),
+                                live = running && state.healthKnown,
+                                error = !state.healthKnown && state.failure != null,
+                            )
+                            if (state.service?.installed == false) Text(stringResource(R.string.router_install_hint), style = MaterialTheme.typography.bodySmall)
+                            if (state.service?.installed == true) {
+                                Text(stringResource(if (state.service.enabled) R.string.router_boot_enabled else R.string.router_boot_disabled), style = MaterialTheme.typography.bodySmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                                    val toggleEnabled = !state.busy && !state.loading && (state.healthKnown || running)
+                                    if (running) {
+                                        OutlinedButton(
+                                            onClick = { onSetRunning(false) },
+                                            enabled = toggleEnabled,
+                                            modifier = Modifier.heightIn(min = 48.dp),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (toggleEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+                                            ),
+                                        ) { Text(stringResource(R.string.router_stop)) }
+                                        OutlinedButton(
+                                            onClick = { onReconnect(null) },
+                                            enabled = canManage,
+                                            modifier = Modifier.heightIn(min = 48.dp),
+                                        ) { Text(stringResource(R.string.router_reconnect_all)) }
+                                    } else {
+                                        Button(
+                                            onClick = { onSetRunning(true) },
+                                            enabled = toggleEnabled,
+                                            modifier = Modifier.heightIn(min = 48.dp),
+                                        ) { Text(stringResource(R.string.router_start)) }
+                                    }
                                 }
                             }
+                        }
+                        if (state.loading || state.busy) {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.TopCenter),
+                            )
                         }
                     }
                 }
@@ -125,7 +134,7 @@ internal fun RouterScreen(
             }
         }
         if (snapshot != null && running) {
-            item {
+            item(key = "connections") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(title = stringResource(R.string.router_connections), subtitle = stringResource(R.string.router_upstreams_hint))
                     ManagerGroup {
@@ -176,7 +185,7 @@ internal fun RouterScreen(
                     }
                 }
             }
-            item {
+            item(key = "routes_header") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     SectionTitle(
                         title = stringResource(R.string.router_routes),
@@ -188,7 +197,7 @@ internal fun RouterScreen(
                     }
                 }
             }
-            if (snapshot.routes.isEmpty()) item {
+            if (snapshot.routes.isEmpty()) item(key = "routes_empty") {
                 EmptyState(stringResource(R.string.router_no_routes), stringResource(R.string.router_no_routes_detail))
             }
             items(snapshot.routes, key = { "route:${it.route}" }) { route ->
