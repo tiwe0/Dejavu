@@ -585,7 +585,7 @@
        trampoline = GenerateNormalTrampolineBuffer(from, to);
      }
 -    return true;
-+    return trampoline != nullptr;
++    return near_trampoline != nullptr || trampoline != nullptr;
    }
 
    void GenerateRelocatedCode() {

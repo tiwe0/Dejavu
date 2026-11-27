@@ -93,12 +93,42 @@ def root_shell(serial, command, check=True):
 
 
 def read_metadata(serial, process_name):
-    pid_output = root_shell(serial, f"pidof {process_name}").stdout.strip()
+    pid_result = root_shell(serial, f"pidof {shlex.quote(process_name)}", check=False)
+    pid_output = pid_result.stdout.strip() if pid_result.returncode == 0 else ""
     pids = [value for value in pid_output.split() if value.isdigit() and int(value) > 0]
     if not pids:
         raise ControlError(f"target process is not running: {process_name}")
 
+    if len(pids) > 1:
+        # Prefer the newest .rpc file and skip zombie/mismatched PIDs on multi-user/restart races.
+        run_dir = "/data/adb/modules/dejavu_zygisk/run"
+        order_result = root_shell(serial, f"ls -1t {run_dir}", check=False)
+        if order_result.returncode == 0:
+            pid_set = set(pids)
+            ordered = []
+            prefix = f"{process_name}."
+            for line in order_result.stdout.splitlines():
+                name = line.strip()
+                if name.startswith(prefix) and name.endswith(".rpc"):
+                    candidate = name[len(prefix) : -4]
+                    if candidate in pid_set and candidate not in ordered:
+                        ordered.append(candidate)
+            for candidate in pids:
+                if candidate not in ordered:
+                    ordered.append(candidate)
+            pids = ordered
+
     for pid_text in pids:
+        if len(pids) > 1:
+            alive_check = root_shell(
+                serial,
+                f"state=$(sed 's/.*) //' /proc/{pid_text}/stat 2>/dev/null | cut -d' ' -f1); "
+                f'[ "$state" != "Z" ] && [ "$state" != "X" ] && '
+                f"tr '\\000' '\\n' < /proc/{pid_text}/cmdline | head -n 1",
+                check=False,
+            )
+            if alive_check.returncode != 0 or alive_check.stdout.strip() != process_name:
+                continue
         path = (
             "/data/adb/modules/dejavu_zygisk/run/"
             f"{process_name}.{pid_text}.rpc"
@@ -268,7 +298,7 @@ def execute_with_port(
         )
         if (
             status == RPC_UNAVAILABLE
-            and payload == b"target Agent is not connected"
+            and payload.startswith(b"target Agent is not connected")
             and time.monotonic() < deadline
         ):
             time.sleep(0.1)

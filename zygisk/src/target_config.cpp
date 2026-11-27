@@ -1,8 +1,12 @@
 #include "target_config.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 namespace {
 
@@ -27,7 +31,7 @@ bool line_matches(const char *begin, const char *end, const char *process_name) 
     return strlen(process_name) == length && memcmp(begin, process_name, length) == 0;
 }
 
-}  // namespace
+} // namespace
 
 bool target_config_matches(int module_dir_fd, const char *process_name) {
     char buffer[kMaximumConfigSize + 1];
@@ -39,6 +43,13 @@ bool target_config_matches(int module_dir_fd, const char *process_name) {
     }
     config_fd = openat(module_dir_fd, kTargetsPath, O_RDONLY | O_CLOEXEC);
     if (config_fd < 0) {
+#ifdef __ANDROID__
+        if (errno != ENOENT) {
+            __android_log_print(ANDROID_LOG_ERROR, "DejavuZygisk",
+                                "unable to open %s (process=%s): %s", kTargetsPath, process_name,
+                                strerror(errno));
+        }
+#endif
         return false;
     }
 

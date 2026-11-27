@@ -786,6 +786,36 @@ ADB_SERIAL=c44d68aa \
 4. 首次安装或 Loader 改动后重启 Zygote。
 5. 查看 `DejavuZygisk` 的 `target skipped`、`target selected` 日志。
 
+### 注入失败或偶发注入不进去
+
+当目标应用偶发无法注入、Manager/CLI 提示未注入或连接不上时，先彻底强停应用再冷启动一次，紧接着抓取完整注入链路日志：
+
+```sh
+adb logcat -c
+adb shell am force-stop <package>
+# 手动或通过 am start 启动目标应用，复现一次失败后执行：
+adb logcat -d -s DejavuZygisk:V DejavuAgent:V DejavuLSPlant:V LSPlant:V DejavuHook:V
+```
+
+按日志阶段逐段定位：
+
+1. **完全没有 `target selected`（或出现 `unable to open config/targets.txt`）**
+   - 检查 `config/` 与 `config/targets.txt` 的权限及 SELinux 上下文（`zygote` 需要能读取 `system_file`）：
+     ```sh
+     adb shell su -c 'ls -ldZ /data/adb/modules/dejavu_zygisk/config /data/adb/modules/dejavu_zygisk/config/targets.txt'
+     ```
+     正常应为 `0755` / `0644` 且上下文为 `u:object_r:system_file:s0`；如异常可执行 `chmod 755 .../config && chmod 644 .../targets.txt && chcon -R u:object_r:system_file:s0 /data/adb/modules/dejavu_zygisk/config`。
+   - 确认目标进程确实已重启（Android 15 后台常驻/预热进程不会重新走 `preAppSpecialize`，修改 Scope 后必须先 `am force-stop` 再启动）。
+   - 确认 `targets.txt` 填的是精确进程名（多进程应用需注意主进程与 `:push` 等子进程的区别）。
+2. **有 `target selected`，但出现 `Agent creation failed` / `lsplant::Init failed`**
+   - 查看紧随其后的 `DejavuAgent`、`DejavuLSPlant`、`LSPlant` 日志。
+   - 注意：`ART symbol probe miss` 仅表示按 Android 版本链探测旧符号未命中并自动降级，**不代表错误**；只有同时出现 `lsplant::Init failed` 或 `LSPlant` 的 `Failed to init ...` 才是真正缺失必选 ART 符号。若在定制 ROM / 新版 ART APEX 上命中后者，反馈问题时请附上该日志与设备机型、Android 版本及补丁级别。
+   - 若出现 `failed to read config/init.lua` 或 `unable to load Agent`，检查模块目录下 `lib/arm64-v8a/libdejavu_agent.so`、`libdejavu.so` 与 `config/init.lua` 是否完整且上下文正常。
+3. **有 `target selected` 且已加载 Agent，但没有 `Agent control listener ready` 或报 `target Agent is not connected`**
+   - 检查 `DejavuZygisk` 是否有 `connectCompanion failed` / `failed to negotiate Agent listener` / `companion Agent connection denied`。
+   - 检查 `DejavuHook` / `DejavuAgent` 是否有 `unable to resolve app ClassLoader after handleBindApplication` 或 `Lua control initialization failed`（`config/init.lua` 报错会阻止控制监听启动；`config/early-hooks/<process>.lua` 阻塞也会延后 RPC 就绪）。
+   - 若目标应用开启了多开/隐私空间或多进程，检查 `adb shell su -c 'pidof <process>; ls -lt /data/adb/modules/dejavu_zygisk/run'`，确认连接的是当前存活的主进程 PID。
+
 ### `target process is not running`
 
 先启动目标应用，再确认：

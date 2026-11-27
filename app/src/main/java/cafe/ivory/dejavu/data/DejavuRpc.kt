@@ -48,9 +48,23 @@ class DejavuRpcClient(private val shell: ShellExecutor = RootShell) {
         return execute(process, "return plugin.$function(${LuaPackageScripts.quote(path)})")
     }
 
-    /** Lists distinct process names that currently have a live RPC metadata file under run/. */
+    /** Lists distinct process names that currently have a live, non-zombie RPC metadata file under run/. */
     fun listActiveRpcProcesses(): List<String> {
-        val listing = shell.run("ls -1 ${shell.quote("$MODULE_DIR/run")}")
+        val runDir = shell.quote("$MODULE_DIR/run")
+        val listing = shell.run(
+            """
+            ls -1 $runDir 2>/dev/null | while IFS= read -r f; do
+                pid=${'$'}{f%.rpc}
+                pid=${'$'}{pid##*.}
+                case "${'$'}pid" in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                [ -r "/proc/${'$'}pid/stat" ] || continue
+                state=${'$'}(sed 's/.*) //' "/proc/${'$'}pid/stat" 2>/dev/null | cut -d' ' -f1)
+                [ "${'$'}state" = "Z" ] || [ "${'$'}state" = "X" ] || printf '%s\n' "${'$'}f"
+            done
+            """.trimIndent(),
+        )
         check(listing.exitCode == 0) { "Cannot inspect running plugin processes: ${listing.output.trim().take(160)}" }
         val endpointName = Regex("^([A-Za-z0-9_.:-]{1,128})\\.[1-9][0-9]*\\.rpc$")
         return listing.output.lineSequence().mapNotNull {
@@ -66,16 +80,29 @@ class DejavuRpcClient(private val shell: ShellExecutor = RootShell) {
     ): String {
         val payload = script.toByteArray(StandardCharsets.UTF_8)
         if (payload.size > MAX_PAYLOAD) throw RpcException("script is too large")
-        val metadata = readMetadata(process, cancellation)
-        return when (val transport = metadata.transport) {
-            RpcEndpointTransport.Bridge -> shell.exchangeBinary(
-                "exec ${shell.quote(BRIDGE)} ${shell.quote(process)} ${metadata.pid}",
-                timeoutMs.toLong(),
-                cancellation,
-            ) { input, output ->
-                exchange(DataInputStream(input), DataOutputStream(BufferedOutputStream(output)), payload)
+        val retryDeadline = System.nanoTime() +
+            minOf(timeoutMs.toLong(), STARTUP_RETRY_WINDOW_MS) * 1_000_000L
+        while (true) {
+            cancellation?.throwIfCancelled()
+            try {
+                val metadata = readMetadata(process, cancellation)
+                return when (val transport = metadata.transport) {
+                    RpcEndpointTransport.Bridge -> shell.exchangeBinary(
+                        "exec ${shell.quote(BRIDGE)} ${shell.quote(process)} ${metadata.pid}",
+                        timeoutMs.toLong(),
+                        cancellation,
+                    ) { input, output ->
+                        exchange(DataInputStream(input), DataOutputStream(BufferedOutputStream(output)), payload)
+                    }
+                    is RpcEndpointTransport.Direct -> executeDirect(transport, payload, cancellation, timeoutMs)
+                }
+            } catch (error: RpcException) {
+                if (!isPreDispatchStartupError(error) || System.nanoTime() >= retryDeadline) {
+                    throw error
+                }
+                cancellation?.throwIfCancelled()
+                Thread.sleep(STARTUP_RETRY_INTERVAL_MS)
             }
-            is RpcEndpointTransport.Direct -> executeDirect(transport, payload, cancellation, timeoutMs)
         }
     }
 
@@ -141,12 +168,18 @@ class DejavuRpcClient(private val shell: ShellExecutor = RootShell) {
         if (listing.exitCode != 0) {
             throw RpcException("unable to list Dejavu runtime metadata")
         }
-        val endpoint = selectRpcEndpoint(process, listing.output.lineSequence().map { it.trim() }, livePids)
-            ?: throw RpcException("no RPC endpoint for $process; is the app running with the agent?")
-        val cmdline = read("tr '\\000' '\\n' < /proc/${endpoint.pid}/cmdline | head -n 1")
-        if (cmdline.exitCode != 0 || cmdline.output.trimEnd('\r', '\n') != process) {
-            throw RpcException("RPC endpoint process no longer matches $process")
+        val endpoints = selectRpcEndpoints(process, listing.output.lineSequence().map { it.trim() }, livePids)
+        if (endpoints.isEmpty()) {
+            throw RpcException("no RPC endpoint for $process; is the app running with the agent?")
         }
+        val endpoint = endpoints.firstOrNull { candidate ->
+            val check = read(
+                "state=\$(sed 's/.*) //' /proc/${candidate.pid}/stat 2>/dev/null | cut -d' ' -f1); " +
+                    "[ \"\$state\" != \"Z\" ] && [ \"\$state\" != \"X\" ] && " +
+                    "tr '\\000' '\\n' < /proc/${candidate.pid}/cmdline | head -n 1",
+            )
+            check.exitCode == 0 && check.output.trimEnd('\r', '\n') == process
+        } ?: throw RpcException("RPC endpoint process no longer matches $process")
         val bridgePath = shell.quote(BRIDGE)
         val metadataPath = shell.quote("$MODULE_DIR/run/${endpoint.fileName}")
         val metadata = read(
@@ -201,6 +234,16 @@ class DejavuRpcClient(private val shell: ShellExecutor = RootShell) {
         // Allow the agent's 25s Lua wait and companion's 30s relay deadline to return an error.
         internal const val EXCHANGE_TIMEOUT_MS = 40_000
         internal const val DETACH_TIMEOUT_MS = 5_000
+        private const val STARTUP_RETRY_WINDOW_MS = 3_000L
+        private const val STARTUP_RETRY_INTERVAL_MS = 150L
+
+        internal fun isPreDispatchStartupError(error: RpcException): Boolean {
+            if (error is TargetProcessNotRunning) return false
+            val msg = error.message ?: return false
+            return msg == "target Agent is not connected" ||
+                msg == "Unable to connect to Dejavu RPC companion" ||
+                msg.startsWith("no RPC endpoint for ")
+        }
 
         internal fun exchange(input: DataInputStream, output: DataOutputStream, payload: ByteArray): String {
             val requestId = (SecureRandom().nextLong() and Long.MAX_VALUE).let {

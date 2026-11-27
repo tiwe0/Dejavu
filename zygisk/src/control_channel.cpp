@@ -239,7 +239,9 @@ int open_unix_socket() {
     }
     const int flags = fcntl(fd, F_GETFD);
     if (flags < 0 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        const int saved_errno = errno;
         close(fd);
+        errno = saved_errno;
         return -1;
     }
     const int status_flags = fcntl(fd, F_GETFL);
@@ -552,7 +554,7 @@ int dejavu_control_bind_listener(const DejavuControlEndpoint &endpoint) {
         return -1;
     }
     if (bind(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0 &&
-        listen(fd, 1) == 0) {
+        listen(fd, 16) == 0) {
         return fd;
     }
     const int error = errno;
@@ -585,26 +587,73 @@ int dejavu_control_open_listener(DejavuControlEndpoint *endpoint) {
 int dejavu_control_connect(const DejavuControlEndpoint &endpoint, DejavuControlDeadline deadline) {
     sockaddr_un address = {};
     socklen_t address_size = 0;
-    if (!deadline_is_live(deadline) || !fill_abstract_address(endpoint, &address, &address_size)) {
+    if (!deadline_is_live(deadline)) {
+        return -1;
+    }
+    if (!fill_abstract_address(endpoint, &address, &address_size)) {
+        errno = EINVAL;
         return -1;
     }
     const int fd = open_unix_socket();
     if (fd < 0)
         return -1;
-    bool connected = connect(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0;
-    if (!connected && (errno == EINPROGRESS || errno == EINTR)) {
-        if (wait_ready(fd, POLLOUT, deadline)) {
-            int socket_error = 0;
-            socklen_t error_size = sizeof(socket_error);
-            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0) {
-                connected = socket_error == 0;
-                if (!connected)
-                    errno = socket_error;
+    bool connected = false;
+    int connect_error = 0;
+    for (;;) {
+        if (!deadline_is_live(deadline)) {
+            connect_error = ETIMEDOUT;
+            break;
+        }
+        if (connect(fd, reinterpret_cast<const sockaddr *>(&address), address_size) == 0) {
+            connected = true;
+            break;
+        }
+        connect_error = errno;
+        if (connect_error == EISCONN) {
+            connected = true;
+            break;
+        }
+        if (connect_error == EINTR) {
+            continue;
+        }
+        // On Linux, non-blocking AF_UNIX connect() returns EAGAIN when the
+        // listener's accept queue is temporarily full. Retry until deadline.
+        if (connect_error == EAGAIN || connect_error == EWOULDBLOCK) {
+            int sleep_ms = 10;
+            if (deadline != DejavuControlDeadline::max()) {
+                const auto remaining = deadline - std::chrono::steady_clock::now();
+                const auto ms = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
+                if (ms <= 0) {
+                    connect_error = ETIMEDOUT;
+                    break;
+                }
+                if (ms < sleep_ms) {
+                    sleep_ms = static_cast<int>(ms);
+                }
+            }
+            poll(nullptr, 0, sleep_ms);
+            continue;
+        }
+        if (connect_error == EINPROGRESS || connect_error == EALREADY) {
+            if (wait_ready(fd, POLLOUT, deadline)) {
+                int socket_error = 0;
+                socklen_t error_size = sizeof(socket_error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0) {
+                    if (socket_error == 0) {
+                        connected = true;
+                        break;
+                    }
+                    connect_error = socket_error;
+                } else {
+                    connect_error = errno;
+                }
+            } else {
+                connect_error = errno;
             }
         }
+        break;
     }
     if (!connected) {
-        const int connect_error = errno;
         close(fd);
         errno = connect_error;
         return -1;

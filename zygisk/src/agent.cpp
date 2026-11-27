@@ -34,17 +34,40 @@ class DejavuAgent final {
         initialize(args.module_dir_fd);
     }
 
+    ~DejavuAgent() {
+        if (!ready_) {
+            dejavu_runtime_unload(&runtime_);
+        }
+    }
+
+    bool is_ready() const {
+        return ready_;
+    }
+
     void post_app_specialize() {
         if (!ready_) {
+            LOGE("post_app_specialize skipped: Agent is not ready for %s", process_name_.c_str());
+            return;
+        }
+        JNIEnv *env = env_;
+        if (vm_ != nullptr) {
+            JNIEnv *current = nullptr;
+            if (vm_->GetEnv(reinterpret_cast<void **>(&current), JNI_VERSION_1_6) == JNI_OK &&
+                current != nullptr) {
+                env = current;
+            }
+        }
+        if (env == nullptr) {
+            LOGE("post_app_specialize has no JNIEnv for %s", process_name_.c_str());
             return;
         }
         LOGD("agent active for %s; Dejavu %s", process_name_.c_str(), runtime_.version());
         std::string error;
-        if (!hook_manager_.initialize(env_, vm_, lsplant_backend_, &runtime_, &error)) {
+        if (!hook_manager_.initialize(env, vm_, lsplant_backend_, &runtime_, &error)) {
             LOGE("HookManager initialization failed: %s", error.c_str());
             return;
         }
-        if (!hook_manager_.install_app_bootstrap(env_, application_attached, this, &error)) {
+        if (!hook_manager_.install_app_bootstrap(env, application_attached, this, &error)) {
             LOGE("app bootstrap hook failed: %s", error.c_str());
             return;
         }
@@ -188,6 +211,19 @@ class DejavuAgent final {
     }
 
     void run_live_control(int listener) {
+        struct JniThreadDetachGuard {
+            JavaVM *vm;
+            ~JniThreadDetachGuard() {
+                if (vm == nullptr) {
+                    return;
+                }
+                JNIEnv *attached = nullptr;
+                if (vm->GetEnv(reinterpret_cast<void **>(&attached), JNI_VERSION_1_6) == JNI_OK) {
+                    vm->DetachCurrentThread();
+                }
+            }
+        } detach_guard{vm_};
+
         LOGD("Agent control listener ready");
         for (;;) {
             pollfd descriptor = {listener, POLLIN, 0};
@@ -200,12 +236,20 @@ class DejavuAgent final {
             }
             const int control = accept4(listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
             if (control < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                const int err = errno;
+                if (err == EINTR || err == EAGAIN || err == EWOULDBLOCK || err == ECONNABORTED ||
+                    err == EPROTO) {
                     continue;
                 }
+                if (err == EMFILE || err == ENFILE || err == ENOBUFS || err == ENOMEM) {
+                    LOGE("Agent control accept4 transient error: %s", strerror(err));
+                    poll(nullptr, 0, 50);
+                    continue;
+                }
+                LOGE("Agent control accept4 fatal error: %s", strerror(err));
                 break;
             }
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             if (dejavu_control_peer_is_root(control) &&
                 dejavu_control_read_authentication(control, control_endpoint_, deadline) &&
                 dejavu_control_write_frame(control, nullptr, 0, deadline)) {
@@ -227,7 +271,12 @@ void *create_agent(const DejavuAgentCreateArgs *args) {
         args->vm == nullptr || args->module_dir_fd < 0 || args->process_name == nullptr) {
         return nullptr;
     }
-    return new (std::nothrow) DejavuAgent(*args);
+    auto *agent = new (std::nothrow) DejavuAgent(*args);
+    if (agent == nullptr || !agent->is_ready()) {
+        delete agent;
+        return nullptr;
+    }
+    return agent;
 }
 
 void post_app_specialize(void *instance) {

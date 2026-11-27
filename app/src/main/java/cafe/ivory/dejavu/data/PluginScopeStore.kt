@@ -73,9 +73,9 @@ class PluginScopeStore(private val shell: ShellExecutor = RootShell) {
             val expected = MessageDigest.getInstance("SHA-256").digest(previous.bytes).joinToString("") { "%02x".format(it) }
             val command = """
                 set -e
-                umask 077
+                umask 022
                 $guard || exit 1
-                chmod 700 '$DIRECTORY'
+                chmod 755 '$DIRECTORY'
                 [ ! -L '$LOCK' ] && { [ ! -e '$LOCK' ] || [ -f '$LOCK' ]; } || exit 1
                 exec 9>'$LOCK'
                 chmod 600 '$LOCK'
@@ -87,8 +87,12 @@ class PluginScopeStore(private val shell: ShellExecutor = RootShell) {
                 trap 'rm -f "${'$'}stage"' EXIT
                 cat > "${'$'}stage"
                 [ "${'$'}(wc -c < "${'$'}stage")" -eq ${bytes.size} ]
-                chmod 600 "${'$'}stage"
+                chmod 644 "${'$'}stage"
                 chown 0:0 "${'$'}stage"
+                if command -v chcon >/dev/null 2>&1; then
+                    chcon u:object_r:system_file:s0 '$DIRECTORY' 2>/dev/null || true
+                    chcon u:object_r:system_file:s0 "${'$'}stage" 2>/dev/null || true
+                fi
                 mv -f "${'$'}stage" '$PATH'
             """.trimIndent()
             val result = shell.run(command, bytes)

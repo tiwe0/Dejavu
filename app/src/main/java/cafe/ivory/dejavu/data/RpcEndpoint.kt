@@ -2,7 +2,7 @@ package cafe.ivory.dejavu.data
 
 internal data class RpcEndpoint(val fileName: String, val pid: Int)
 
-internal fun selectRpcEndpoint(process: String, names: Sequence<String>, livePids: Set<Int>): RpcEndpoint? {
+internal fun selectRpcEndpoints(process: String, names: Sequence<String>, livePids: Set<Int>): List<RpcEndpoint> {
     val pattern = Regex("${Regex.escape(process)}\\.([0-9]+)\\.rpc")
     return names.mapNotNull { name ->
         val match = pattern.matchEntire(name) ?: return@mapNotNull null
@@ -10,8 +10,11 @@ internal fun selectRpcEndpoint(process: String, names: Sequence<String>, livePid
             ?: return@mapNotNull null
         if (pid !in livePids) return@mapNotNull null
         RpcEndpoint(name, pid)
-    }.firstOrNull()
+    }.toList()
 }
+
+internal fun selectRpcEndpoint(process: String, names: Sequence<String>, livePids: Set<Int>): RpcEndpoint? =
+    selectRpcEndpoints(process, names, livePids).firstOrNull()
 
 internal fun decodeRpcToken(value: String): ByteArray? {
     if (!value.matches(Regex("[0-9a-fA-F]{64}"))) return null

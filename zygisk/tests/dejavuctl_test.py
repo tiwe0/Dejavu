@@ -793,6 +793,53 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(runner.probed_pid, 200)
         session.reconnect.assert_called_once()
 
+    def test_read_metadata_reports_not_running_and_prefers_live_newest_pid(self):
+        with mock.patch.object(
+            dejavuctl, "root_shell", return_value=mock.Mock(returncode=1, stdout="")
+        ):
+            with self.assertRaisesRegex(dejavuctl.ControlError, "target process is not running"):
+                dejavuctl.read_metadata(None, "com.demo.app")
+
+        good_token = "ab" * 32
+        good_json = (
+            f'{{"version":1,"pid":202,"socket":"dejavu-{"12" * 16}","token":"{good_token}"}}\n'
+        )
+
+        def fake_root_shell(_serial, command, check=True):
+            if command.startswith("pidof "):
+                return mock.Mock(returncode=0, stdout="101 202\n")
+            if command.startswith("ls -1t "):
+                return mock.Mock(returncode=0, stdout="com.demo.app.202.rpc\ncom.demo.app.101.rpc\n")
+            if "/proc/202/stat" in command:
+                return mock.Mock(returncode=0, stdout="com.demo.app\n")
+            if command.endswith("com.demo.app.202.rpc"):
+                return mock.Mock(returncode=0, stdout=good_json)
+            return mock.Mock(returncode=1, stdout="")
+
+        with mock.patch.object(dejavuctl, "root_shell", side_effect=fake_root_shell):
+            pid, sock, token = dejavuctl.read_metadata(None, "com.demo.app")
+        self.assertEqual(pid, 202)
+        self.assertEqual(sock, f"dejavu-{'12' * 16}")
+        self.assertEqual(token, bytes.fromhex(good_token))
+
+    def test_execute_with_port_fast_polls_reconnect_unavailable_message(self):
+        replies = [
+            (
+                dejavuctl.RPC_UNAVAILABLE,
+                b"target Agent is not connected; restart the target process if it stays offline",
+            ),
+            (dejavuctl.RPC_OK, b"Agent channel is connected"),
+        ]
+        with mock.patch.object(dejavuctl, "execute_once", side_effect=replies) as call_mock, \
+                mock.patch.object(dejavuctl.time, "sleep"):
+            status, payload = dejavuctl.execute_with_port(
+                12345, b"\x01" * 32, dejavuctl.RPC_RECONNECT_REQUEST,
+                dejavuctl.RPC_RECONNECT_RESPONSE, b"", 5.0, 2.0,
+            )
+        self.assertEqual(status, dejavuctl.RPC_OK)
+        self.assertEqual(payload, b"Agent channel is connected")
+        self.assertEqual(call_mock.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

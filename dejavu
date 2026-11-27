@@ -244,9 +244,9 @@ def update_manual_targets(args: argparse.Namespace, transform) -> list[str]:
         expected = hashlib.sha256(previous).hexdigest()
         directory = str(Path(TARGETS_PATH).parent)
         command = f"""set -e
-umask 077
+umask 022
 {targets_guard()} || exit 1
-chmod 700 {str(Path(TARGETS_PATH).parent)}
+chmod 755 {directory}
 [ ! -L {TARGETS_LOCK} ] && {{ [ ! -e {TARGETS_LOCK} ] || [ -f {TARGETS_LOCK} ]; }} || exit 1
 exec 9>{TARGETS_LOCK}
 chmod 600 {TARGETS_LOCK}
@@ -258,8 +258,12 @@ stage=$(mktemp '{directory}/.targets.XXXXXX')
 trap 'rm -f "$stage"' EXIT
 cat > "$stage"
 [ "$(wc -c < "$stage")" -eq {len(payload)} ]
-chmod 600 "$stage"
+chmod 644 "$stage"
 chown 0:0 "$stage"
+if command -v chcon >/dev/null 2>&1; then
+    chcon u:object_r:system_file:s0 {directory} 2>/dev/null || true
+    chcon u:object_r:system_file:s0 "$stage" 2>/dev/null || true
+fi
 mv -f "$stage" {TARGETS_PATH}
 """
         # Unlike the script-over-stdin root helper, this transport leaves stdin for the payload.
@@ -448,26 +452,36 @@ def command_targets(args: argparse.Namespace) -> int:
 
 
 def restart_target(args: argparse.Namespace, process: str, activity: str | None) -> None:
-    adb(args, "shell", f"am force-stop {process}", check=False)
+    package = process.split(":", 1)[0]
+    adb(args, "shell", f"am force-stop {package}", check=False)
+    stop_deadline = time.monotonic() + 1.5
+    while time.monotonic() < stop_deadline:
+        if not target_pid_text(args, process):
+            break
+        time.sleep(0.1)
     if activity:
         adb(args, "shell", f"am start -W -n {activity}", check=False)
         return
     adb(
         args,
         "shell",
-        f"monkey -p {process} -c android.intent.category.LAUNCHER 1",
+        f"monkey -p {package} -c android.intent.category.LAUNCHER 1",
         check=False,
     )
     time.sleep(2)
     if target_pid_text(args, process):
         return
-    resolved = resolve_launcher_activity(args, process)
+    resolved = resolve_launcher_activity(args, package)
     if resolved:
         adb(args, "shell", f"am start -W -n {resolved}", check=False)
 
 
 def target_pid_text(args: argparse.Namespace, process: str) -> str:
-    return adb_text(args, "shell", f"pidof {process}")
+    result = root_shell(args, f"pidof {shlex.quote(process)}", check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    fallback = adb(args, "shell", f"pidof {process}", capture=True, check=False)
+    return fallback.stdout.strip() if fallback.returncode == 0 else ""
 
 
 def resolve_launcher_activity(args: argparse.Namespace, process: str) -> str:

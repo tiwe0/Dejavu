@@ -18,6 +18,7 @@ namespace {
 constexpr char kLogTag[] = "DejavuLSPlant";
 constexpr uint32_t kBackendAbiVersion = 1;
 
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
 
 std::mutex g_initialize_mutex;
@@ -215,11 +216,11 @@ extern "C" DejavuLsplantInitResult dejavu_lsplant_backend_initialize(JNIEnv *env
                 if (address == nullptr && name == "art_quick_to_interpreter_bridge") {
                     address = resolve_interpreter_bridge(resolver);
                     if (address != nullptr) {
-                        LOGE("derived ART interpreter bridge: %p", address);
+                        LOGD("derived ART interpreter bridge: %p", address);
                     }
                 }
                 if (address == nullptr) {
-                    LOGE("ART symbol not found: %.*s", static_cast<int>(name.size()), name.data());
+                    LOGD("ART symbol probe miss: %.*s", static_cast<int>(name.size()), name.data());
                 }
                 return address;
             },
@@ -227,7 +228,7 @@ extern "C" DejavuLsplantInitResult dejavu_lsplant_backend_initialize(JNIEnv *env
             [&resolver](std::string_view prefix) {
                 void *address = resolver.find_prefix(prefix);
                 if (address == nullptr) {
-                    LOGE("ART symbol prefix not found: %.*s", static_cast<int>(prefix.size()),
+                    LOGD("ART symbol prefix probe miss: %.*s", static_cast<int>(prefix.size()),
                          prefix.data());
                 }
                 return address;
@@ -241,6 +242,10 @@ extern "C" DejavuLsplantInitResult dejavu_lsplant_backend_initialize(JNIEnv *env
     };
 
     const bool initialized = lsplant::Init(env, info);
+    if (!initialized) {
+        LOGE("lsplant::Init failed; check LSPlant and DejavuLSPlant debug logs for missing ART "
+             "symbols");
+    }
     g_initialize_result =
         initialized
             ? DejavuLsplantInitResult{DejavuLsplantInitStatus::kReady, true, &kBackend}

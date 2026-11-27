@@ -305,5 +305,26 @@ class ReplCliTest(unittest.TestCase):
         proc.kill.assert_not_called()
 
 
+class RestartTargetTest(unittest.TestCase):
+    def test_restart_target_uses_package_name_and_falls_back_when_pidof_empty(self):
+        args = cli.build_parser().parse_args(["status"])
+        adb_calls = []
+
+        def fake_adb(_args, *cmd, **kwargs):
+            adb_calls.append(cmd)
+            return mock.Mock(returncode=1, stdout="", stderr="")
+
+        with mock.patch.object(cli, "adb", side_effect=fake_adb), \
+                mock.patch.object(cli, "root_shell", return_value=mock.Mock(returncode=1, stdout="")), \
+                mock.patch.object(cli, "resolve_launcher_activity", return_value="com.demo.app/.Main") as resolve_mock, \
+                mock.patch.object(cli.time, "sleep"):
+            cli.restart_target(args, "com.demo.app:worker", None)
+
+        self.assertIn(("shell", "am force-stop com.demo.app"), adb_calls)
+        self.assertIn(("shell", "monkey -p com.demo.app -c android.intent.category.LAUNCHER 1"), adb_calls)
+        resolve_mock.assert_called_once_with(args, "com.demo.app")
+        self.assertIn(("shell", "am start -W -n com.demo.app/.Main"), adb_calls)
+
+
 if __name__ == "__main__":
     unittest.main()

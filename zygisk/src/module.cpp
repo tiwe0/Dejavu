@@ -14,6 +14,8 @@
 #include <unistd.h>
 
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include "control_channel.h"
@@ -27,6 +29,8 @@ constexpr char kLogTag[] = "DejavuZygisk";
 constexpr char kAgentPath[] = "lib/arm64-v8a/libdejavu_agent.so";
 constexpr int kAgentRelayTimeoutSeconds = 30;
 constexpr int kClientIoTimeoutSeconds = 2;
+constexpr int kCompanionHandshakeTimeoutSeconds = 5;
+constexpr int kMaxAgentDeniedRetries = 20;
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, kLogTag, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, kLogTag, __VA_ARGS__)
@@ -104,7 +108,33 @@ bool read_control_file(const std::string &path, std::string *script, FileIdentit
 }
 
 bool process_is_alive(pid_t pid) {
-    return kill(pid, 0) == 0 || errno == EPERM;
+    if (kill(pid, 0) != 0 && errno != EPERM) {
+        return false;
+    }
+    char stat_path[64];
+    snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", static_cast<int>(pid));
+    const int fd = open(stat_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return errno != ENOENT && errno != ESRCH;
+    }
+    char buffer[256];
+    ssize_t count = -1;
+    do {
+        count = read(fd, buffer, sizeof(buffer) - 1);
+    } while (count < 0 && errno == EINTR);
+    close(fd);
+    if (count <= 0) {
+        return false;
+    }
+    buffer[count] = '\0';
+    const char *rparen = strrchr(buffer, ')');
+    if (rparen != nullptr && rparen[1] == ' ' && rparen[2] != '\0') {
+        const char state = rparen[2];
+        if (state == 'Z' || state == 'X' || state == 'x') {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool set_close_on_exec(int fd) {
@@ -194,7 +224,7 @@ void handle_cli_client(int client, int *agent_control) {
 
 int connect_agent(const DejavuControlEndpoint &endpoint, pid_t pid, uid_t uid) {
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
+        std::chrono::steady_clock::now() + std::chrono::seconds(kCompanionHandshakeTimeoutSeconds);
     const int fd = dejavu_control_connect(endpoint, deadline);
     if (fd < 0) {
         return -1;
@@ -216,57 +246,17 @@ int connect_agent(const DejavuControlEndpoint &endpoint, pid_t pid, uid_t uid) {
     return fd;
 }
 
-void companion_handler(int client) {
-    LOGI("companion connected: fd=%d", client);
-    const auto handshake_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
-    DejavuControlClientInfo client_info;
-    const pid_t caller_pid = set_close_on_exec(client)
-                                 ? dejavu_control_receive_caller_pid(client, handshake_deadline)
-                                 : -1;
-    std::string path;
-    std::string metadata_path;
-    std::string uid_frame;
-    uid_t app_uid;
-    if (caller_pid <= 0 ||
-        !dejavu_control_read_client_info(client, &client_info, handshake_deadline) ||
-        caller_pid != client_info.pid ||
-        !dejavu_control_read_frame(client, &uid_frame, sizeof(app_uid), handshake_deadline) ||
-        uid_frame.size() != sizeof(app_uid) ||
-        !dejavu_control_file_path(client_info.process_name, &path) ||
-        !endpoint_metadata_path(client_info, &metadata_path)) {
-        LOGE("companion rejected client identity: fd=%d", client);
-        close(client);
-        return;
-    }
-
-    memcpy(&app_uid, uid_frame.data(), sizeof(app_uid));
-    DejavuControlEndpoint agent_endpoint = {};
-    if (!dejavu_control_generate_endpoint(&agent_endpoint)) {
-        LOGE("companion failed to generate a private Agent endpoint");
-        close(client);
-        return;
-    }
-    DejavuControlEndpoint cli_endpoint = {};
-    const int cli_listener = dejavu_control_open_listener(&cli_endpoint);
-    if (cli_listener < 0 ||
-        !write_endpoint_metadata(metadata_path, client_info.pid, cli_endpoint) ||
-        !dejavu_control_write_endpoint(client, agent_endpoint, handshake_deadline)) {
-        LOGE("companion failed to publish RPC endpoint for %s", client_info.process_name.c_str());
-        if (cli_listener >= 0) {
-            close(cli_listener);
-        }
-        unlink(metadata_path.c_str());
-        close(client);
-        return;
-    }
-    close(client);
+void monitor_target_companion(int cli_listener, DejavuControlEndpoint cli_endpoint,
+                              DejavuControlEndpoint agent_endpoint,
+                              DejavuControlClientInfo client_info, uid_t app_uid, std::string path,
+                              std::string metadata_path) {
     LOGI("companion RPC ready: cli=@%s pid=%d", cli_endpoint.socket_name,
          static_cast<int>(client_info.pid));
     LOGI("companion monitoring %s", path.c_str());
 
     int agent_control = -1;
     bool agent_denied = false;
+    int agent_denied_count = 0;
     uint64_t next_file_request_id = 1;
     FileIdentity observed = file_identity(path);
     while (process_is_alive(client_info.pid)) {
@@ -289,11 +279,18 @@ void companion_handler(int client) {
         if (agent_control < 0 && !agent_denied) {
             agent_control = connect_agent(agent_endpoint, client_info.pid, app_uid);
             if (agent_control >= 0) {
+                agent_denied_count = 0;
                 LOGI("companion authenticated Agent listener for pid %d", client_info.pid);
             } else if (errno == EACCES || errno == EPERM) {
-                LOGE("companion Agent connection denied for pid %d: %s", client_info.pid,
-                     strerror(errno));
-                agent_denied = true;
+                ++agent_denied_count;
+                if (agent_denied_count == 1 || agent_denied_count >= kMaxAgentDeniedRetries) {
+                    LOGE("companion Agent connection denied for pid %d (attempt %d/%d): %s",
+                         client_info.pid, agent_denied_count, kMaxAgentDeniedRetries,
+                         strerror(errno));
+                }
+                if (agent_denied_count >= kMaxAgentDeniedRetries) {
+                    agent_denied = true;
+                }
             }
         }
         if ((descriptors[0].revents & POLLIN) != 0) {
@@ -345,6 +342,65 @@ void companion_handler(int client) {
     close(cli_listener);
     unlink(metadata_path.c_str());
     LOGI("companion stopped monitoring pid %d", static_cast<int>(client_info.pid));
+}
+
+void companion_handler(int client) {
+    LOGI("companion connected: fd=%d", client);
+    const auto handshake_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(kCompanionHandshakeTimeoutSeconds);
+    DejavuControlClientInfo client_info;
+    const pid_t caller_pid = set_close_on_exec(client)
+                                 ? dejavu_control_receive_caller_pid(client, handshake_deadline)
+                                 : -1;
+    std::string path;
+    std::string metadata_path;
+    std::string uid_frame;
+    uid_t app_uid;
+    if (caller_pid <= 0 ||
+        !dejavu_control_read_client_info(client, &client_info, handshake_deadline) ||
+        caller_pid != client_info.pid ||
+        !dejavu_control_read_frame(client, &uid_frame, sizeof(app_uid), handshake_deadline) ||
+        uid_frame.size() != sizeof(app_uid) ||
+        !dejavu_control_file_path(client_info.process_name, &path) ||
+        !endpoint_metadata_path(client_info, &metadata_path)) {
+        LOGE("companion rejected client identity: fd=%d", client);
+        close(client);
+        return;
+    }
+
+    memcpy(&app_uid, uid_frame.data(), sizeof(app_uid));
+    DejavuControlEndpoint agent_endpoint = {};
+    if (!dejavu_control_generate_endpoint(&agent_endpoint)) {
+        LOGE("companion failed to generate a private Agent endpoint");
+        close(client);
+        return;
+    }
+    DejavuControlEndpoint cli_endpoint = {};
+    const int cli_listener = dejavu_control_open_listener(&cli_endpoint);
+    if (cli_listener < 0 ||
+        !write_endpoint_metadata(metadata_path, client_info.pid, cli_endpoint) ||
+        !dejavu_control_write_endpoint(client, agent_endpoint, handshake_deadline)) {
+        LOGE("companion failed to publish RPC endpoint for %s", client_info.process_name.c_str());
+        if (cli_listener >= 0) {
+            close(cli_listener);
+        }
+        unlink(metadata_path.c_str());
+        close(client);
+        return;
+    }
+    close(client);
+
+    // Hand off long-lived monitoring to a detached thread so the Zygisk
+    // companion worker returns immediately for concurrent app launches.
+    try {
+        std::thread(monitor_target_companion, cli_listener, cli_endpoint, agent_endpoint,
+                    std::move(client_info), app_uid, std::move(path), std::move(metadata_path))
+            .detach();
+    } catch (const std::system_error &error) {
+        LOGE("companion monitor thread creation failed (%s); running inline", error.what());
+        monitor_target_companion(cli_listener, cli_endpoint, agent_endpoint, std::move(client_info),
+                                 app_uid, std::move(path), std::move(metadata_path));
+    }
 }
 
 class DejavuZygiskModule final : public zygisk::ModuleBase {
@@ -424,8 +480,8 @@ class DejavuZygiskModule final : public zygisk::ModuleBase {
             LOGE("connectCompanion failed for %s: fd=%d", process_name, fd);
             return {};
         }
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(kClientIoTimeoutSeconds);
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(kCompanionHandshakeTimeoutSeconds);
         DejavuControlEndpoint endpoint = {};
         const bool established =
             set_close_on_exec(fd) && dejavu_control_peer_is_root(fd) &&

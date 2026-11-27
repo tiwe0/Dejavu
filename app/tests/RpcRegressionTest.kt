@@ -29,6 +29,13 @@ fun runRpcRegressionTests() {
     check(result.contentEquals(value.toByteArray(Charsets.UTF_8))) { "Lua argument round-trip changed bytes" }
     check(selectRpcEndpoint("app", sequenceOf("app.99.rpc", "app.12.rpc"), setOf(12))?.pid == 12)
     check(selectRpcEndpoint("app", sequenceOf("app.99.rpc"), setOf(12)) == null)
+    check(selectRpcEndpoints("app", sequenceOf("app.99.rpc", "app.12.rpc"), setOf(12, 99)).map { it.pid } == listOf(99, 12))
+    check(DejavuRpcClient.isPreDispatchStartupError(RpcException("target Agent is not connected")))
+    check(DejavuRpcClient.isPreDispatchStartupError(RpcException("Unable to connect to Dejavu RPC companion")))
+    check(DejavuRpcClient.isPreDispatchStartupError(RpcException("no RPC endpoint for com.demo; is the app running with the agent?")))
+    check(!DejavuRpcClient.isPreDispatchStartupError(TargetProcessNotRunning("com.demo")))
+    check(!DejavuRpcClient.isPreDispatchStartupError(RpcException("RPC response unavailable; request may have executed")))
+    check(!DejavuRpcClient.isPreDispatchStartupError(RpcException("Lua execution failed")))
     val token = "0123456789abcdef".repeat(4)
     check(decodeRpcToken(token)?.size == 32)
     check(decodeRpcToken(token.uppercase())?.contentEquals(decodeRpcToken(token)!!) == true)
